@@ -1,0 +1,28 @@
+[package]
+name = "personal-taoli-tauri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Taoli Observer Tauri desktop application"
+publish = false
+
+[lib]
+name = "personal_taoli_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "personal-taoli"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = { version = "1.39", features = ["serde-str", "db-postgres"] }
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+personal-taoli-core = { path = "../crates/core" }

@@ -5,6 +5,7 @@ pub mod execution;
 pub mod instrument;
 pub mod local_book;
 pub mod market;
+pub mod observer;
 pub mod order;
 pub mod paper;
 pub mod scan;

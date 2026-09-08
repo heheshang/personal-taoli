@@ -1,2 +1,6 @@
 /target/
+/node_modules/
+/ui/*
+!/ui/.gitkeep
+/src-tauri/gen/
 /data/

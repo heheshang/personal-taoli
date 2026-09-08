@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn rejects_non_positive_quantity() {
-        let raw = include_str!("../config/observer.toml")
+        let raw = include_str!("../tests/fixtures/observer.toml")
             .replace("quantity = \"0.001\"", "quantity = \"0\"");
         let config: ObserverConfig = toml::from_str(&raw).unwrap();
         assert!(
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn rejects_depth_not_supported_by_both_streams() {
-        let raw = include_str!("../config/observer.toml")
+        let raw = include_str!("../tests/fixtures/observer.toml")
             .replace("orderbook_depth = 50", "orderbook_depth = 25");
         let config: ObserverConfig = toml::from_str(&raw).unwrap();
         assert!(

@@ -1,0 +1,45 @@
+symbol = "BTCUSDT"
+base_asset = "BTC"
+quote_asset = "USDT"
+quantity = "0.001"
+poll_interval_ms = 2000
+http_timeout_ms = 3000
+stream_start_timeout_ms = 10000
+reconnect_delay_ms = 1000
+max_snapshot_age_ms = 1000
+max_pair_skew_ms = 500
+orderbook_depth = 50
+account_refresh_interval_ms = 300000
+max_fee_age_ms = 900000
+auth_recv_window_ms = 5000
+
+[archive]
+path = "data/archive/observations.ndjson"
+queue_capacity = 1024
+raw_retention_days = 30
+
+[binance]
+base_url = "https://api.binance.com"
+websocket_url = "wss://stream.binance.com:9443"
+fallback_taker_fee_rate = "0.001"
+api_key_env = "TAOLI_BINANCE_API_KEY"
+api_secret_env = "TAOLI_BINANCE_API_SECRET"
+region_eligible_confirmed = false
+account_eligible_confirmed = false
+
+[bybit]
+base_url = "https://api.bybit.com"
+fallback_taker_fee_rate = "0.001"
+api_key_env = "TAOLI_BYBIT_API_KEY"
+api_secret_env = "TAOLI_BYBIT_API_SECRET"
+region_eligible_confirmed = false
+account_eligible_confirmed = false
+websocket_url = "wss://stream.bybit.com/v5/public/spot"
+
+[strategy]
+min_net_profit = "0.01"
+min_net_bps = "1"
+latency_loss_bps = "1"
+risk_buffer_bps = "1"
+rebalance_cost = "0"
+other_direct_cost = "0"
