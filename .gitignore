@@ -3,4 +3,5 @@
 /ui/*
 !/ui/.gitkeep
 /src-tauri/gen/
+/src-tauri/data/
 /data/

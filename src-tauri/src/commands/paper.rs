@@ -10,11 +10,11 @@ use super::{dto::PaperSmokeResult, support::api_error};
 #[tauri::command]
 pub async fn run_paper_smoke(kind: String) -> ApiResponse<PaperSmokeResult> {
     let database_url = match env::var("TAOLI_DATABASE_URL") {
-        Ok(value) => value,
-        Err(_) => {
+        Ok(value) if !value.trim().is_empty() => value,
+        Ok(_) | Err(_) => {
             return ApiResponse::fail(api_error(
                 ErrorCode::PaperError,
-                "TAOLI_DATABASE_URL is required for PAPER smoke tests",
+                "TAOLI_DATABASE_URL is required for PAPER smoke tests; start PostgreSQL and launch the app with this environment variable set",
                 false,
             ));
         }

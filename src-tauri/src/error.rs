@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     InvalidRequest,
@@ -8,6 +8,7 @@ pub enum ErrorCode {
     NetworkError,
     MarketDataError,
     ArchiveError,
+    ArchiveNotFound,
     PaperError,
 }
 

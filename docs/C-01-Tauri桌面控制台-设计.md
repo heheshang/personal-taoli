@@ -63,6 +63,7 @@
 
 - 安装前端依赖：`npm ci`。
 - 启动桌面开发环境：`npm run tauri dev`。该命令先启动固定在 `http://localhost:1420` 的 Vite 服务，再启动 Tauri Rust 应用。
+- 使用 PAPER 烟测前，启动 PostgreSQL 并从启动 Tauri 的同一 shell 传入数据库连接串，例如：`TAOLI_DATABASE_URL=postgresql://taoli:taoli@127.0.0.1:55432/taoli npm run tauri dev`。桌面端不会从前端输入、保存或展示该连接串；未配置时 PAPER command 按安全策略返回 `PAPER_ERROR`，不伪造成功。
 - 单独构建前端：`npm run build`；产物写入根目录 `ui/`，该目录除 `.gitkeep` 外不进入版本控制。
 - Rust 检查与测试：`cargo fmt --all -- --check`、`cargo check --workspace`、`cargo test --workspace`。
 - `src-tauri/gen/` 是 Tauri 自动生成的 schema 目录，不提交；`src-tauri/icons/icon.png` 是 Tauri 打包所需资源，必须保留。
