@@ -53,6 +53,12 @@ struct Cli {
         help = "Replay an archive deterministically and print its shadow report"
     )]
     replay: Option<PathBuf>,
+    #[arg(
+        long,
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay"],
+        help = "Suppress per-scan output in continuous observation mode"
+    )]
+    quiet: bool,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
 }
@@ -191,6 +197,8 @@ async fn main() -> Result<()> {
     let mut account_ticker = interval(config.account_refresh_interval());
     account_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     account_ticker.tick().await;
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = ticker.tick() => {
@@ -205,7 +213,9 @@ async fn main() -> Result<()> {
                     &accounts,
                 ) {
                     Ok(event) => {
-                        print_report(&event.report, &accounts, cli.output)?;
+                        if !cli.quiet {
+                            print_report(&event.report, &accounts, cli.output)?;
+                        }
                         submit_archive(&mut archive, ArchivedEvent::Decision(Box::new(event)));
                     }
                     Err(error) => {
@@ -231,9 +241,9 @@ async fn main() -> Result<()> {
                     config.max_fee_age_ms,
                 ).await;
             }
-            result = tokio::signal::ctrl_c() => {
-                result.context("failed to listen for Ctrl-C")?;
-                eprintln!("observer stopped");
+            result = &mut shutdown => {
+                result?;
+                eprintln!("observer stopped; flushing archive");
                 break;
             }
         }
@@ -242,6 +252,28 @@ async fn main() -> Result<()> {
         eprintln!("archive shutdown failed: {error:#}");
     }
     Ok(())
+}
+
+async fn shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .context("failed to listen for SIGTERM")?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result.context("failed to listen for Ctrl-C")?;
+            }
+            _ = terminate.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to listen for Ctrl-C")
+    }
 }
 
 async fn wait_for_valid_pair(
@@ -479,7 +511,7 @@ fn print_shadow_report(report: &ShadowReport, format: OutputFormat) -> Result<()
         OutputFormat::Json => println!("{}", serde_json::to_string(report)?),
         OutputFormat::Text => {
             println!(
-                "REPLAY_OK records={} decisions={} health={} duration={}ms online={}ms invalid={}ms positive_net={} accepted={} gaps={} dropped={} bytes={}",
+                "REPLAY_OK records={} decisions={} health={} duration={}ms online={}ms invalid={}ms positive_net={} accepted={} gaps={} dropped={} bytes={} ignored_tails={}/{}",
                 report.records,
                 report.decision_records,
                 report.health_records,
@@ -491,6 +523,8 @@ fn print_shadow_report(report: &ShadowReport, format: OutputFormat) -> Result<()
                 report.gap_records,
                 report.dropped_events,
                 report.archive_bytes,
+                report.ignored_incomplete_tail_bytes,
+                report.ignored_gap_tail_bytes,
             );
             println!("  reconnects={:?}", report.reconnects);
             println!("  net_profit={:?}", report.net_profit_distribution);

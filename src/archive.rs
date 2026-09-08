@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -342,6 +342,27 @@ impl ArchiveWriter {
         let worker_run_id = run_id.clone();
         let archive_path = path.as_ref().to_owned();
         let gaps_path = gap_path.as_ref().to_owned();
+        let mut startup_gaps = Vec::new();
+        for (candidate, label) in [
+            (&archive_path, "archive"),
+            (&gaps_path, "archive gap journal"),
+        ] {
+            let discarded = repair_incomplete_tail(candidate)?;
+            if discarded > 0 {
+                let event_id = format!("{run_id}:startup-{label}-tail-repair");
+                startup_gaps.push(ArchiveGap {
+                    schema_version: SCHEMA_VERSION,
+                    run_id: run_id.clone(),
+                    first_event_id: event_id.clone(),
+                    last_event_id: event_id,
+                    first_observed_at_ms: started_at_ms,
+                    last_observed_at_ms: started_at_ms,
+                    dropped_events: 0,
+                    reason: format!("discarded {discarded} incomplete bytes from {label}"),
+                    recorded_at_ms: started_at_ms,
+                });
+            }
+        }
         let worker = thread::Builder::new()
             .name("market-archive".into())
             .spawn(move || {
@@ -351,6 +372,7 @@ impl ArchiveWriter {
                     &gaps_path,
                     &worker_run_id,
                     worker_pending,
+                    startup_gaps,
                 )
             })
             .context("failed to spawn market archive writer")?;
@@ -424,9 +446,13 @@ fn writer_loop(
     gap_path: &Path,
     run_id: &str,
     pending_overflow: Arc<Mutex<Option<PendingGap>>>,
+    startup_gaps: Vec<ArchiveGap>,
 ) -> Result<()> {
     let mut archive = open_append(archive_path).ok();
     let mut gaps = open_append(gap_path).ok();
+    for gap in startup_gaps {
+        write_gap(&mut gaps, gap_path, gap);
+    }
     while let Ok(record) = receiver.recv() {
         flush_overflow_gap(&mut gaps, gap_path, run_id, &pending_overflow);
         let write_result = match archive.as_mut() {
@@ -482,6 +508,54 @@ fn write_gap(gaps: &mut Option<BufWriter<File>>, gap_path: &Path, gap: ArchiveGa
             gap.first_event_id, gap.last_event_id, gap.dropped_events, gap.reason,
         );
     }
+}
+
+fn repair_incomplete_tail(path: &Path) -> Result<u64> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect archive tail {}", path.display()));
+        }
+    };
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Ok(0);
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("failed to open archive tail {}", path.display()))?;
+    let original_len = metadata.len();
+    file.seek(SeekFrom::End(-1))?;
+    let mut final_byte = [0_u8; 1];
+    file.read_exact(&mut final_byte)?;
+    if final_byte[0] == b'\n' {
+        return Ok(0);
+    }
+
+    const CHUNK_SIZE: usize = 8 * 1024;
+    let mut buffer = [0_u8; CHUNK_SIZE];
+    let mut cursor = original_len;
+    let complete_len = loop {
+        let start = cursor.saturating_sub(CHUNK_SIZE as u64);
+        let len = usize::try_from(cursor - start).expect("tail chunk length fits usize");
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buffer[..len])?;
+        if let Some(index) = buffer[..len].iter().rposition(|byte| *byte == b'\n') {
+            break start + index as u64 + 1;
+        }
+        if start == 0 {
+            break 0;
+        }
+        cursor = start;
+    };
+    file.set_len(complete_len)?;
+    file.sync_data()
+        .with_context(|| format!("failed to sync repaired archive tail {}", path.display()))?;
+    Ok(original_len - complete_len)
 }
 
 fn open_append(path: &Path) -> Result<BufWriter<File>> {
@@ -543,6 +617,7 @@ pub struct ShadowReport {
     pub schema_version: u16,
     pub archive_path: PathBuf,
     pub archive_bytes: u64,
+    pub ignored_incomplete_tail_bytes: u64,
     pub records: u64,
     pub decision_records: u64,
     pub health_records: u64,
@@ -561,112 +636,133 @@ pub struct ShadowReport {
     pub tail_samples: Vec<TailSample>,
     pub gap_records: u64,
     pub dropped_events: u64,
+    pub ignored_gap_tail_bytes: u64,
     pub replayed_without_mismatch: bool,
 }
 
 pub fn replay_archive(path: impl AsRef<Path>, gap_path: impl AsRef<Path>) -> Result<ShadowReport> {
     let path = path.as_ref();
-    let mut records = read_records(path)?;
-    records.sort_by(|left, right| {
-        left.event
-            .observed_at_ms()
-            .cmp(&right.event.observed_at_ms())
-            .then_with(|| left.run_id.cmp(&right.run_id))
-            .then_with(|| left.ordinal.cmp(&right.ordinal))
-    });
     let mut profits = Vec::new();
     let mut tails = Vec::new();
     let mut rejection_reason_counts = BTreeMap::new();
     let mut reconnects = BTreeMap::new();
     let mut run_reconnects = BTreeMap::new();
+    let mut run_ordinals = BTreeMap::new();
     let mut capacities = Vec::new();
+    let mut records = 0_u64;
     let mut decision_records = 0_u64;
     let mut health_records = 0_u64;
     let mut accepted_opportunities = 0_u64;
     let mut positive_net_opportunities = 0_u64;
     let mut invalid_duration_ms = 0_u64;
+    let mut first_event_at_ms = None;
+    let mut last_event_at_ms = None;
+    let mut previous_invalid = false;
 
-    for (index, record) in records.iter().enumerate() {
-        if record.schema_version != SCHEMA_VERSION {
-            bail!(
-                "unsupported archive schema {} in {}",
-                record.schema_version,
-                record.event_id
-            );
-        }
-        for feed in record.event.feeds() {
-            run_reconnects
-                .entry((record.run_id.clone(), feed.venue.clone()))
-                .and_modify(|count: &mut u64| *count = (*count).max(feed.reconnects))
-                .or_insert(feed.reconnects);
-        }
-        let interval_ms = records.get(index + 1).map_or(0, |next| {
-            next.event
-                .observed_at_ms()
-                .saturating_sub(record.event.observed_at_ms())
-        });
-        if matches!(&record.event, ArchivedEvent::Health(_))
-            || record
-                .event
-                .feeds()
-                .iter()
-                .any(|feed| feed.state != BookState::Valid)
-        {
-            invalid_duration_ms = invalid_duration_ms.saturating_add(interval_ms);
-        }
-        match &record.event {
-            ArchivedEvent::Decision(event) => {
-                decision_records += 1;
-                let replayed = event
-                    .replay()
-                    .with_context(|| format!("failed to replay {}", record.event_id))?;
-                if replayed != event.report {
-                    bail!("replay mismatch for {}", record.event_id);
-                }
-                capacities.extend(visible_direction_capacities(&event.books));
-                for opportunity in &event.report.directions {
-                    profits.push(opportunity.expected_net_profit);
-                    if opportunity.expected_net_profit > Decimal::ZERO {
-                        positive_net_opportunities += 1;
-                    }
-                    if opportunity.accepted {
-                        accepted_opportunities += 1;
-                    }
-                    for reason in &opportunity.rejection_reasons {
-                        *rejection_reason_counts.entry(reason.clone()).or_default() += 1;
-                    }
-                    tails.push(TailSample {
-                        event_id: record.event_id.clone(),
-                        buy_venue: opportunity.buy_venue.clone(),
-                        sell_venue: opportunity.sell_venue.clone(),
-                        admission_profit: opportunity.admission_profit,
-                        admission_net_bps: opportunity.admission_net_bps,
-                    });
-                }
+    let snapshot =
+        for_each_snapshot_record(path, "archive record", false, |record: ArchiveRecord| {
+            if record.schema_version != SCHEMA_VERSION {
+                bail!(
+                    "unsupported archive schema {} in {}",
+                    record.schema_version,
+                    record.event_id
+                );
             }
-            ArchivedEvent::Health(_) => health_records += 1,
-        }
-    }
+            let observed_at_ms = record.event.observed_at_ms();
+            if let Some(previous_at_ms) = last_event_at_ms {
+                if observed_at_ms < previous_at_ms {
+                    bail!(
+                        "archive event time moved backward at {}: {} < {}",
+                        record.event_id,
+                        observed_at_ms,
+                        previous_at_ms
+                    );
+                }
+                if previous_invalid {
+                    invalid_duration_ms = invalid_duration_ms
+                        .saturating_add(observed_at_ms.saturating_sub(previous_at_ms));
+                }
+            } else {
+                first_event_at_ms = Some(observed_at_ms);
+            }
+            let previous_ordinal = run_ordinals.entry(record.run_id.clone()).or_insert(0_u64);
+            if record.ordinal <= *previous_ordinal {
+                bail!(
+                    "archive ordinal is not increasing for run {} at {}",
+                    record.run_id,
+                    record.event_id
+                );
+            }
+            *previous_ordinal = record.ordinal;
+            previous_invalid = matches!(&record.event, ArchivedEvent::Health(_))
+                || record
+                    .event
+                    .feeds()
+                    .iter()
+                    .any(|feed| feed.state != BookState::Valid);
+            last_event_at_ms = Some(observed_at_ms);
+            records += 1;
+
+            for feed in record.event.feeds() {
+                run_reconnects
+                    .entry((record.run_id.clone(), feed.venue.clone()))
+                    .and_modify(|count: &mut u64| *count = (*count).max(feed.reconnects))
+                    .or_insert(feed.reconnects);
+            }
+            match &record.event {
+                ArchivedEvent::Decision(event) => {
+                    decision_records += 1;
+                    let replayed = event
+                        .replay()
+                        .with_context(|| format!("failed to replay {}", record.event_id))?;
+                    if replayed != event.report {
+                        bail!("replay mismatch for {}", record.event_id);
+                    }
+                    capacities.extend(visible_direction_capacities(&event.books));
+                    for opportunity in &event.report.directions {
+                        profits.push(opportunity.expected_net_profit);
+                        if opportunity.expected_net_profit > Decimal::ZERO {
+                            positive_net_opportunities += 1;
+                        }
+                        if opportunity.accepted {
+                            accepted_opportunities += 1;
+                        }
+                        for reason in &opportunity.rejection_reasons {
+                            increment_rejection_count(&mut rejection_reason_counts, reason);
+                        }
+                        tails.push(TailSample {
+                            event_id: record.event_id.clone(),
+                            buy_venue: opportunity.buy_venue.clone(),
+                            sell_venue: opportunity.sell_venue.clone(),
+                            admission_profit: opportunity.admission_profit,
+                            admission_net_bps: opportunity.admission_net_bps,
+                        });
+                        tails.sort_by_key(|sample| sample.admission_profit);
+                        tails.truncate(TAIL_SAMPLE_LIMIT);
+                    }
+                }
+                ArchivedEvent::Health(_) => health_records += 1,
+            }
+            Ok(())
+        })?;
+
     profits.sort();
-    tails.sort_by_key(|sample| sample.admission_profit);
-    tails.truncate(TAIL_SAMPLE_LIMIT);
     capacities.sort();
     let visible_capacity = capacity_distribution(&capacities);
     for ((_, venue), count) in run_reconnects {
         *reconnects.entry(venue).or_default() += count;
     }
     let distribution = distribution(&profits);
-    let first_event_at_ms = records.first().map(|record| record.event.observed_at_ms());
-    let last_event_at_ms = records.last().map(|record| record.event.observed_at_ms());
     let observed_duration_ms = first_event_at_ms
         .zip(last_event_at_ms)
         .map_or(0, |(first, last)| last.saturating_sub(first));
-    let (gap_records, dropped_events) = read_gap_totals(gap_path.as_ref())?;
+    let (gap_records, dropped_events, gap_snapshot) = read_gap_totals(gap_path.as_ref())?;
     Ok(ShadowReport {
         schema_version: SCHEMA_VERSION,
         archive_path: path.to_owned(),
-        archive_bytes: fs::metadata(path)?.len(),
-        records: records.len() as u64,
+        archive_bytes: snapshot.bytes,
+        ignored_incomplete_tail_bytes: snapshot.ignored_tail_bytes,
+        records,
         decision_records,
         health_records,
         first_event_at_ms,
@@ -684,49 +780,143 @@ pub fn replay_archive(path: impl AsRef<Path>, gap_path: impl AsRef<Path>) -> Res
         tail_samples: tails,
         gap_records,
         dropped_events,
+        ignored_gap_tail_bytes: gap_snapshot.ignored_tail_bytes,
         replayed_without_mismatch: true,
     })
 }
 
-fn read_records(path: &Path) -> Result<Vec<ArchiveRecord>> {
-    let file =
-        File::open(path).with_context(|| format!("failed to open archive {}", path.display()))?;
-    let mut records = Vec::new();
-    for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.with_context(|| format!("failed to read archive line {}", index + 1))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        records.push(
-            serde_json::from_str(&line)
-                .with_context(|| format!("invalid archive record at line {}", index + 1))?,
-        );
-    }
-    Ok(records)
+#[derive(Debug, Default)]
+struct SnapshotRead {
+    bytes: u64,
+    ignored_tail_bytes: u64,
 }
 
-fn read_gap_totals(path: &Path) -> Result<(u64, u64)> {
+fn for_each_snapshot_record<T, F>(
+    path: &Path,
+    label: &str,
+    missing_is_empty: bool,
+    mut visit: F,
+) -> Result<SnapshotRead>
+where
+    T: for<'de> Deserialize<'de>,
+    F: FnMut(T) -> Result<()>,
+{
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(error) if missing_is_empty && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SnapshotRead::default());
+        }
         Err(error) => {
             return Err(error)
-                .with_context(|| format!("failed to open gap journal {}", path.display()));
+                .with_context(|| format!("failed to open {} {}", label, path.display()));
         }
     };
-    let mut records = 0_u64;
-    let mut dropped = 0_u64;
-    for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.with_context(|| format!("failed to read gap line {}", index + 1))?;
-        if line.trim().is_empty() {
+    let bytes = file
+        .metadata()
+        .with_context(|| format!("failed to inspect {} {}", label, path.display()))?
+        .len();
+    let mut reader = BufReader::new(file.take(bytes));
+    let mut line = Vec::new();
+    let mut line_number = 0_usize;
+    let mut ignored_tail_bytes = 0_u64;
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .with_context(|| format!("failed to read {} line {}", label, line_number + 1))?;
+        if read == 0 {
+            break;
+        }
+        line_number += 1;
+        if !line.ends_with(b"\n") {
+            ignored_tail_bytes = read as u64;
+            break;
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let gap: ArchiveGap = serde_json::from_str(&line)
-            .with_context(|| format!("invalid archive gap at line {}", index + 1))?;
+        let record = serde_json::from_slice(&line)
+            .with_context(|| format!("invalid {} at line {}", label, line_number))?;
+        visit(record)?;
+    }
+    Ok(SnapshotRead {
+        bytes,
+        ignored_tail_bytes,
+    })
+}
+
+fn increment_rejection_count(counts: &mut BTreeMap<String, u64>, reason: &str) {
+    *counts.entry(rejection_reason_category(reason)).or_default() += 1;
+}
+
+fn rejection_reason_category(reason: &str) -> String {
+    for (prefix, category) in [
+        ("admission profit ", "admission_profit_below_minimum"),
+        ("admission net bps ", "admission_net_bps_below_minimum"),
+        ("first snapshot age ", "first_snapshot_stale"),
+        ("second snapshot age ", "second_snapshot_stale"),
+        ("snapshot receive skew ", "snapshot_receive_skew"),
+    ] {
+        if reason.starts_with(prefix) {
+            return category.to_owned();
+        }
+    }
+    for venue in ["binance", "bybit"] {
+        let Some(detail) = reason
+            .strip_prefix(venue)
+            .and_then(|remaining| remaining.strip_prefix(' '))
+        else {
+            continue;
+        };
+        let category = if detail.starts_with("account metadata refresh failed:") {
+            "account_metadata_refresh_failed"
+        } else if detail.starts_with("API key has forbidden permissions:") {
+            "forbidden_api_permissions"
+        } else if detail.contains(" quantity ") || detail.starts_with("quantity ") {
+            "quantity_filter"
+        } else if detail.contains(" notional ") || detail.starts_with("notional ") {
+            "notional_filter"
+        } else if detail == "region eligibility is not confirmed" {
+            "region_eligibility_unconfirmed"
+        } else if detail == "account eligibility is not confirmed" {
+            "account_eligibility_unconfirmed"
+        } else if detail == "read-only credentials are not configured" {
+            "credentials_not_configured"
+        } else if detail
+            == "actual account fee unavailable; configured fallback is observation-only"
+        {
+            "actual_fee_unavailable"
+        } else if detail == "actual account fee is expired" {
+            "actual_fee_expired"
+        } else if detail == "API key is not read-only" {
+            "api_key_not_read_only"
+        } else if detail == "API key has forbidden withdrawal permission" {
+            "forbidden_withdrawal_permission"
+        } else {
+            return "other_rejection_reason".to_owned();
+        };
+        return format!("{venue}:{category}");
+    }
+    "other_rejection_reason".to_owned()
+}
+
+#[cfg(test)]
+fn rejection_counts(reasons: impl IntoIterator<Item = String>) -> BTreeMap<String, u64> {
+    let mut counts = BTreeMap::new();
+    for reason in reasons {
+        increment_rejection_count(&mut counts, &reason);
+    }
+    counts
+}
+fn read_gap_totals(path: &Path) -> Result<(u64, u64, SnapshotRead)> {
+    let mut records = 0_u64;
+    let mut dropped = 0_u64;
+    let snapshot = for_each_snapshot_record(path, "archive gap", true, |gap: ArchiveGap| {
         records += 1;
         dropped = dropped.saturating_add(gap.dropped_events);
-    }
-    Ok((records, dropped))
+        Ok(())
+    })?;
+    Ok((records, dropped, snapshot))
 }
 
 fn distribution(sorted: &[Decimal]) -> Option<ProfitDistribution> {
@@ -1050,7 +1240,130 @@ mod tests {
             .unwrap();
         writer.finish().unwrap();
 
-        assert_eq!(read_gap_totals(&gaps).unwrap(), (1, 1));
+        assert_eq!(read_gap_totals(&gaps).unwrap().0, 1);
+        assert_eq!(read_gap_totals(&gaps).unwrap().1, 1);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_uses_complete_snapshot_while_last_line_is_still_being_written() {
+        let (root, archive, gaps) = temp_paths("archive-live-tail");
+        let record = ArchiveRecord::new(
+            "live",
+            1,
+            30,
+            ArchivedEvent::Decision(Box::new(decision(1_000, [0, 0]))),
+        )
+        .unwrap();
+        fs::write(
+            &archive,
+            format!("{}\n{{\"partial\"", serde_json::to_string(&record).unwrap()),
+        )
+        .unwrap();
+
+        let report = replay_archive(&archive, &gaps).unwrap();
+        assert_eq!(report.records, 1);
+        assert_eq!(report.ignored_incomplete_tail_bytes, 10);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_repairs_incomplete_tail_and_audits_discarded_bytes() {
+        let (root, archive, gaps) = temp_paths("archive-tail-repair");
+        let first = ArchiveRecord::new(
+            "before-crash",
+            1,
+            30,
+            ArchivedEvent::Decision(Box::new(decision(1_000, [0, 0]))),
+        )
+        .unwrap();
+        fs::write(
+            &archive,
+            format!("{}\npartial", serde_json::to_string(&first).unwrap()),
+        )
+        .unwrap();
+
+        let mut writer = ArchiveWriter::start(&archive, &gaps, 8, 30).unwrap();
+        writer
+            .submit(ArchivedEvent::Decision(Box::new(decision(1_100, [0, 0]))))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let report = replay_archive(&archive, &gaps).unwrap();
+        assert_eq!(report.records, 2);
+        assert_eq!(report.ignored_incomplete_tail_bytes, 0);
+        assert_eq!((report.gap_records, report.dropped_events), (1, 0));
+        let gap_text = fs::read_to_string(&gaps).unwrap();
+        assert!(gap_text.contains("discarded 7 incomplete bytes from archive"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_rejects_newline_terminated_corruption() {
+        let (root, archive, gaps) = temp_paths("archive-corrupt-line");
+        fs::write(&archive, "not-json\n").unwrap();
+
+        let error = replay_archive(&archive, &gaps).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid archive record at line 1")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_rejects_event_time_regression() {
+        let (root, archive, gaps) = temp_paths("archive-time-regression");
+        let records = [
+            ArchiveRecord::new(
+                "ordered",
+                1,
+                30,
+                ArchivedEvent::Decision(Box::new(decision(1_100, [0, 0]))),
+            )
+            .unwrap(),
+            ArchiveRecord::new(
+                "ordered",
+                2,
+                30,
+                ArchivedEvent::Decision(Box::new(decision(1_000, [0, 0]))),
+            )
+            .unwrap(),
+        ];
+        fs::write(
+            &archive,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let error = replay_archive(&archive, &gaps).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("archive event time moved backward")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejection_report_normalizes_dynamic_errors_and_bounds_unknown_categories() {
+        let reasons = (0..200)
+            .map(|index| format!("unknown dynamic rejection {index}"))
+            .chain([
+                "binance account metadata refresh failed: HTTP 429 request 1".to_owned(),
+                "binance account metadata refresh failed: HTTP 500 request 2".to_owned(),
+            ]);
+
+        let counts = rejection_counts(reasons);
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts.get("other_rejection_reason"), Some(&200));
+        assert_eq!(
+            counts.get("binance:account_metadata_refresh_failed"),
+            Some(&2)
+        );
     }
 }
