@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::StrategyConfig,
@@ -10,7 +10,7 @@ use crate::{
 
 const BPS_DENOMINATOR: i64 = 10_000;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ScanReport {
     pub symbol: String,
     pub quantity: Decimal,
@@ -19,7 +19,7 @@ pub struct ScanReport {
     pub directions: Vec<Opportunity>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Opportunity {
     pub buy_venue: String,
     pub sell_venue: String,
@@ -54,7 +54,7 @@ pub struct VenueFees {
     pub second: VenueFeeRates,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub struct FreshnessLimits {
     pub max_snapshot_age_ms: u64,
     pub max_pair_skew_ms: u64,

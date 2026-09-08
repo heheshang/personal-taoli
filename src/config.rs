@@ -1,8 +1,12 @@
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ObserverConfig {
@@ -20,6 +24,7 @@ pub struct ObserverConfig {
     pub account_refresh_interval_ms: u64,
     pub max_fee_age_ms: u64,
     pub auth_recv_window_ms: u64,
+    pub archive: ArchiveConfig,
     pub binance: VenueConfig,
     pub bybit: VenueConfig,
     pub strategy: StrategyConfig,
@@ -36,7 +41,7 @@ pub struct VenueConfig {
     pub account_eligible_confirmed: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct StrategyConfig {
     pub min_net_profit: Decimal,
     pub min_net_bps: Decimal,
@@ -44,6 +49,13 @@ pub struct StrategyConfig {
     pub risk_buffer_bps: Decimal,
     pub rebalance_cost: Decimal,
     pub other_direct_cost: Decimal,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArchiveConfig {
+    pub path: PathBuf,
+    pub queue_capacity: usize,
+    pub raw_retention_days: u16,
 }
 
 impl ObserverConfig {
@@ -107,6 +119,15 @@ impl ObserverConfig {
         const SHARED_STREAM_DEPTHS: [u16; 3] = [50, 200, 1000];
         if !SHARED_STREAM_DEPTHS.contains(&self.orderbook_depth) {
             bail!("orderbook_depth must be one of 50, 200, 1000");
+        }
+        if self.archive.path.as_os_str().is_empty() {
+            bail!("archive.path must not be empty");
+        }
+        if self.archive.queue_capacity == 0 {
+            bail!("archive.queue_capacity must be positive");
+        }
+        if self.archive.raw_retention_days == 0 {
+            bail!("archive.raw_retention_days must be positive");
         }
         validate_venue("binance", &self.binance)?;
         validate_venue("bybit", &self.bybit)?;

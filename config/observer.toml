@@ -13,6 +13,11 @@ account_refresh_interval_ms = 300000
 max_fee_age_ms = 900000
 auth_recv_window_ms = 5000
 
+[archive]
+path = "data/archive/observations.ndjson"
+queue_capacity = 1024
+raw_retention_days = 30
+
 [binance]
 base_url = "https://api.binance.com"
 websocket_url = "wss://stream.binance.com:9443"

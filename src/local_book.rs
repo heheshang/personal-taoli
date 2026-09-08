@@ -2,12 +2,12 @@ use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
 
 use anyhow::{Result, bail};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 
 use crate::market::{Level, OrderBookSnapshot};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum BookState {
     Syncing,

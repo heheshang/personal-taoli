@@ -4,6 +4,10 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use personal_taoli::{
     account::{AccountData, load_account_data},
+    archive::{
+        ArchiveWriter, ArchivedEvent, DecisionEvent, HealthEvent, ShadowReport, default_gap_path,
+        replay_archive,
+    },
     config::ObserverConfig,
     instrument::{InstrumentSpec, validate_pair},
     local_book::{BookFeed, BookFeedStatus, BookState},
@@ -22,20 +26,33 @@ use tokio::time::{MissedTickBehavior, interval, timeout};
 struct Cli {
     #[arg(short, long, default_value = "config/observer.toml")]
     config: PathBuf,
-    #[arg(long, help = "Wait for live books and scan exactly once")]
+    #[arg(long, conflicts_with_all = ["reconnect_smoke", "account_check", "replay"], help = "Wait for live books, archive one decision, then exit")]
     once: bool,
     #[arg(
         long,
-        conflicts_with = "once",
+        conflicts_with_all = ["once", "account_check", "replay"],
         help = "Force both live feeds to reconnect, verify recovery, then exit"
     )]
     reconnect_smoke: bool,
     #[arg(
         long,
-        conflicts_with_all = ["once", "reconnect_smoke"],
+        conflicts_with_all = ["once", "reconnect_smoke", "replay"],
         help = "Load and print capability, permission and account fee metadata, then exit"
     )]
     account_check: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Override the configured append-only observation archive"
+    )]
+    archive: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "archive"],
+        help = "Replay an archive deterministically and print its shadow report"
+    )]
+    replay: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
 }
@@ -49,7 +66,17 @@ enum OutputFormat {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(path) = &cli.replay {
+        let report = replay_archive(path, default_gap_path(path))?;
+        print_shadow_report(&report, cli.output)?;
+        return Ok(());
+    }
     let config = ObserverConfig::load(&cli.config)?;
+    let archive_path = cli
+        .archive
+        .clone()
+        .unwrap_or_else(|| config.archive.path.clone());
+    let gap_path = default_gap_path(&archive_path);
     let client = Client::builder()
         .timeout(config.http_timeout())
         .user_agent(concat!("personal-taoli/", env!("CARGO_PKG_VERSION")))
@@ -122,7 +149,13 @@ async fn main() -> Result<()> {
     }
 
     if cli.once {
-        let report = scan_current(
+        let mut archive = ArchiveWriter::start(
+            &archive_path,
+            &gap_path,
+            config.archive.queue_capacity,
+            config.archive.raw_retention_days,
+        )?;
+        let event = scan_current(
             &config,
             &binance_feed.status(),
             &bybit_feed.status(),
@@ -130,13 +163,28 @@ async fn main() -> Result<()> {
             &bybit_instrument,
             &accounts,
         )?;
-        print_report(&report, &accounts, cli.output)?;
+        print_report(&event.report, &accounts, cli.output)?;
+        submit_archive(&mut archive, ArchivedEvent::Decision(Box::new(event)));
+        if let Err(error) = archive.finish() {
+            eprintln!("archive shutdown failed: {error:#}");
+        }
         return Ok(());
     }
 
     eprintln!(
         "OBSERVE mode: symbol={} quantity={} {} (live public feeds, optional read-only account metadata, no orders)",
         config.symbol, config.quantity, config.base_asset
+    );
+    let mut archive = ArchiveWriter::start(
+        &archive_path,
+        &gap_path,
+        config.archive.queue_capacity,
+        config.archive.raw_retention_days,
+    )?;
+    eprintln!(
+        "ARCHIVE path={} gaps={}",
+        archive_path.display(),
+        gap_path.display()
     );
     let mut ticker = interval(config.poll_interval());
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -156,8 +204,21 @@ async fn main() -> Result<()> {
                     &bybit_instrument,
                     &accounts,
                 ) {
-                    Ok(report) => print_report(&report, &accounts, cli.output)?,
-                    Err(error) => eprintln!("scan skipped: {error:#}"),
+                    Ok(event) => {
+                        print_report(&event.report, &accounts, cli.output)?;
+                        submit_archive(&mut archive, ArchivedEvent::Decision(Box::new(event)));
+                    }
+                    Err(error) => {
+                        eprintln!("scan skipped: {error:#}");
+                        submit_archive(
+                            &mut archive,
+                            ArchivedEvent::Health(Box::new(HealthEvent {
+                                observed_at_ms: unix_timestamp_ms().unwrap_or(u64::MAX),
+                                feeds: [(&binance_status).into(), (&bybit_status).into()],
+                                skip_reason: format!("{error:#}"),
+                            })),
+                        );
+                    }
                 }
             }
             _ = account_ticker.tick() => {
@@ -176,6 +237,9 @@ async fn main() -> Result<()> {
                 break;
             }
         }
+    }
+    if let Err(error) = archive.finish() {
+        eprintln!("archive shutdown failed: {error:#}");
     }
     Ok(())
 }
@@ -269,7 +333,7 @@ fn scan_current(
     first_instrument: &InstrumentSpec,
     second_instrument: &InstrumentSpec,
     accounts: &[AccountData; 2],
-) -> Result<ScanReport> {
+) -> Result<DecisionEvent> {
     if first_status.state != BookState::Valid || second_status.state != BookState::Valid {
         bail!(
             "live books unavailable: {}={} ({}) {}={} ({})",
@@ -290,8 +354,11 @@ fn scan_current(
         .as_deref()
         .context("second VALID feed omitted its snapshot")?;
     let now_ms = unix_timestamp_ms()?;
-
-    scan_pair(ScanInput {
+    let admission_rejections = accounts
+        .iter()
+        .flat_map(|account| account.admission_rejections(now_ms))
+        .collect::<Vec<_>>();
+    let report = scan_pair(ScanInput {
         first_book,
         second_book,
         instruments: InstrumentPair {
@@ -315,11 +382,23 @@ fn scan_current(
             max_snapshot_age_ms: config.max_snapshot_age_ms,
             max_pair_skew_ms: config.max_pair_skew_ms,
         },
-        admission_rejections: &accounts
-            .iter()
-            .flat_map(|account| account.admission_rejections(now_ms))
-            .collect::<Vec<_>>(),
-    })
+        admission_rejections: &admission_rejections,
+    })?;
+    DecisionEvent::capture(
+        config,
+        [first_status, second_status],
+        [first_instrument, second_instrument],
+        accounts,
+        now_ms,
+        admission_rejections,
+        report,
+    )
+}
+
+fn submit_archive(archive: &mut ArchiveWriter, event: ArchivedEvent) {
+    if let Err(error) = archive.submit(event) {
+        eprintln!("archive submit failed; observation continues: {error:#}");
+    }
 }
 
 fn state_name(state: BookState) -> &'static str {
@@ -389,6 +468,43 @@ fn print_report(
                 for reason in &opportunity.rejection_reasons {
                     println!("    - {reason}");
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_shadow_report(report: &ShadowReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string(report)?),
+        OutputFormat::Text => {
+            println!(
+                "REPLAY_OK records={} decisions={} health={} duration={}ms online={}ms invalid={}ms positive_net={} accepted={} gaps={} dropped={} bytes={}",
+                report.records,
+                report.decision_records,
+                report.health_records,
+                report.observed_duration_ms,
+                report.online_duration_ms,
+                report.invalid_duration_ms,
+                report.positive_net_opportunities,
+                report.accepted_opportunities,
+                report.gap_records,
+                report.dropped_events,
+                report.archive_bytes,
+            );
+            println!("  reconnects={:?}", report.reconnects);
+            println!("  net_profit={:?}", report.net_profit_distribution);
+            println!("  visible_capacity={:?}", report.visible_capacity);
+            println!("  rejection_reasons={:?}", report.rejection_reason_counts);
+            for sample in &report.tail_samples {
+                println!(
+                    "  tail event={} buy={} sell={} admission={} bps={}",
+                    sample.event_id,
+                    sample.buy_venue,
+                    sample.sell_venue,
+                    sample.admission_profit,
+                    sample.admission_net_bps,
+                );
             }
         }
     }
