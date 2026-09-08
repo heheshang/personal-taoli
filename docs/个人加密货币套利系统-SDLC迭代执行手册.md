@@ -159,21 +159,35 @@ cargo run --release -- --reconnect-smoke
 
 已于 2026-09-08 发布。范围、追踪矩阵和验证证据见第 5 章。
 
+本轮独立产物：
+
+- [需求文档](A-03-WebSocket本地订单簿-需求.md)
+- [设计文档](A-03-WebSocket本地订单簿-设计.md)
+- [任务文档](A-03-WebSocket本地订单簿-任务.md)
+
 ### A-04 能力卡与账户实际费率（released）
 
 已于 2026-09-08 发布。目标是把“交易所支持什么”和“该账户实际成本是多少”转为带来源、版本和有效期的数据；明确不包含真实交易权限和下单。
+
+本轮独立产物：
+
+- [需求文档](A-04-账户能力与实际费率-需求.md)
+- [设计文档](A-04-账户能力与实际费率-设计.md)
+- [任务文档](A-04-账户能力与实际费率-任务.md)
 
 #### A-04 需求追踪矩阵
 
 | 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|
 | A04-R01 | 两所能力卡覆盖资格确认、订单恢复、限频、client order ID、IOC/FOK、费用币种和历史窗口 | `src/account.rs::capability_card` | `--account-check --output json` 输出完整卡片及官方来源 | released |
-| A04-R02 | 凭证仅从配置指定的环境变量读取，缺失或半配置时失败关闭，不写入配置与日志 | `src/account.rs::Credentials`, `config/observer.toml` | 缺失凭证真实 CLI 烟测；半配置与错误脱敏用例 | released |
-| A04-R03 | Binance 与 Bybit 请求按各自协议签名并解析只读权限；交易或提现权限不得通过准入 | `src/account.rs::{binance_permissions,bybit_permissions}` | 官方 Binance HMAC 向量；两所本地 HTTP 请求头、查询签名和响应契约用例 | released |
-| A04-R04 | 两所账户 taker 费率动态加载，记录来源、加载时间和有效期；不可用或过期时只观察 | `src/account.rs::{binance_fee,bybit_fee}`, `src/main.rs` | 费率解析、过期边界和无凭证失败关闭用例 | released |
-| A04-R05 | 同一盘口使用不同费率会改变净收益和准入拒绝原因 | `src/scan.rs` | `fee_change_can_flip_admission_for_the_same_books` | released |
-| A04-R06 | 输出不包含 key、secret、签名、完整请求头或账户敏感响应 | `src/account.rs` | 签名传输失败与响应解析失败脱敏用例 | released |
-| A04-R07 | 单次和持续扫描使用账户费率；持续模式按间隔刷新，任一账户元数据失效均拒绝两向 | `src/main.rs::scan_current` | 真实公共双向扫描输出账户版本及逐向拒绝原因 | released |
+| A04-R02 | 未配置或只配置一半凭证时不发私有请求，使用配置回退费率并明确标记 observation-only | `src/account.rs::{Credentials,fallback_account}` | 缺失和半配置凭证用例；无凭证真实账户检查 | released |
+| A04-R03 | Binance 只在读取已启用且交易、提现、转账及衍生品危险 scope 全部关闭时判为只读 | `src/account.rs::binance_permissions` | 本地 HTTP 权限响应夹具 | released |
+| A04-R04 | Bybit 按 `readOnly` 判定，并在提现权限存在时额外拒绝 | `src/account.rs::bybit_permissions` | 本地 HTTP 权限响应夹具 | released |
+| A04-R05 | 两所请求按各自协议签名并加载账户实际 taker 费率；非法费率失败关闭，不同费率改变净收益 | `src/account.rs::{binance_get,bybit_get,binance_fee,bybit_fee}`, `src/scan.rs` | 官方 Binance HMAC 向量；两所请求/响应夹具；`fee_change_can_flip_admission_for_the_same_books` | released |
+| A04-R06 | 实际费率记录 symbol、来源、加载和过期时间；不可用或过期时只观察 | `src/account.rs::{FeeSchedule,AccountData::admission_rejections}` | 费率解析、回退和过期边界用例 | released |
+| A04-R07 | 两所账户加载互不阻塞；单所失败保留另一所结果，失败侧回退并拒绝准入 | `src/account.rs::{load_account_data,load_venue}` | 并行加载与错误归一化行为检查 | released |
+| A04-R08 | 账户检查独立输出元数据；单次和持续扫描使用账户费率，持续模式按间隔刷新 | `src/main.rs` | 真实账户检查与公共双向扫描；持续刷新编排检查 | released |
+| A04-R09 | key、secret、签名和完整认证请求头不进入序列化输出或归档 | `src/account.rs`, `src/main.rs` | `Zeroizing` 类型边界、错误脱敏和真实 CLI 输出检查 | released |
 
 #### A-04 已验证结果
 
