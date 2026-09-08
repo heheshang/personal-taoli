@@ -9,9 +9,16 @@ use super::{dto::PaperSmokeResult, support::api_error};
 
 #[tauri::command]
 pub async fn run_paper_smoke(kind: String) -> ApiResponse<PaperSmokeResult> {
-    let database_url = match env::var("TAOLI_DATABASE_URL") {
-        Ok(value) if !value.trim().is_empty() => value,
-        Ok(_) | Err(_) => {
+    run_paper_smoke_with_database_url(kind, env::var("TAOLI_DATABASE_URL").ok()).await
+}
+
+async fn run_paper_smoke_with_database_url(
+    kind: String,
+    database_url: Option<String>,
+) -> ApiResponse<PaperSmokeResult> {
+    let database_url = match database_url {
+        Some(value) if !value.trim().is_empty() => value,
+        Some(_) | None => {
             return ApiResponse::fail(api_error(
                 ErrorCode::PaperError,
                 "TAOLI_DATABASE_URL is required for PAPER smoke tests; start PostgreSQL and launch the app with this environment variable set",
@@ -40,5 +47,28 @@ pub async fn run_paper_smoke(kind: String) -> ApiResponse<PaperSmokeResult> {
     match result {
         Ok(report) => ApiResponse::ok(report),
         Err(error) => ApiResponse::fail(api_error(ErrorCode::PaperError, error, false)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn paper_smoke_fails_closed_without_database_url() {
+        let response = run_paper_smoke_with_database_url("B01".to_owned(), None).await;
+
+        assert!(!response.success);
+        assert!(response.data.is_none());
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code),
+            Some(ErrorCode::PaperError)
+        );
+        assert!(
+            response
+                .error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("TAOLI_DATABASE_URL"))
+        );
     }
 }

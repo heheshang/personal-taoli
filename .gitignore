@@ -6,3 +6,6 @@
 /src-tauri/data/
 /data/
 /dist/*
+.env
+.env.*
+!.env.example
