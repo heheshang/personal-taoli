@@ -1,6 +1,7 @@
 pub mod account;
 pub mod archive;
 pub mod config;
+pub mod execution;
 pub mod instrument;
 pub mod local_book;
 pub mod market;

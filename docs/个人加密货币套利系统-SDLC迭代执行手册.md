@@ -276,9 +276,28 @@ B-02 于 2026-09-08 发布。范围限定为 PAPER/模拟适配器：提交、�
 
 该证据只证明 PAPER 数据库事实和无外部订单副作用，不证明真实交易所订单恢复、私有流或实盘安全；B-02 不解除 A-05 连续观察门槛，也不产生真实下单能力。
 
-### B-03 双腿执行与补偿风控
+### B-03 双腿执行与补偿风控（PAPER 已验证，发布受 A-05 门禁约束）
 
-实现受预算约束的双腿计划、部分成交、未匹配敞口区间和补偿决策。模拟适配器必须可确定性注入每个 P0 故障。超出补偿预算时升级人工接管，不伪造中性状态。
+实现受预算约束的双腿计划、部分成交、未匹配敞口和补偿决策。`execution_facts` 是当前快照，执行事件与补偿决定按计划版本不可变持久化；敞口/预算超限升级 `MANUAL_REQUIRED`，不伪造中性状态。当前实现只接受已持久化成交汇总，不发送订单或补偿交易；A-05 连续观察未完成前不得接入真实订单适配器。
+
+#### B-03 需求追踪矩阵
+
+| 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
+|---|---|---|---|---|
+| B03-R01–R03 | 部分成交、预算内补偿计划、后续匹配完成 | `src/execution.rs::ExecutionCore::evaluate` | `--double-leg-smoke` partial/matched 字段 | verified |
+| B03-R04–R05 | 敞口或补偿预算超限进入人工 | `src/execution.rs::ExecutionCore::evaluate` | `over_budget_manual_required=true` | verified |
+| B03-R06 | 成交单调性、目标数量和终态保护 | `src/execution.rs`、`0003_double_leg_execution.sql` | Rust 单元测试与数据库约束 | verified |
+| B03-R07 | 重启/断开后恢复人工状态与敞口事实 | `ExecutionCore::load` | `recovered_manual_state=true` | verified |
+| B03-R08–R09 | 域锁、数据库事实唯一版本、失败关闭 | `ExecutionCore::acquire`、migration | 编译、严格 Clippy、PAPER 烟测 | verified |
+
+#### B-03 已验证结果
+
+- `cargo fmt --check`：通过。
+- `cargo test`：45 项通过。
+- `cargo clippy --all-targets -- -D warnings`：通过，无警告。
+- `TAOLI_DATABASE_URL=postgresql://taoli:taoli@127.0.0.1:55432/taoli cargo run --release -- --double-leg-smoke --output json`：通过；`partial_fill_detected`、`within_budget_compensation_planned`、`matched_completion`、`over_budget_manual_required`、`recovered_manual_state` 均为 `true`，`external_order_calls=0`。
+
+该证据只证明 PAPER 数据库事实计算与无外部订单副作用，不证明真实订单状态、补偿成交、费用、账务或盈利能力；B-03 不解除 A-05 连续观察门槛。
 
 ### B-04 账务、对账与控制面
 
@@ -331,7 +350,7 @@ B-02 于 2026-09-08 发布。范围限定为 PAPER/模拟适配器：提交、�
 | A-04 | 2026-09-08 | 两所能力卡、环境变量只读签名客户端、账户费率版本、失效准入和账户检查 CLI | 30 项测试、严格 Clippy、签名 HTTP 夹具、真实公共双向扫描 | 只读；未使用真实账户凭证；无下单能力 |
 | A-05（实现与观察启动） | 2026-09-08 | 流式确定性回放、崩溃尾部修复、稳定拒绝类别、静默持续运行、SIGTERM 刷盘 | 38 项测试、严格 Clippy、在线归档回放、优雅停止与独立正式窗口 | 只读；14 天窗口运行中，最早 2026-09-22T09:52:14Z 评审；无下单能力 |
 | B-02 | 2026-09-08 | PAPER 订单事实、提交/查单/撤单 `UNKNOWN` 状态机、成交幂等和恢复烟测 | 44 项测试、严格 Clippy、临时 PostgreSQL `--order-facts-smoke`；拒绝/未知/调查/撤单竞态/去重/恢复均通过 | PAPER/模拟适配器；无真实或测试网订单 |
+| B-03（PAPER 已验证） | 2026-09-08 | 双腿执行事实、部分成交差额、预算内补偿计划、敞口/预算超限人工升级、匹配完成和恢复烟测 | 45 项测试、严格 Clippy、临时 PostgreSQL `--double-leg-smoke`；五项行为断言通过，`external_order_calls=0` | PAPER/模拟事实层；无真实或测试网订单；A-05 观察门禁仍有效 |
 
 ## 10. 下一轮唯一入口
-
-下一轮唯一入口仍为 **A-05 连续影子观察评审**。保持受管进程 `taoli-shadow-a05` 与独立归档持续运行；最早在 2026-09-22T09:52:14Z 核对完整 14 天窗口、真实重连和数据失效、独立机会数、净收益与容量分布、拒绝类别、尾部样本及缺口。未满足观察门槛前不得进入 B-03 或任何真实订单适配器，也不得把运行天数本身视为经济可行性证据。
+下一轮唯一入口仍为 **A-05 连续影子观察评审**；B-03 已完成 PAPER 验证但不提供订单能力。保持受管进程 `taoli-shadow-a05` 与独立归档持续运行；最早在 2026-09-22T09:52:14Z 核对完整 14 天窗口、真实重连和数据失效、独立机会数、净收益与容量分布、拒绝类别、尾部样本及缺口。A-05 门槛满足后，下一开发迭代才可经所有者批准进入 B-04 账务、对账与控制面；不得跳过 B-04 接入真实订单。

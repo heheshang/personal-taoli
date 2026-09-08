@@ -9,6 +9,7 @@ use personal_taoli::{
         replay_archive,
     },
     config::ObserverConfig,
+    execution::{DoubleLegSmokeReport, run_double_leg_smoke},
     instrument::{InstrumentSpec, validate_pair},
     local_book::{BookFeed, BookFeedStatus, BookState},
     market::unix_timestamp_ms,
@@ -51,8 +52,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "PATH",
-        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "paper_core_smoke", "order_facts_smoke"],
-        help = "Replay an archive deterministically and print its shadow report"
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "paper_core_smoke", "order_facts_smoke", "double_leg_smoke"],
     )]
     replay: Option<PathBuf>,
     #[arg(
@@ -63,16 +63,22 @@ struct Cli {
     quiet: bool,
     #[arg(
         long,
-        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "archive", "quiet", "order_facts_smoke"],
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "archive", "quiet", "order_facts_smoke", "double_leg_smoke"],
         help = "Verify B-01 PAPER reservation, recovery and single-writer invariants"
     )]
     paper_core_smoke: bool,
     #[arg(
         long,
-        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "archive", "quiet", "paper_core_smoke"],
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "archive", "quiet", "paper_core_smoke", "double_leg_smoke"],
         help = "Verify B-02 order facts and UNKNOWN transitions against PostgreSQL without order calls"
     )]
     order_facts_smoke: bool,
+    #[arg(
+        long,
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "archive", "quiet", "paper_core_smoke", "order_facts_smoke"],
+        help = "Verify B-03 double-leg compensation decisions against PostgreSQL without order calls"
+    )]
+    double_leg_smoke: bool,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
 }
@@ -96,6 +102,13 @@ async fn main() -> Result<()> {
             .context("TAOLI_DATABASE_URL is required for --order-facts-smoke")?;
         let report = run_order_facts_smoke(&database_url).await?;
         print_order_facts_smoke(&report, cli.output)?;
+        return Ok(());
+    }
+    if cli.double_leg_smoke {
+        let database_url = std::env::var("TAOLI_DATABASE_URL")
+            .context("TAOLI_DATABASE_URL is required for --double-leg-smoke")?;
+        let report = run_double_leg_smoke(&database_url).await?;
+        print_double_leg_smoke(&report, cli.output)?;
         return Ok(());
     }
     if cli.paper_core_smoke {
@@ -611,6 +624,23 @@ fn print_order_facts_smoke(report: &OrderFactsSmokeReport, format: OutputFormat)
             report.recovered_filled_quantity,
             report.recovered_submission_status,
             report.recovered_cancel_status,
+            report.external_order_calls,
+        ),
+    }
+    Ok(())
+}
+
+fn print_double_leg_smoke(report: &DoubleLegSmokeReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string(report)?),
+        OutputFormat::Text => println!(
+            "DOUBLE_LEG_OK schema={} partial_fill={} compensation_planned={} matched={} manual_required={} recovered_manual={} external_order_calls={}",
+            report.schema_version,
+            report.partial_fill_detected,
+            report.within_budget_compensation_planned,
+            report.matched_completion,
+            report.over_budget_manual_required,
+            report.recovered_manual_state,
             report.external_order_calls,
         ),
     }

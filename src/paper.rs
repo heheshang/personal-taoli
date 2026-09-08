@@ -10,10 +10,10 @@ use tokio_postgres::{Client, NoTls, Row, Transaction};
 
 use crate::market::unix_timestamp_ms;
 
-const SCHEMA_VERSION: i64 = 2;
-const B01_MIGRATION: &str = include_str!("../migrations/0001_b01_paper_core.sql");
-const B02_MIGRATION: &str = include_str!("../migrations/0002_b02_order_facts.sql");
-
+const SCHEMA_VERSION: i64 = 3;
+const B01_MIGRATION: &str = include_str!("../migrations/0001_paper_core.sql");
+const B02_MIGRATION: &str = include_str!("../migrations/0002_order_facts.sql");
+const B03_MIGRATION: &str = include_str!("../migrations/0003_double_leg_execution.sql");
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OrderSide {
@@ -153,6 +153,10 @@ pub async fn migrate(database_url: &str) -> Result<()> {
         .batch_execute(B02_MIGRATION)
         .await
         .context("failed to apply B-02 database migration")?;
+    client
+        .batch_execute(B03_MIGRATION)
+        .await
+        .context("failed to apply B-03 database migration")?;
     verify_schema(&client).await?;
     close_connection(client, connection).await;
     Ok(())
@@ -533,7 +537,7 @@ pub(crate) async fn close_connection(client: Client, connection: JoinHandle<()>)
 
 pub(crate) async fn verify_schema(client: &Client) -> Result<()> {
     let version: Option<i64> = client
-        .query_one("SELECT MAX(version) FROM b01_schema_migrations", &[])
+        .query_one("SELECT MAX(version) FROM schema_migrations", &[])
         .await
         .context("B-01 schema is not initialized")?
         .get(0);

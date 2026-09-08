@@ -1,4 +1,5 @@
-CREATE TABLE IF NOT EXISTS b01_schema_migrations (
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
     version BIGINT PRIMARY KEY,
     applied_at_ms BIGINT NOT NULL CHECK (applied_at_ms >= 0)
 );
@@ -94,6 +95,6 @@ CREATE TRIGGER audit_events_immutable
 BEFORE UPDATE OR DELETE ON audit_events
 FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation();
 
-INSERT INTO b01_schema_migrations(version, applied_at_ms)
+INSERT INTO schema_migrations(version, applied_at_ms)
 VALUES (1, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
 ON CONFLICT (version) DO NOTHING;

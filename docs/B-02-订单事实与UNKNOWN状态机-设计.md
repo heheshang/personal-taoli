@@ -8,13 +8,13 @@ B-02 在 B-01 `order_intents` 和 `NOT_SENT` 边界上增加独立订单事实�
 ## 2. 模块边界
 
 - `src/order.rs`：状态枚举、证据校验、PostgreSQL 事实写入、调查队列和确定性 PAPER 烟测。
-- `migrations/0002_b02_order_facts.sql`：订单事实、调查尝试、成交事实与状态约束。
+- `migrations/0002_order_facts.sql`：订单事实、调查尝试、成交事实与状态约束。
 - `src/main.rs`：`--order-facts-smoke` 运维入口；在创建 HTTP 客户端前返回。
 - `src/paper.rs`：保持 B-01 计划与资金预留语义；B-02 不把恢复等同于可发送。
 
 ## 3. 数据模型
 
-`order_facts` 以 `intent_id` 为主键，保存当前提交/撤单/对账状态、交易所 `order_id`、最近事实版本和最后错误。`order_attempts` 保存每次动作的请求摘要、动作类型、结果证据和时间。`trade_facts` 以 `(venue, order_id, trade_id)` 唯一，保存成交数量、价格、费用和来源序号。`order_investigations` 记录 UNKNOWN 的查询与可见性窗口。
+`order_facts` 以 `intent_id` 为主键，保存当前提交/撤单/对账状态、交易所 `order_id`、最近事实版本和最后错误。`order_action_facts` 保存每次动作的请求摘要、动作类型、结果证据和时间。`trade_facts` 以 `(venue, order_id, trade_id)` 唯一，保存成交数量、价格、费用和来源序号。`order_investigations` 记录 UNKNOWN 的查询与可见性窗口。
 
 所有金额和数量使用 PostgreSQL `NUMERIC` 与 Rust `Decimal`。成交插入和累计量更新必须在同一事务内；重复成交只增加调查/审计事实，不增加累计经济数量。
 
