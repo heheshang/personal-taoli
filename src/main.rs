@@ -3,14 +3,18 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use personal_taoli::{
+    account::{AccountData, load_account_data},
     config::ObserverConfig,
     instrument::{InstrumentSpec, validate_pair},
     local_book::{BookFeed, BookFeedStatus, BookState},
     market::unix_timestamp_ms,
-    scan::{FreshnessLimits, InstrumentPair, ScanInput, ScanReport, VenueFees, scan_pair},
+    scan::{
+        FreshnessLimits, InstrumentPair, ScanInput, ScanReport, VenueFeeRates, VenueFees, scan_pair,
+    },
     venues::{BinanceMarketData, BybitMarketData, MarketDataVenue},
 };
 use reqwest::Client;
+use serde::Serialize;
 use tokio::time::{MissedTickBehavior, interval, timeout};
 
 #[derive(Debug, Parser)]
@@ -26,6 +30,12 @@ struct Cli {
         help = "Force both live feeds to reconnect, verify recovery, then exit"
     )]
     reconnect_smoke: bool,
+    #[arg(
+        long,
+        conflicts_with_all = ["once", "reconnect_smoke"],
+        help = "Load and print capability, permission and account fee metadata, then exit"
+    )]
+    account_check: bool,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
 }
@@ -51,10 +61,23 @@ async fn main() -> Result<()> {
         &config.binance.websocket_url,
     )?);
     let bybit: Arc<dyn MarketDataVenue> = Arc::new(BybitMarketData::new(
-        client,
+        client.clone(),
         &config.bybit.base_url,
         &config.bybit.websocket_url,
     )?);
+    let mut accounts = load_account_data(
+        &client,
+        &config.symbol,
+        &config.binance,
+        &config.bybit,
+        config.auth_recv_window_ms,
+        config.max_fee_age_ms,
+    )
+    .await;
+    if cli.account_check {
+        print_accounts(&accounts, cli.output)?;
+        return Ok(());
+    }
     let (binance_instrument, bybit_instrument) = tokio::try_join!(
         binance.load_instrument(&config.symbol),
         bybit.load_instrument(&config.symbol),
@@ -105,17 +128,21 @@ async fn main() -> Result<()> {
             &bybit_feed.status(),
             &binance_instrument,
             &bybit_instrument,
+            &accounts,
         )?;
-        print_report(&report, cli.output)?;
+        print_report(&report, &accounts, cli.output)?;
         return Ok(());
     }
 
     eprintln!(
-        "OBSERVE mode: symbol={} quantity={} {} (live public feeds, no API keys, no orders)",
+        "OBSERVE mode: symbol={} quantity={} {} (live public feeds, optional read-only account metadata, no orders)",
         config.symbol, config.quantity, config.base_asset
     );
     let mut ticker = interval(config.poll_interval());
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut account_ticker = interval(config.account_refresh_interval());
+    account_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    account_ticker.tick().await;
     loop {
         tokio::select! {
             _ = ticker.tick() => {
@@ -127,10 +154,21 @@ async fn main() -> Result<()> {
                     &bybit_status,
                     &binance_instrument,
                     &bybit_instrument,
+                    &accounts,
                 ) {
-                    Ok(report) => print_report(&report, cli.output)?,
+                    Ok(report) => print_report(&report, &accounts, cli.output)?,
                     Err(error) => eprintln!("scan skipped: {error:#}"),
                 }
+            }
+            _ = account_ticker.tick() => {
+                accounts = load_account_data(
+                    &client,
+                    &config.symbol,
+                    &config.binance,
+                    &config.bybit,
+                    config.auth_recv_window_ms,
+                    config.max_fee_age_ms,
+                ).await;
             }
             result = tokio::signal::ctrl_c() => {
                 result.context("failed to listen for Ctrl-C")?;
@@ -230,6 +268,7 @@ fn scan_current(
     second_status: &BookFeedStatus,
     first_instrument: &InstrumentSpec,
     second_instrument: &InstrumentSpec,
+    accounts: &[AccountData; 2],
 ) -> Result<ScanReport> {
     if first_status.state != BookState::Valid || second_status.state != BookState::Valid {
         bail!(
@@ -250,6 +289,8 @@ fn scan_current(
         .snapshot
         .as_deref()
         .context("second VALID feed omitted its snapshot")?;
+    let now_ms = unix_timestamp_ms()?;
+
     scan_pair(ScanInput {
         first_book,
         second_book,
@@ -259,15 +300,25 @@ fn scan_current(
         },
         quantity: config.quantity,
         fees: VenueFees {
-            first: config.binance.taker_fee_rate,
-            second: config.bybit.taker_fee_rate,
+            first: VenueFeeRates {
+                buy_taker_rate: accounts[0].fee.buy_taker_rate,
+                sell_taker_rate: accounts[0].fee.sell_taker_rate,
+            },
+            second: VenueFeeRates {
+                buy_taker_rate: accounts[1].fee.buy_taker_rate,
+                sell_taker_rate: accounts[1].fee.sell_taker_rate,
+            },
         },
         strategy: &config.strategy,
-        now_ms: unix_timestamp_ms()?,
+        now_ms,
         freshness: FreshnessLimits {
             max_snapshot_age_ms: config.max_snapshot_age_ms,
             max_pair_skew_ms: config.max_pair_skew_ms,
         },
+        admission_rejections: &accounts
+            .iter()
+            .flat_map(|account| account.admission_rejections(now_ms))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -280,10 +331,38 @@ fn state_name(state: BookState) -> &'static str {
     }
 }
 
-fn print_report(report: &ScanReport, format: OutputFormat) -> Result<()> {
+#[derive(Serialize)]
+struct ObserverOutput<'a> {
+    accounts: &'a [AccountData; 2],
+    report: &'a ScanReport,
+}
+
+fn print_accounts(accounts: &[AccountData; 2], format: OutputFormat) -> Result<()> {
     match format {
-        OutputFormat::Json => println!("{}", serde_json::to_string(report)?),
+        OutputFormat::Json => println!("{}", serde_json::to_string(accounts)?),
         OutputFormat::Text => {
+            for account in accounts {
+                print_account(account);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_report(
+    report: &ScanReport,
+    accounts: &[AccountData; 2],
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string(&ObserverOutput { accounts, report })?
+        ),
+        OutputFormat::Text => {
+            for account in accounts {
+                print_account(account);
+            }
             println!(
                 "{} quantity={} receive_skew={}ms",
                 report.symbol, report.quantity, report.pair_received_skew_ms
@@ -314,4 +393,22 @@ fn print_report(report: &ScanReport, format: OutputFormat) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_account(account: &AccountData) {
+    println!(
+        "ACCOUNT {} fee_source={} buy_taker={} sell_taker={} loaded_at={:?} expires_at={:?} read_only={:?} region_confirmed={} account_confirmed={}",
+        account.venue,
+        account.fee.source,
+        account.fee.buy_taker_rate,
+        account.fee.sell_taker_rate,
+        account.fee.loaded_at_ms,
+        account.fee.expires_at_ms,
+        account.permission.read_only,
+        account.capability.region_eligible_confirmed,
+        account.capability.account_eligible_confirmed,
+    );
+    for reason in account.admission_rejections(unix_timestamp_ms().unwrap_or(u64::MAX)) {
+        println!("  - {reason}");
+    }
 }

@@ -43,9 +43,15 @@ pub struct Opportunity {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct VenueFeeRates {
+    pub buy_taker_rate: Decimal,
+    pub sell_taker_rate: Decimal,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct VenueFees {
-    pub first: Decimal,
-    pub second: Decimal,
+    pub first: VenueFeeRates,
+    pub second: VenueFeeRates,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +76,7 @@ pub struct ScanInput<'a> {
     pub strategy: &'a StrategyConfig,
     pub now_ms: u64,
     pub freshness: FreshnessLimits,
+    pub admission_rejections: &'a [String],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,6 +99,7 @@ pub fn scan_pair(input: ScanInput<'_>) -> Result<ScanReport> {
         strategy,
         now_ms,
         freshness,
+        admission_rejections,
     } = input;
     if first_book.symbol != second_book.symbol {
         bail!(
@@ -113,15 +121,16 @@ pub fn scan_pair(input: ScanInput<'_>) -> Result<ScanReport> {
         .received_timestamp_ms
         .abs_diff(second_book.received_timestamp_ms);
 
-    let shared_rejections = freshness_rejections(first_age, second_age, pair_skew, freshness);
+    let mut shared_rejections = freshness_rejections(first_age, second_age, pair_skew, freshness);
+    shared_rejections.extend_from_slice(admission_rejections);
     let first_to_second = evaluate_direction(
         DirectionInput {
             buy_book: first_book,
             sell_book: second_book,
             buy_instrument: instruments.first,
             sell_instrument: instruments.second,
-            buy_fee_rate: fees.first,
-            sell_fee_rate: fees.second,
+            buy_fee_rate: fees.first.buy_taker_rate,
+            sell_fee_rate: fees.second.sell_taker_rate,
         },
         quantity,
         strategy,
@@ -133,8 +142,8 @@ pub fn scan_pair(input: ScanInput<'_>) -> Result<ScanReport> {
             sell_book: first_book,
             buy_instrument: instruments.second,
             sell_instrument: instruments.first,
-            buy_fee_rate: fees.second,
-            sell_fee_rate: fees.first,
+            buy_fee_rate: fees.second.buy_taker_rate,
+            sell_fee_rate: fees.first.sell_taker_rate,
         },
         quantity,
         strategy,
@@ -327,8 +336,14 @@ mod tests {
             },
             quantity: dec("0.1"),
             fees: VenueFees {
-                first: dec("0.001"),
-                second: dec("0.001"),
+                first: VenueFeeRates {
+                    buy_taker_rate: dec("0.001"),
+                    sell_taker_rate: dec("0.001"),
+                },
+                second: VenueFeeRates {
+                    buy_taker_rate: dec("0.001"),
+                    sell_taker_rate: dec("0.001"),
+                },
             },
             strategy: &strategy(),
             now_ms: 1_000,
@@ -336,6 +351,7 @@ mod tests {
                 max_snapshot_age_ms: 1_000,
                 max_pair_skew_ms: 500,
             },
+            admission_rejections: &[],
         })
         .unwrap();
         let opportunity = &report.directions[0];
@@ -359,8 +375,14 @@ mod tests {
             },
             quantity: dec("1"),
             fees: VenueFees {
-                first: Decimal::ZERO,
-                second: Decimal::ZERO,
+                first: VenueFeeRates {
+                    buy_taker_rate: Decimal::ZERO,
+                    sell_taker_rate: Decimal::ZERO,
+                },
+                second: VenueFeeRates {
+                    buy_taker_rate: Decimal::ZERO,
+                    sell_taker_rate: Decimal::ZERO,
+                },
             },
             strategy: &strategy(),
             now_ms: 2_001,
@@ -368,6 +390,7 @@ mod tests {
                 max_snapshot_age_ms: 1_000,
                 max_pair_skew_ms: 500,
             },
+            admission_rejections: &[],
         })
         .unwrap();
         assert!(!report.directions[0].accepted);
@@ -392,8 +415,14 @@ mod tests {
             },
             quantity: dec("1"),
             fees: VenueFees {
-                first: Decimal::ZERO,
-                second: Decimal::ZERO,
+                first: VenueFeeRates {
+                    buy_taker_rate: Decimal::ZERO,
+                    sell_taker_rate: Decimal::ZERO,
+                },
+                second: VenueFeeRates {
+                    buy_taker_rate: Decimal::ZERO,
+                    sell_taker_rate: Decimal::ZERO,
+                },
             },
             strategy: &strategy(),
             now_ms: 1_000,
@@ -401,6 +430,7 @@ mod tests {
                 max_snapshot_age_ms: 1_000,
                 max_pair_skew_ms: 500,
             },
+            admission_rejections: &[],
         })
         .unwrap();
 
@@ -415,6 +445,94 @@ mod tests {
                 .rejection_reasons
                 .iter()
                 .any(|reason| reason.contains("first notional 99 is below minimum 99.5"))
+        );
+    }
+
+    #[test]
+    fn account_rejection_fails_closed_without_hiding_fee_estimate() {
+        let first_instrument = instrument("first", "0");
+        let second_instrument = instrument("second", "0");
+        let rejection = "first actual account fee is expired".to_owned();
+        let report = scan_pair(ScanInput {
+            first_book: &book("first", "99", "100", 1_000),
+            second_book: &book("second", "110", "111", 1_000),
+            instruments: InstrumentPair {
+                first: &first_instrument,
+                second: &second_instrument,
+            },
+            quantity: dec("1"),
+            fees: VenueFees {
+                first: VenueFeeRates {
+                    buy_taker_rate: dec("0.001"),
+                    sell_taker_rate: dec("0.002"),
+                },
+                second: VenueFeeRates {
+                    buy_taker_rate: dec("0.003"),
+                    sell_taker_rate: dec("0.004"),
+                },
+            },
+            strategy: &strategy(),
+            now_ms: 1_000,
+            freshness: FreshnessLimits {
+                max_snapshot_age_ms: 1_000,
+                max_pair_skew_ms: 500,
+            },
+            admission_rejections: std::slice::from_ref(&rejection),
+        })
+        .unwrap();
+
+        assert_eq!(report.directions[0].fees, dec("0.54"));
+        assert!(!report.directions[0].accepted);
+        assert_eq!(report.directions[0].rejection_reasons[0], rejection);
+    }
+
+    #[test]
+    fn fee_change_can_flip_admission_for_the_same_books() {
+        let first_instrument = instrument("first", "0");
+        let second_instrument = instrument("second", "0");
+        let first_book = book("first", "99", "100", 1_000);
+        let second_book = book("second", "110", "111", 1_000);
+        let scan = |rate| {
+            scan_pair(ScanInput {
+                first_book: &first_book,
+                second_book: &second_book,
+                instruments: InstrumentPair {
+                    first: &first_instrument,
+                    second: &second_instrument,
+                },
+                quantity: dec("1"),
+                fees: VenueFees {
+                    first: VenueFeeRates {
+                        buy_taker_rate: rate,
+                        sell_taker_rate: rate,
+                    },
+                    second: VenueFeeRates {
+                        buy_taker_rate: rate,
+                        sell_taker_rate: rate,
+                    },
+                },
+                strategy: &strategy(),
+                now_ms: 1_000,
+                freshness: FreshnessLimits {
+                    max_snapshot_age_ms: 1_000,
+                    max_pair_skew_ms: 500,
+                },
+                admission_rejections: &[],
+            })
+            .unwrap()
+        };
+
+        let low_fee = scan(Decimal::ZERO);
+        let high_fee = scan(dec("0.05"));
+        assert_eq!(low_fee.directions[0].expected_net_profit, dec("7"));
+        assert!(low_fee.directions[0].accepted);
+        assert_eq!(high_fee.directions[0].expected_net_profit, dec("-3.5"));
+        assert!(!high_fee.directions[0].accepted);
+        assert!(
+            high_fee.directions[0]
+                .rejection_reasons
+                .iter()
+                .any(|reason| reason.contains("admission profit"))
         );
     }
 }

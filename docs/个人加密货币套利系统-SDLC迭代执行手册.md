@@ -98,10 +98,11 @@ cargo fmt --check
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo run --release -- --once --output json
+cargo run --release -- --account-check --output json
 cargo run --release -- --reconnect-smoke
 ```
 
-真实烟测只访问公共只读接口。输出必须包含两个方向、完整成本字段、准入决定和拒绝原因；当前市场没有正机会时，`REJECT` 是正确结果，不得降低门槛制造 `ACCEPT`。
+默认真实烟测不注入凭证，只访问公共只读接口；私有签名请求使用本地确定性 HTTP 夹具验证。输出必须包含两个方向、完整成本字段、账户元数据版本、准入决定和拒绝原因；当前市场没有正机会或实际账户费率不可用时，`REJECT` 是正确结果，不得降低门槛制造 `ACCEPT`。
 
 退出条件：命令全部成功；实际程序走过本轮改变的路径；失败证据已修复或明确阻塞发布。
 
@@ -157,20 +158,32 @@ cargo run --release -- --reconnect-smoke
 
 已于 2026-09-08 发布。范围、追踪矩阵和验证证据见第 5 章。
 
-### A-04 能力卡与账户实际费率
+### A-04 能力卡与账户实际费率（released）
 
-目标：把“交易所支持什么”和“该账户实际成本是多少”转为带来源、版本和有效期的数据。
+已于 2026-09-08 发布。目标是把“交易所支持什么”和“该账户实际成本是多少”转为带来源、版本和有效期的数据；明确不包含真实交易权限和下单。
 
-依赖：只读 API key 管理方案和本地密钥注入规则先通过安全审查；权限必须不含交易与提现。
+#### A-04 需求追踪矩阵
 
-验收：
+| 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
+|---|---|---|---|---|
+| A04-R01 | 两所能力卡覆盖资格确认、订单恢复、限频、client order ID、IOC/FOK、费用币种和历史窗口 | `src/account.rs::capability_card` | `--account-check --output json` 输出完整卡片及官方来源 | released |
+| A04-R02 | 凭证仅从配置指定的环境变量读取，缺失或半配置时失败关闭，不写入配置与日志 | `src/account.rs::Credentials`, `config/observer.toml` | 缺失凭证真实 CLI 烟测；半配置与错误脱敏用例 | released |
+| A04-R03 | Binance 与 Bybit 请求按各自协议签名并解析只读权限；交易或提现权限不得通过准入 | `src/account.rs::{binance_permissions,bybit_permissions}` | 官方 Binance HMAC 向量；两所本地 HTTP 请求头、查询签名和响应契约用例 | released |
+| A04-R04 | 两所账户 taker 费率动态加载，记录来源、加载时间和有效期；不可用或过期时只观察 | `src/account.rs::{binance_fee,bybit_fee}`, `src/main.rs` | 费率解析、过期边界和无凭证失败关闭用例 | released |
+| A04-R05 | 同一盘口使用不同费率会改变净收益和准入拒绝原因 | `src/scan.rs` | `fee_change_can_flip_admission_for_the_same_books` | released |
+| A04-R06 | 输出不包含 key、secret、签名、完整请求头或账户敏感响应 | `src/account.rs` | 签名传输失败与响应解析失败脱敏用例 | released |
+| A04-R07 | 单次和持续扫描使用账户费率；持续模式按间隔刷新，任一账户元数据失效均拒绝两向 | `src/main.rs::scan_current` | 真实公共双向扫描输出账户版本及逐向拒绝原因 | released |
 
-- 能力卡覆盖地区/账户资格人工确认、订单恢复能力、限频、client order ID、IOC/FOK、费用币种和历史查询窗口。
-- 账户费率成功动态加载并记录来源时间；接口不可用或费率过期时只观察、不批准机会。
-- 费率变化会改变同一盘口的净收益和拒绝原因。
-- 日志不输出 key、签名、完整请求头或账户敏感响应。
+#### A-04 已验证结果
 
-明确不做：真实交易权限和下单。
+- `cargo fmt --check`：通过。
+- `cargo test`：30 项通过；覆盖官方签名向量、两所签名请求与响应解析、凭证缺失、费率有效期、费率改变准入和错误脱敏。
+- `cargo clippy --all-targets -- -D warnings`：通过，无警告。
+- `cargo run --release -- --account-check --output json`：默认无凭证配置输出两所能力卡、保守回退费率和明确拒绝原因；回退费率标记为 observation-only。
+- `cargo run --release -- --once --output json`：真实同步 Binance/Bybit BTCUSDT 公共本地簿并输出两个方向；账户资格未确认、凭证缺失和实际费率不可用共同使两向保持 `REJECT`。
+- 本轮未提供真实账户凭证。真实 Binance/Bybit 账户的只读权限、IP 限制和实际费率尚未实测；签名私有接口由本地确定性 HTTP 夹具验证，不能替代上线前账户检查。
+
+官方协议来源：Binance Spot REST API 与 filters 文档；Bybit V5 Integration Guidance、API Key Information、Fee Rate、Create Order、Open/Closed Orders 和 Rate Limit 文档。能力卡输出保留直接来源 URL。
 
 ### A-05 行情归档与连续影子统计
 
@@ -248,7 +261,8 @@ cargo run --release -- --reconnect-smoke
 | A-01 | 2026-09-08 | 两所 REST 深度、双向 VWAP、完整保守成本、CLI 单次/持续观察 | 测试、Clippy、真实公共行情烟测 | 只读；费率为配置值 |
 | A-02 | 2026-09-08 | 两所动态品种规格、启动准入、逐方向名义金额限制 | 13 项测试、严格 Clippy、真实公共品种与行情烟测 | 只读；无账户能力和下单 |
 | A-03 | 2026-09-08 | 两所 WebSocket 增量本地簿、数据质量状态、失效重建、实时扫描 | 21 项测试、严格 Clippy、真实双向扫描与主动重连烟测 | 只读；未验证 24 小时连续运行；无账户能力和下单 |
+| A-04 | 2026-09-08 | 两所能力卡、环境变量只读签名客户端、账户费率版本、失效准入和账户检查 CLI | 30 项测试、严格 Clippy、签名 HTTP 夹具、真实公共双向扫描 | 只读；未使用真实账户凭证；无下单能力 |
 
 ## 10. 下一轮唯一入口
 
-下一轮为 **A-04 能力卡与账户实际费率**。实现前先完成只读 API key 的本地注入与脱敏方案安全审查，确认 Binance 与 Bybit 凭证权限均不含交易和提现；随后锁定账户实际 taker 费率的官方查询来源、有效期和失败关闭语义。安全审查未通过，不接入私有接口。
+下一轮为 **A-05 行情归档与连续影子统计**。先锁定事件、订单簿代次、品种规格版本、费率版本、配置与决策的归档模式和保留策略；写入失败必须显式形成数据缺口，但不能阻塞行情失效与风险拒绝。完成可复现回放后再启动至少 14 天连续影子运行，不以固定天数替代独立机会与故障样本量。
