@@ -4,5 +4,7 @@ pub mod config;
 pub mod instrument;
 pub mod local_book;
 pub mod market;
+pub mod order;
+pub mod paper;
 pub mod scan;
 pub mod venues;

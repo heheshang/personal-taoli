@@ -12,6 +12,8 @@ use personal_taoli::{
     instrument::{InstrumentSpec, validate_pair},
     local_book::{BookFeed, BookFeedStatus, BookState},
     market::unix_timestamp_ms,
+    order::{OrderFactsSmokeReport, run_order_facts_smoke},
+    paper::{PaperCoreSmokeReport, run_paper_core_smoke},
     scan::{
         FreshnessLimits, InstrumentPair, ScanInput, ScanReport, VenueFeeRates, VenueFees, scan_pair,
     },
@@ -22,7 +24,7 @@ use serde::Serialize;
 use tokio::time::{MissedTickBehavior, interval, timeout};
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Read-only Binance/Bybit spot arbitrage observer")]
+#[command(version, about = "Read-only arbitrage observer and PAPER safety core")]
 struct Cli {
     #[arg(short, long, default_value = "config/observer.toml")]
     config: PathBuf,
@@ -49,16 +51,28 @@ struct Cli {
     #[arg(
         long,
         value_name = "PATH",
-        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "archive"],
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "paper_core_smoke", "order_facts_smoke"],
         help = "Replay an archive deterministically and print its shadow report"
     )]
     replay: Option<PathBuf>,
     #[arg(
         long,
-        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay"],
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "paper_core_smoke", "order_facts_smoke"],
         help = "Suppress per-scan output in continuous observation mode"
     )]
     quiet: bool,
+    #[arg(
+        long,
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "archive", "quiet", "order_facts_smoke"],
+        help = "Verify B-01 PAPER reservation, recovery and single-writer invariants"
+    )]
+    paper_core_smoke: bool,
+    #[arg(
+        long,
+        conflicts_with_all = ["once", "reconnect_smoke", "account_check", "replay", "archive", "quiet", "paper_core_smoke"],
+        help = "Verify B-02 order facts and UNKNOWN transitions against PostgreSQL without order calls"
+    )]
+    order_facts_smoke: bool,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
 }
@@ -75,6 +89,20 @@ async fn main() -> Result<()> {
     if let Some(path) = &cli.replay {
         let report = replay_archive(path, default_gap_path(path))?;
         print_shadow_report(&report, cli.output)?;
+        return Ok(());
+    }
+    if cli.order_facts_smoke {
+        let database_url = std::env::var("TAOLI_DATABASE_URL")
+            .context("TAOLI_DATABASE_URL is required for --order-facts-smoke")?;
+        let report = run_order_facts_smoke(&database_url).await?;
+        print_order_facts_smoke(&report, cli.output)?;
+        return Ok(());
+    }
+    if cli.paper_core_smoke {
+        let database_url = std::env::var("TAOLI_DATABASE_URL")
+            .context("TAOLI_DATABASE_URL is required for --paper-core-smoke")?;
+        let report = run_paper_core_smoke(&database_url).await?;
+        print_paper_core_smoke(&report, cli.output)?;
         return Ok(());
     }
     let config = ObserverConfig::load(&cli.config)?;
@@ -541,6 +569,50 @@ fn print_shadow_report(report: &ShadowReport, format: OutputFormat) -> Result<()
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn print_paper_core_smoke(report: &PaperCoreSmokeReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string(report)?),
+        OutputFormat::Text => println!(
+            "PAPER_CORE_OK schema={} lock_rejected={} competition={}/{} rollback_rows={} idempotent={} conflict_rejected={} recovered={}/{}/{}/{}/{} audit_immutable={} external_order_calls={}",
+            report.schema_version,
+            report.same_domain_lock_rejected,
+            report.concurrent_successes,
+            report.concurrent_attempts,
+            report.rejected_request_rows,
+            report.idempotent_replay,
+            report.conflicting_replay_rejected,
+            report.recovered_plans,
+            report.recovered_risk_decisions,
+            report.recovered_intents,
+            report.recovered_reservations,
+            report.recovered_audit_events,
+            report.audit_events_immutable,
+            report.external_order_calls,
+        ),
+    }
+    Ok(())
+}
+
+fn print_order_facts_smoke(report: &OrderFactsSmokeReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string(report)?),
+        OutputFormat::Text => println!(
+            "ORDER_FACTS_OK schema={} timeout_unknown={} not_found_unknown={} found_recovered={} duplicate_ignored={} cancel_trade_preserved={} recovered_filled={} status={:?} cancel={:?} external_order_calls={}",
+            report.schema_version,
+            report.submit_timeout_unknown,
+            report.query_not_found_preserved_unknown,
+            report.query_found_recovered,
+            report.duplicate_trade_ignored,
+            report.cancel_race_trade_preserved,
+            report.recovered_filled_quantity,
+            report.recovered_submission_status,
+            report.recovered_cancel_status,
+            report.external_order_calls,
+        ),
     }
     Ok(())
 }

@@ -251,6 +251,31 @@ cargo run --release -- --reconnect-smoke
 
 实现提交、查单、撤单、私有事件、成交补拉和 UNKNOWN 调查状态。验收请求超时、响应丢失、查询暂未找到、重复/乱序成交、撤单竞态和重启恢复。所有副作用先写意图，再调用适配器。
 
+### B-02 订单事实与 `UNKNOWN` 状态机（released）
+
+B-02 于 2026-09-08 发布。范围限定为 PAPER/模拟适配器：提交、查询、撤单和成交事实先持久化，超时进入 `UNKNOWN`，查询暂未找到不改变未知态，明确拒绝进入 `DEFINITELY_REJECTED`，撤单竞态与重复成交均保留可审计事实；不连接真实或测试网订单接口。
+
+#### B-02 需求追踪矩阵
+
+| 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
+|---|---|---|---|---|
+| B02-R01 | 提交动作只从持久化 `NOT_SENT` 意图开始，接受后绑定唯一交易所订单 ID | `src/order.rs::submit_started`, `submit_result` | PostgreSQL 订单事实烟测 | released |
+| B02-R02 | 明确拒绝进入 `DEFINITELY_REJECTED`，不生成成交事实 | `src/order.rs::SubmitResult::DefinitelyRejected` | 烟测 `submit_definitely_rejected=true` | released |
+| B02-R03 | 超时进入 `UNKNOWN`，禁止直接重发 | `src/order.rs::SubmitResult::Unknown` | 烟测 `submit_timeout_unknown=true` | released |
+| B02-R04–R05 | 查询暂未找到保持 `UNKNOWN`，查询确认恢复并绑定原订单 | `src/order.rs::query_result` | 烟测 `query_not_found_preserved_unknown=true`, `query_found_recovered=true` | released |
+| B02-R06 | 撤单请求、撤单结果和撤单后成交独立保留 | `src/order.rs::{cancel_requested,cancel_result,record_trade}` | 烟测 `cancel_race_trade_preserved=true` | released |
+| B02-R07 | 相同成交幂等，内容冲突进入 `CONFLICT`，不重复累计数量 | `src/order.rs::record_trade` | 烟测 `duplicate_trade_ignored=true` | released |
+| B02-R08 | 重启恢复未终态订单事实，不自动发送 | `src/order.rs::recover_nonterminal` | 烟测恢复状态与成交数量输出 | released |
+
+#### B-02 已验证结果
+
+- `cargo fmt --check`：通过。
+- `cargo test`：44 项通过。
+- `cargo clippy --all-targets -- -D warnings`：通过，无警告。
+- `TAOLI_DATABASE_URL=postgresql://taoli:taoli@127.0.0.1:55432/taoli cargo run --release -- --order-facts-smoke --output json`：通过；明确拒绝、超时未知、暂未找到、查单恢复、成交去重、撤单竞态和恢复均为 `true`，`recovered_filled_quantity=0.01`，`external_order_calls=0`。
+
+该证据只证明 PAPER 数据库事实和无外部订单副作用，不证明真实交易所订单恢复、私有流或实盘安全；B-02 不解除 A-05 连续观察门槛，也不产生真实下单能力。
+
 ### B-03 双腿执行与补偿风控
 
 实现受预算约束的双腿计划、部分成交、未匹配敞口区间和补偿决策。模拟适配器必须可确定性注入每个 P0 故障。超出补偿预算时升级人工接管，不伪造中性状态。
@@ -305,7 +330,8 @@ cargo run --release -- --reconnect-smoke
 | A-03 | 2026-09-08 | 两所 WebSocket 增量本地簿、数据质量状态、失效重建、实时扫描 | 21 项测试、严格 Clippy、真实双向扫描与主动重连烟测 | 只读；未验证 24 小时连续运行；无账户能力和下单 |
 | A-04 | 2026-09-08 | 两所能力卡、环境变量只读签名客户端、账户费率版本、失效准入和账户检查 CLI | 30 项测试、严格 Clippy、签名 HTTP 夹具、真实公共双向扫描 | 只读；未使用真实账户凭证；无下单能力 |
 | A-05（实现与观察启动） | 2026-09-08 | 流式确定性回放、崩溃尾部修复、稳定拒绝类别、静默持续运行、SIGTERM 刷盘 | 38 项测试、严格 Clippy、在线归档回放、优雅停止与独立正式窗口 | 只读；14 天窗口运行中，最早 2026-09-22T09:52:14Z 评审；无下单能力 |
+| B-02 | 2026-09-08 | PAPER 订单事实、提交/查单/撤单 `UNKNOWN` 状态机、成交幂等和恢复烟测 | 44 项测试、严格 Clippy、临时 PostgreSQL `--order-facts-smoke`；拒绝/未知/调查/撤单竞态/去重/恢复均通过 | PAPER/模拟适配器；无真实或测试网订单 |
 
 ## 10. 下一轮唯一入口
 
-下一轮唯一入口仍为 **A-05 连续影子观察评审**。保持受管进程 `taoli-shadow-a05` 与独立归档持续运行；最早在 2026-09-22T09:52:14Z 核对完整 14 天窗口、真实重连和数据失效、独立机会数、净收益与容量分布、拒绝类别、尾部样本及缺口。未满足观察门槛前不得进入 B-01，也不得把运行天数本身视为经济可行性证据。
+下一轮唯一入口仍为 **A-05 连续影子观察评审**。保持受管进程 `taoli-shadow-a05` 与独立归档持续运行；最早在 2026-09-22T09:52:14Z 核对完整 14 天窗口、真实重连和数据失效、独立机会数、净收益与容量分布、拒绝类别、尾部样本及缺口。未满足观察门槛前不得进入 B-03 或任何真实订单适配器，也不得把运行天数本身视为经济可行性证据。
