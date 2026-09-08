@@ -1,0 +1,29 @@
+symbol = "BTCUSDT"
+base_asset = "BTC"
+quote_asset = "USDT"
+quantity = "0.001"
+poll_interval_ms = 2000
+http_timeout_ms = 3000
+stream_start_timeout_ms = 10000
+reconnect_delay_ms = 1000
+max_snapshot_age_ms = 1000
+max_pair_skew_ms = 500
+orderbook_depth = 50
+
+[binance]
+base_url = "https://api.binance.com"
+websocket_url = "wss://stream.binance.com:9443"
+taker_fee_rate = "0.001"
+
+[bybit]
+base_url = "https://api.bybit.com"
+taker_fee_rate = "0.001"
+websocket_url = "wss://stream.bybit.com/v5/public/spot"
+
+[strategy]
+min_net_profit = "0.01"
+min_net_bps = "1"
+latency_loss_bps = "1"
+risk_buffer_bps = "1"
+rebalance_cost = "0"
+other_direct_cost = "0"
