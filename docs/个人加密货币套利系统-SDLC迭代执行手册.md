@@ -98,12 +98,10 @@
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p personal-taoli-observer --release -- --once --output json
-cargo run -p personal-taoli-observer --release -- --account-check --output json
-cargo run -p personal-taoli-observer --release -- --reconnect-smoke
+cargo build --workspace --release
 ```
 
-默认真实烟测不注入凭证，只访问公共只读接口；私有签名请求使用本地确定性 HTTP 夹具验证。输出必须包含两个方向、完整成本字段、账户元数据版本、准入决定和拒绝原因；当前市场没有正机会或实际账户费率不可用时，`REJECT` 是正确结果，不得降低门槛制造 `ACCEPT`。
+默认真实烟测不注入凭证，只访问公共只读接口；私有签名请求使用本地确定性 HTTP 夹具验证。输出必须包含两个方向、完整成本字段、账户元数据版本、准入决定和拒绝原因；当前市场没有正机会或实际账户费率不可用时，`REJECT` 是正确结果，不得降低门槛制造 `ACCEPT`。烟测经桌面控制台动作执行：`OBSERVE ONCE`、`ACCOUNT STATUS`、`RECONNECT SMOKE`。
 
 退出条件：命令全部成功；实际程序走过本轮改变的路径；失败证据已修复或明确阻塞发布。
 
@@ -136,17 +134,17 @@ cargo run -p personal-taoli-observer --release -- --reconnect-smoke
 | A03-R01 | Binance 仅在 `lastUpdateId + 1` 被缓冲事件覆盖后发布本地簿 | `crates/core/src/venues/binance_stream.rs`, `crates/core/src/local_book.rs` | 快照覆盖、后继事件和断档边界用例 | released |
 | A03-R02 | Binance 后续 `U/u` 断档立即撤下快照并自动重建 | `crates/core/src/venues/binance_stream.rs`, `crates/core/src/local_book.rs` | 断档用例；非 `VALID` 状态无快照用例 | released |
 | A03-R03 | Bybit snapshot 覆盖当前代次，delta 绝对数量更新；旧 `seq` 不回滚本地簿 | `crates/core/src/venues/bybit_stream.rs` | 重启 snapshot 与乱序跨序列用例 | released |
-| A03-R05 | WebSocket 静默、关闭、协议错误和主动重连均失败关闭；重建前不扫描 | `crates/core/src/venues/*_stream.rs`, `crates/core/src/observer.rs`, `crates/observer-cli/src/main.rs` | 双所主动断线及自动重建真实烟测 | released |
-| A03-R06 | 单次与持续观察都只消费双方同时 `VALID` 的实时簿 | `crates/core/src/observer.rs` | 实时 CLI 双向扫描 | released |
-| A03-R07 | 启动和扫描全程无 API key、无下单能力 | `crates/core/src/observer.rs`, `crates/core/src/venues/*` | CLI 仅访问公共 market REST/WebSocket | released |
+| A03-R05 | WebSocket 静默、关闭、协议错误和主动重连均失败关闭；重建前不扫描 | `crates/core/src/venues/*_stream.rs`, `crates/core/src/observer.rs` | 双所主动断线及自动重建真实烟测 | released |
+| A03-R06 | 单次与持续观察都只消费双方同时 `VALID` 的实时簿 | `crates/core/src/observer.rs` | 真实单次双向扫描（CLI 形态验证记录） | released |
+| A03-R07 | 启动和扫描全程无 API key、无下单能力 | `crates/core/src/observer.rs`, `crates/core/src/venues/*` | 桌面应用与适配器仅访问公共 market REST/WebSocket | released |
 
 ### 5.3 已验证结果
 
 - `cargo fmt --all -- --check`：通过。
 - `cargo test --workspace`：通过，覆盖快照衔接、序列断档、乱序消息、绝对档位更新、状态失效和既有收益/准入逻辑。
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过，无警告。
-- `cargo run -p personal-taoli-observer --release -- --once --output json`：真实同步 Binance/Bybit BTCUSDT 本地簿后输出两个方向；当次接收时间偏差为 5 ms，两向均因完整成本后净收益为负而拒绝。
-- `cargo run -p personal-taoli-observer --release -- --reconnect-smoke`：先同步两所实时簿，再主动断开两条连接；Binance 与 Bybit 均从 generation 1 进入 generation 2，`reconnects=1`，自动重建并重新变为 `VALID`。
+- 真实单次双向扫描（结构重构前以 CLI 形态执行）：真实同步 Binance/Bybit BTCUSDT 本地簿后输出两个方向；当次接收时间偏差为 5 ms，两向均因完整成本后净收益为负而拒绝。
+- 真实主动重连烟测（结构重构前以 CLI 形态执行）：先同步两所实时簿，再主动断开两条连接；Binance 与 Bybit 均从 generation 1 进入 generation 2，`reconnects=1`，自动重建并重新变为 `VALID`。
 
 这些结果证明公共实时行情到净机会判断的只读路径及一次主动重连恢复可运行，不证明 24 小时连续稳定性、交易恢复或盈利能力。
 
@@ -178,23 +176,23 @@ cargo run -p personal-taoli-observer --release -- --reconnect-smoke
 
 | 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|
-| A04-R01 | 两所能力卡覆盖资格确认、订单恢复、限频、client order ID、IOC/FOK、费用币种和历史窗口 | `crates/core/src/account.rs::capability_card` | `--account-check --output json` 输出完整卡片及官方来源 | released |
+| A04-R01 | 两所能力卡覆盖资格确认、订单恢复、限频、client order ID、IOC/FOK、费用币种和历史窗口 | `crates/core/src/account.rs::capability_card` | `account_status` 输出完整卡片及官方来源 | released |
 | A04-R02 | 未配置或只配置一半凭证时不发私有请求，使用配置回退费率并明确标记 observation-only | `crates/core/src/account.rs::{Credentials,fallback_account}` | 缺失和半配置凭证用例；无凭证真实账户检查 | released |
 | A04-R03 | Binance 只在读取已启用且交易、提现、转账及衍生品危险 scope 全部关闭时判为只读 | `crates/core/src/account.rs::binance_permissions` | 本地 HTTP 权限响应夹具 | released |
 | A04-R04 | Bybit 按 `readOnly` 判定，并在提现权限存在时额外拒绝 | `crates/core/src/account.rs::bybit_permissions` | 本地 HTTP 权限响应夹具 | released |
 | A04-R05 | 两所请求按各自协议签名并加载账户实际 taker 费率；非法费率失败关闭，不同费率改变净收益 | `crates/core/src/account.rs::{binance_get,bybit_get,binance_fee,bybit_fee}`, `crates/core/src/scan.rs` | 官方 Binance HMAC 向量；两所请求/响应夹具；`fee_change_can_flip_admission_for_the_same_books` | released |
 | A04-R06 | 实际费率记录 symbol、来源、加载和过期时间；不可用或过期时只观察 | `crates/core/src/account.rs::{FeeSchedule,AccountData::admission_rejections}` | 费率解析、回退和过期边界用例 | released |
 | A04-R07 | 两所账户加载互不阻塞；单所失败保留另一所结果，失败侧回退并拒绝准入 | `crates/core/src/account.rs::{load_account_data,load_venue}` | 并行加载与错误归一化行为检查 | released |
-| A04-R08 | 账户检查独立输出元数据；单次和持续扫描使用账户费率，持续模式按间隔刷新 | `crates/core/src/observer.rs`, `crates/observer-cli/src/main.rs` | 真实账户检查与公共双向扫描；持续刷新编排检查 | released |
-| A04-R09 | key、secret、签名和完整认证请求头不进入序列化输出或归档 | `crates/core/src/account.rs`, `crates/core/src/observer.rs`, `crates/observer-cli/src/main.rs` | `Zeroizing` 类型边界、错误脱敏和真实 CLI 输出检查 | released |
+| A04-R08 | 账户检查独立输出元数据；单次和持续扫描使用账户费率，持续模式按间隔刷新 | `crates/core/src/observer.rs` | 真实账户检查与公共双向扫描；持续刷新编排检查 | released |
+| A04-R09 | key、secret、签名和完整认证请求头不进入序列化输出或归档 | `crates/core/src/account.rs`, `crates/core/src/observer.rs` | `Zeroizing` 类型边界、错误脱敏和桌面应用输出检查 | released |
 
 #### A-04 已验证结果
 
 - `cargo fmt --all -- --check`：通过。
 - `cargo test --workspace`：通过；覆盖官方签名向量、两所签名请求与响应解析、凭证缺失、费率有效期、费率改变准入和错误脱敏。
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过，无警告。
-- `cargo run -p personal-taoli-observer --release -- --account-check --output json`：默认无凭证配置输出两所能力卡、保守回退费率和明确拒绝原因；回退费率标记为 observation-only。
-- `cargo run -p personal-taoli-observer --release -- --once --output json`：真实同步 Binance/Bybit BTCUSDT 公共本地簿并输出两个方向；账户资格未确认、凭证缺失和实际费率不可用共同使两向保持 `REJECT`。
+- 无凭证账户检查（结构重构前以 CLI 形态执行，入口现为桌面 `account_status`）：默认无凭证配置输出两所能力卡、保守回退费率和明确拒绝原因；回退费率标记为 observation-only。
+- 真实单次双向扫描（结构重构前以 CLI 形态执行）：真实同步 Binance/Bybit BTCUSDT 公共本地簿并输出两个方向；账户资格未确认、凭证缺失和实际费率不可用共同使两向保持 `REJECT`。
 - 本轮未提供真实账户凭证。真实 Binance/Bybit 账户的只读权限、IP 限制和实际费率尚未实测；签名私有接口由本地确定性 HTTP 夹具验证，不能替代上线前账户检查。
 
 官方协议来源：Binance Spot REST API 与 filters 文档；Bybit V5 Integration Guidance、API Key Information、Fee Rate、Create Order、Open/Closed Orders 和 Rate Limit 文档。能力卡输出保留直接来源 URL。
@@ -226,13 +224,13 @@ cargo run -p personal-taoli-observer --release -- --reconnect-smoke
 - `cargo fmt --all -- --check`：通过。
 - `cargo test --workspace`：38 项通过；归档用例覆盖精确回放及统计、决策篡改拒绝、归档 I/O 失败、在线未完成尾记录、崩溃尾部修复、完整损坏行、时间倒退和拒绝类别有界聚合。
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过，无警告。
-- release 二进制持续模式接受 Ctrl-C/SIGTERM，先关闭有界归档队列并等待写线程刷盘；受控 SIGTERM 实测退出码为 0，停止后 36 条记录精确回放且未完成尾字节为 0。
-- 正式窗口使用 `--archive data/archive/a05-shadow-20260908.ndjson --quiet`：首批 15 条实时 Binance/Bybit BTCUSDT 决策在运行中完成固定长度快照回放，`direction_evaluations=30`、`gap_records=0`、`ignored_incomplete_tail_bytes=0`、`replayed_without_mismatch=true`。
+- release 二进制持续模式接受 Ctrl-C/SIGTERM，先关闭有界归档队列并等待写线程刷盘；受控 SIGTERM 实测退出码为 0，停止后 36 条记录精确回放且未完成尾字节为 0。（该实测为 CLI 形态；现桌面形态由 SIGTERM/关窗进入同一退出冲刷路径。）
+- 正式窗口（CLI 形态）首批 15 条实时 Binance/Bybit BTCUSDT 决策在运行中完成固定长度快照回放：`direction_evaluations=30`、`gap_records=0`、`ignored_incomplete_tail_bytes=0`、`replayed_without_mismatch=true`。
 
 #### A-05 连续观察运行记录
 
 - 窗口起点：2026-09-08T09:52:14Z；运行 ID：`1788861134042-72723-1`；最早 14 天评审时间：2026-09-22T09:52:14Z。
-- 受管进程：`taoli-shadow-a05`；命令：`target/release/personal-taoli-observer --config config/observer.toml --archive data/archive/a05-shadow-20260908.ndjson --continuous --quiet`；故障退出自动重启。
+- 受管进程：`taoli-shadow-a05`（监督桌面进程）；命令：`TAOLI_OBSERVER_AUTOSTART=1 TAOLI_OBSERVER_ARCHIVE=data/archive/a05-shadow-20260908.ndjson ./target/release/personal-taoli`；故障退出自动重启。自 2026-09-09T00:43:28Z 起运行 ID 前缀为 `1788914607692-64268-1`（纯 Tauri 桌面形态接管，详见运行说明 §9 对应记录）。
 - 原始归档和缺口日志位于 `data/archive/`，已排除版本控制；预检数据保留在默认 `observations.ndjson`，不混入正式窗口报告。
 - 评审前必须同时核对运行时长、运行 ID/序号连续性、缺口与忽略尾字节、两所各至少一次自然重连、至少一次真实 `非 VALID → VALID` 恢复、按需求文档定义的至少 100 个独立正净收益候选事件段、收益与容量分布、拒绝类别和尾部样本。仅满 14 天不能发布 A-05。
 

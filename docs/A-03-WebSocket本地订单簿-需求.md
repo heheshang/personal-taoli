@@ -38,9 +38,9 @@
 | A03-R02 | Binance 后续事件若越过本地序列下一值，当前簿立即失效；旧事件不会回滚序列 | 后继断档和旧事件边界用例；确认非 `VALID` 无快照 | released |
 | A03-R03 | Bybit snapshot 替换当前连接代次的完整本地簿，delta 按绝对数量更新；不递增的 `seq` 被忽略 | 重启 snapshot、绝对更新和旧跨序列用例 | released |
 | A03-R04 | 行情状态只使用 `SYNCING`、`VALID`、`STALE`、`INVALID`；仅 `VALID` 携带快照 | 状态转换、撤下快照和重连代次用例 | released |
-| A03-R05 | WebSocket 静默、关闭、传输/解析/协议错误、序列断档和主动重连均先失败关闭，再按新代次重建 | 错误路径用例及 `--reconnect-smoke` 真实双所恢复 | released |
-| A03-R06 | 启动等待和扫描只在双方同时 `VALID` 时通过；超时或任一侧失效时不产生决策 | `wait_for_valid_pair`、`scan_current` 行为及真实 `--once` 烟测 | released |
-| A03-R07 | 整条 A-03 路径只访问公共行情接口，不要求凭证且无订单入口 | CLI 与适配器检查；无凭证真实烟测 | released |
+| A03-R05 | WebSocket 静默、关闭、传输/解析/协议错误、序列断档和主动重连均先失败关闭，再按新代次重建 | 错误路径用例及 `run_reconnect_smoke` 真实双所恢复 | released |
+| A03-R06 | 启动等待和扫描只在双方同时 `VALID` 时通过；超时或任一侧失效时不产生决策 | `wait_for_valid_pair`、`scan_current` 行为及真实单次双向扫描（CLI 形态验证记录） | released |
+| A03-R07 | 整条 A-03 路径只访问公共行情接口，不要求凭证且无订单入口 | 桌面应用与适配器检查；无凭证真实烟测 | released |
 
 ## 4. 状态与数据需求
 
@@ -116,8 +116,7 @@
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p personal-taoli-observer --release -- --once --output json
-cargo run -p personal-taoli-observer --release -- --reconnect-smoke
+cargo build --workspace --release
 ```
 
 发布证据：
@@ -125,7 +124,7 @@ cargo run -p personal-taoli-observer --release -- --reconnect-smoke
 - 格式检查通过；
 - 21 项测试通过；
 - Clippy 严格模式无警告；
-- 真实 Binance/Bybit BTCUSDT 本地簿同步后输出双向扫描；当次接收偏差 5 ms，完整成本后两向均正确拒绝；
+- 真实 Binance/Bybit BTCUSDT 本地簿同步后输出双向扫描（结构重构前以 CLI 形态执行）；当次接收偏差 5 ms，完整成本后两向均正确拒绝；
 - 主动重连后两所均从 generation 1 进入 generation 2，`reconnects=1`，并恢复 `VALID`。
 
 上述结果只证明发布时公共实时行情闭环和一次主动恢复可运行。长期连续性由 A-05 独立观察验证。

@@ -28,7 +28,7 @@ flowchart LR
 - `crates/core/src/venues/bybit_stream.rs`：订阅、snapshot/delta、跨序列 `seq`、heartbeat 和重连循环。
 - `crates/core/src/local_book.rs::LocalOrderBook`：场所无关的绝对档位更新、排序和快照校验。
 - `crates/core/src/local_book.rs::{FeedPublisher,BookFeedStatus,BookFeed}`：统一状态发布、消费者订阅和主动重连命令。
-- `crates/core/src/observer.rs::{wait_for_valid_pair,scan_current}` 与 `crates/observer-cli/src/main.rs::run_reconnect_smoke`：双所启动门禁、恢复烟测和扫描入口。
+- `crates/core/src/observer.rs::{wait_for_valid_pair,scan_current,run_reconnect_smoke}`：双所启动门禁、恢复烟测和扫描入口；桌面 `src-tauri/src/commands/session.rs` 的 `run_reconnect_smoke` 命令薄封装调用。
 - `crates/core/src/scan.rs`：消费已验证快照并继续执行年龄、双所接收偏差和经济准入；不负责流同步。
 
 ## 3. 并发与所有权
@@ -119,12 +119,12 @@ stateDiagram-v2
 
 扫描层有第二道门禁：即使状态为 `VALID`，仍检查 `max_snapshot_age_ms` 和 `max_pair_skew_ms`。流静默状态防止继续发布；扫描新鲜度防止两个独立有效流组合成时间差过大的假机会。
 
-## 9. 启动与 CLI 契约
+## 9. 启动与调用契约
 
 - `wait_for_valid_pair` 在 `stream_start_timeout_ms` 内等待双方均为 `VALID`；超时失败。
-- `--once` 使用双方当前有效簿执行一次双向扫描并退出。
-- `--reconnect-smoke` 记录两所当前 generation，同时发送主动重连命令；只有两所 generation 均增加且恢复 `VALID` 才输出 `RECONNECT_OK`。
-- 持续模式按 `poll_interval_ms` 读取最新状态；任一非 `VALID` 时跳过扫描。
+- 一次观测命令 `observe_once` 使用双方当前有效簿执行一次双向扫描并返回报告。
+- 重连烟测 `run_reconnect_smoke` 记录两所当前 generation，同时发送主动重连命令；只有两所 generation 均增加且恢复 `VALID` 才报告成功。
+- 连续会话 `start_continuous_observation` 按 `poll_interval_ms` 读取最新状态；任一非 `VALID` 时跳过扫描。
 - A-03 路径不创建订单客户端，不接受交易参数，不调用私有接口。
 
 ## 10. 配置契约
@@ -161,7 +161,7 @@ websocket_url = "wss://stream.bybit.com/v5/public/spot"
 | A03-R03 | Bybit 源时间和更新 ID | `snapshot_from_event` | `snapshot_uses_matching_engine_time_and_update_id` |
 | A03-R03 | Bybit 重启 snapshot | `run_connection` | `restart_snapshot_can_replace_higher_update_id` |
 | A03-R03 | Bybit 旧跨序列 | `advances_cross_sequence` | `stale_cross_sequence_is_rejected` |
-| A03-R06、A03-R07 | 双所真实启动 | `wait_for_valid_pair`、`--once` | 发布时真实 BTCUSDT 双向扫描 |
+| A03-R06、A03-R07 | 双所真实启动 | `wait_for_valid_pair`、`observe_once` | 发布时真实 BTCUSDT 双向扫描（CLI 形态验证记录） |
 | A03-R05 | 双所主动恢复 | `run_reconnect_smoke` | generation 1→2、两所 `reconnects=1`、恢复 `VALID` |
 
 ## 12. 协议来源

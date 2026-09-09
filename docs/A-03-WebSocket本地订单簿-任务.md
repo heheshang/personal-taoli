@@ -44,16 +44,15 @@
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p personal-taoli-observer --release -- --once --output json
-cargo run -p personal-taoli-observer --release -- --reconnect-smoke
+cargo build --workspace --release
 ```
 
-判定规则：
+桌面控制台动作（构建产物随仓库，控制台按 C-01 交付）：
 
 1. 格式、测试和严格 Clippy 全部成功。
-2. `--once` 必须先等两所 `VALID`，然后输出两个方向及新鲜度/接收偏差相关结果。
+2. `OBSERVE ONCE` 必须先等两所 `VALID`，然后输出两个方向及新鲜度/接收偏差相关结果。
 3. 市场完整成本后无正机会时 `REJECT` 是正确结果，不得修改门槛制造通过。
-4. `--reconnect-smoke` 必须看到两所 generation 均增加并重新 `VALID`；只看到连接断开不算恢复成功。
+4. `RECONNECT SMOKE` 必须看到两所 generation 均增加并重新 `VALID`；只看到连接断开不算恢复成功。
 5. 整个验证无需 API key，且程序不存在订单入口。
 
 ## 5. 发布证据
@@ -61,8 +60,8 @@ cargo run -p personal-taoli-observer --release -- --reconnect-smoke
 - `cargo fmt --all -- --check`：通过。
 - `cargo test --workspace`：21 项通过。
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过，无警告。
-- 真实 `--once --output json`：Binance/Bybit BTCUSDT 本地簿同步成功，接收时间偏差 5 ms，两向因完整成本后净收益为负而拒绝。
-- 真实 `--reconnect-smoke`：Binance 与 Bybit 均从 generation 1 进入 generation 2，`reconnects=1`，自动重建并恢复 `VALID`。
+- 真实单次双向扫描（结构重构前以 CLI 形态执行）：Binance/Bybit BTCUSDT 本地簿同步成功，接收时间偏差 5 ms，两向因完整成本后净收益为负而拒绝。
+- 真实主动重连烟测（结构重构前以 CLI 形态执行）：Binance 与 Bybit 均从 generation 1 进入 generation 2，`reconnects=1`，自动重建并恢复 `VALID`。
 
 ## 6. 剩余风险与后续边界
 
