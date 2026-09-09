@@ -1,8 +1,8 @@
 <template>
   <article class="panel history-panel">
     <div class="panel-head">
-      <h2><em class="green-dot" /> BALANCE / OPPORTUNITY HISTORY</h2>
-      <span>UTC / SESSION</span>
+      <h2><em class="green-dot" /> 余额 / 机会历史</h2>
+      <span>UTC / 会话</span>
     </div>
     <div class="chart-wrap">
       <svg viewBox="0 0 640 210" preserveAspectRatio="none" aria-label="history chart">
@@ -18,9 +18,9 @@
         <line x1="552" y1="75" x2="552" y2="210" stroke="#dc5974" stroke-dasharray="3 5" />
       </svg>
       <div class="axis">
-        <span>START</span>
-        <span>OBSERVATION WINDOW</span>
-        <span>NOW</span>
+        <span>开始</span>
+        <span>观测窗口</span>
+        <span>现在</span>
       </div>
     </div>
   </article>

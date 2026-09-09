@@ -12,8 +12,10 @@ use super::{
 #[tauri::command]
 pub async fn run_accounting_control_smoke(
     kind: String,
+    database_url_param: Option<String>,
 ) -> ApiResponse<AccountingControlSmokeResult> {
-    let Some(database_url) = database_url() else {
+    let database_url = database_url_param.or_else(database_url);
+    let Some(database_url) = database_url else {
         return api_fail(
             ErrorCode::AccountingControlError,
             "TAOLI_DATABASE_URL is required for accounting, reconciliation, and control smoke tests; start PostgreSQL and launch the app with this environment variable set",

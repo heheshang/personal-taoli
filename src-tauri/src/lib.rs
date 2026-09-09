@@ -3,40 +3,16 @@ mod error;
 
 use std::{
     env,
-    path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use commands::{
     SessionController, account_status, continuous_observation_status, desktop_status,
-    load_config_summary, observe_once, replay_observations, run_accounting_control_smoke,
-    run_paper_smoke, run_reconnect_smoke, start_continuous_observation,
-    stop_continuous_observation,
+    load_app_config, load_config_summary, observe_once, replay_observations,
+    run_accounting_control_smoke, run_paper_smoke, run_reconnect_smoke, save_app_config,
+    start_continuous_observation, stop_continuous_observation,
 };
 use tauri::Manager;
-
-fn load_project_env() {
-    let relative = PathBuf::from(".env");
-    let mut candidates = vec![relative.clone()];
-    if let Ok(executable) = env::current_exe() {
-        candidates.extend(
-            executable
-                .ancestors()
-                .skip(1)
-                .map(|ancestor| ancestor.join(&relative)),
-        );
-    }
-
-    let Some(path) = candidates.into_iter().find(|path| path.is_file()) else {
-        return;
-    };
-    if let Err(error) = dotenvy::from_path(&path) {
-        eprintln!(
-            "failed to load environment file {}: {error}",
-            path.display()
-        );
-    }
-}
 
 static EXIT_FLUSH_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -88,7 +64,6 @@ fn install_term_signal_handler(_app: &tauri::AppHandle) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    load_project_env();
     tauri::Builder::default()
         .manage(SessionController::default())
         .setup(|app| {
@@ -107,7 +82,9 @@ pub fn run() {
             start_continuous_observation,
             stop_continuous_observation,
             continuous_observation_status,
-            run_reconnect_smoke
+            run_reconnect_smoke,
+            load_app_config,
+            save_app_config,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -116,9 +93,6 @@ pub fn run() {
                 if EXIT_FLUSH_STARTED.swap(true, Ordering::SeqCst) {
                     return;
                 }
-                // First exit request: flush the observer session, then exit
-                // with the requested code (0 on SIGTERM/window close, 1 on
-                // autostart failure).
                 let exit_code = code.unwrap_or(0);
                 api.prevent_exit();
                 let handle = app.clone();

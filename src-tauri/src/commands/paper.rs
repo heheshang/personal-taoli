@@ -9,8 +9,12 @@ use super::{
 };
 
 #[tauri::command]
-pub async fn run_paper_smoke(kind: String) -> ApiResponse<PaperSmokeResult> {
-    run_paper_smoke_with_database_url(kind, database_url()).await
+pub async fn run_paper_smoke(
+    kind: String,
+    database_url_param: Option<String>,
+) -> ApiResponse<PaperSmokeResult> {
+    let database_url = database_url_param.or_else(database_url);
+    run_paper_smoke_with_database_url(kind, database_url).await
 }
 
 async fn run_paper_smoke_with_database_url(

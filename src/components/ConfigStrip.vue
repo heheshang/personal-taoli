@@ -1,22 +1,17 @@
 <script setup lang="ts">
-import { ElInput } from 'element-plus'
-
 defineProps<{
   symbol: string | null
   quantity: string | null
   baseAsset: string | null
   orderbookDepth: number | null
 }>()
-
-const configPath = defineModel<string>('configPath', { default: '' })
 </script>
 
 <template>
   <section class="config-strip">
-    <span class="eyebrow">MARKET / CONFIG</span>
+    <span class="eyebrow">市场 / 配置</span>
     <b>{{ symbol || '—' }}</b>
     <span>{{ quantity || '—' }} {{ baseAsset || '' }}</span>
-    <span class="muted">DEPTH {{ orderbookDepth || '—' }}</span>
-    <ElInput v-model="configPath" size="small" placeholder="config/observer.toml" class="path-input" />
+    <span class="muted">深度 {{ orderbookDepth || '—' }}</span>
   </section>
 </template>

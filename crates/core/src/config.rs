@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObserverConfig {
     pub symbol: String,
     pub base_asset: String,
@@ -30,7 +30,7 @@ pub struct ObserverConfig {
     pub strategy: StrategyConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VenueConfig {
     pub base_url: String,
     pub websocket_url: String,
@@ -51,7 +51,7 @@ pub struct StrategyConfig {
     pub other_direct_cost: Decimal,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveConfig {
     pub path: PathBuf,
     pub queue_capacity: usize,
@@ -67,6 +67,82 @@ impl ObserverConfig {
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         config.validate()?;
         Ok(config)
+    }
+
+    pub fn load_from_json(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            bail!("config file {} does not exist", path.display());
+        }
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read config {}", path.display()))?;
+        let config: Self = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse config {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn save_to_json(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory {}", parent.display()))?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .context("failed to serialize config to JSON")?;
+        fs::write(path, json)
+            .with_context(|| format!("failed to write config {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn default_config() -> Self {
+        Self {
+            symbol: "BTCUSDT".to_string(),
+            base_asset: "BTC".to_string(),
+            quote_asset: "USDT".to_string(),
+            quantity: "0.001".parse().unwrap(),
+            poll_interval_ms: 2000,
+            http_timeout_ms: 3000,
+            stream_start_timeout_ms: 10000,
+            reconnect_delay_ms: 1000,
+            max_snapshot_age_ms: 1000,
+            max_pair_skew_ms: 500,
+            orderbook_depth: 50,
+            account_refresh_interval_ms: 300000,
+            max_fee_age_ms: 900000,
+            auth_recv_window_ms: 5000,
+            archive: ArchiveConfig {
+                path: "data/archive/observations.ndjson".into(),
+                queue_capacity: 1024,
+                raw_retention_days: 30,
+            },
+            binance: VenueConfig {
+                base_url: "https://api.binance.com".to_string(),
+                websocket_url: "wss://stream.binance.com:9443".to_string(),
+                fallback_taker_fee_rate: "0.001".parse().unwrap(),
+                api_key_env: "TAOLI_BINANCE_API_KEY".to_string(),
+                api_secret_env: "TAOLI_BINANCE_API_SECRET".to_string(),
+                region_eligible_confirmed: false,
+                account_eligible_confirmed: false,
+            },
+            bybit: VenueConfig {
+                base_url: "https://api.bybit.com".to_string(),
+                websocket_url: "wss://stream.bybit.com/v5/public/spot".to_string(),
+                fallback_taker_fee_rate: "0.001".parse().unwrap(),
+                api_key_env: "TAOLI_BYBIT_API_KEY".to_string(),
+                api_secret_env: "TAOLI_BYBIT_API_SECRET".to_string(),
+                region_eligible_confirmed: false,
+                account_eligible_confirmed: false,
+            },
+            strategy: StrategyConfig {
+                min_net_profit: "0.01".parse().unwrap(),
+                min_net_bps: "1".parse().unwrap(),
+                latency_loss_bps: "1".parse().unwrap(),
+                risk_buffer_bps: "1".parse().unwrap(),
+                rebalance_cost: "0".parse().unwrap(),
+                other_direct_cost: "0".parse().unwrap(),
+            },
+        }
     }
 
     pub fn http_timeout(&self) -> Duration {

@@ -11,7 +11,7 @@ pub(super) fn config_path(path: Option<String>) -> PathBuf {
     if let Some(path) = path {
         return PathBuf::from(path);
     }
-    let relative = PathBuf::from("config/observer.toml");
+    let relative = PathBuf::from("config/observer.json");
     if relative.is_file() {
         return relative;
     }
@@ -28,13 +28,30 @@ pub(super) fn config_path(path: Option<String>) -> PathBuf {
 
 pub(super) fn load_config(path: Option<String>) -> Result<(PathBuf, ObserverConfig)> {
     let path = config_path(path);
-    let config = ObserverConfig::load(&path).with_context(|| {
-        format!(
-            "failed to load config {}; launch from project root or provide a config path",
-            path.display()
-        )
-    })?;
-    Ok((path, config))
+    if path.exists() {
+        let config = ObserverConfig::load_from_json(&path).with_context(|| {
+            format!(
+                "failed to load config {}; launch from project root or provide a config path",
+                path.display()
+            )
+        })?;
+        Ok((path, config))
+    } else {
+        // Fallback: try TOML for backward compatibility
+        let toml_path = path.with_extension("toml");
+        if toml_path.exists() {
+            let config = ObserverConfig::load(&toml_path).with_context(|| {
+                format!(
+                    "failed to load config {}; launch from project root or provide a config path",
+                    toml_path.display()
+                )
+            })?;
+            return Ok((toml_path, config));
+        }
+        // Use default config
+        let config = ObserverConfig::default_config();
+        Ok((path, config))
+    }
 }
 
 pub(super) fn http_client(config: &ObserverConfig) -> Result<Client> {

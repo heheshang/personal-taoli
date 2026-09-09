@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
 import type { ApiResponse, Status, Config, Account, Observe, Continuous } from './types'
+import SidebarNav from './components/SidebarNav.vue'
 import TopBar from './components/TopBar.vue'
 import ConfigStrip from './components/ConfigStrip.vue'
 import MetricGrid from './components/MetricGrid.vue'
@@ -14,6 +15,7 @@ import StrategyLattice from './components/StrategyLattice.vue'
 import RelationshipGraph from './components/RelationshipGraph.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import DetailPanel from './components/DetailPanel.vue'
+import SettingsPage from './components/SettingsPage.vue'
 import AppFooter from './components/AppFooter.vue'
 
 const status = ref<Status | null>(null)
@@ -25,11 +27,13 @@ const continuous = ref<Continuous | null>(null)
 const busy = ref('')
 const configPath = ref('')
 const archivePath = ref('')
+const databaseUrl = ref('')
+const activePage = ref('overview')
 
 const canOperate = computed(() => busy.value === '')
-const liveLabel = computed(() => status.value?.real_order_capability ? 'LIVE' : 'PAPER / READ-ONLY')
+const liveLabel = computed(() => status.value?.real_order_capability ? '实盘' : 'PAPER / 只读')
 const feedState = computed(() => observation.value?.feeds.map(feed => feed.state).join(' · ') || '等待一次观测')
-const eventCount = computed(() => observation.value ? '1 decision' : '0 events')
+const eventCount = computed(() => observation.value ? '1 条决策' : '0 条事件')
 
 function fmtTime(ms: number | null): string {
   return ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '—'
@@ -87,11 +91,11 @@ async function reconnectSmoke() {
 }
 
 async function paper(kind: string) {
-  report.value = await call('run_paper_smoke', { kind })
+  report.value = await call('run_paper_smoke', { kind, databaseUrlParam: databaseUrl.value || null })
 }
 
 async function accountingControl(kind: string) {
-  report.value = await call('run_accounting_control_smoke', { kind })
+  report.value = await call('run_accounting_control_smoke', { kind, databaseUrlParam: databaseUrl.value || null })
 }
 
 onMounted(async () => {
@@ -102,66 +106,95 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="dashboard">
-    <TopBar
-      :version="status?.version ?? null"
-      :live-label="liveLabel"
-      :can-operate="canOperate"
-      @refresh="loadConfig"
+  <div class="app-layout">
+    <SidebarNav
+      :active="activePage"
+      :continuous-running="continuous?.running ?? false"
+      @navigate="activePage = $event"
     />
 
-    <ConfigStrip
-      :symbol="config?.symbol ?? null"
-      :quantity="config?.quantity ?? null"
-      :base-asset="config?.base_asset ?? null"
-      :orderbook-depth="config?.orderbook_depth ?? null"
-      v-model:config-path="configPath"
-    />
+    <main class="main-content">
+      <TopBar
+        :version="status?.version ?? null"
+        :live-label="liveLabel"
+        :can-operate="canOperate"
+        @refresh="loadConfig"
+      />
 
-    <MetricGrid
-      :observation="observation"
-      :accounts="accounts"
-      :feed-state="feedState"
-    />
+      <ConfigStrip
+        :symbol="config?.symbol ?? null"
+        :quantity="config?.quantity ?? null"
+        :base-asset="config?.base_asset ?? null"
+        :orderbook-depth="config?.orderbook_depth ?? null"
+      />
 
-    <section class="two-col">
-      <HistoryChart />
-      <ActivityLog :feed-state="feedState" :event-count="eventCount" />
-    </section>
+      <!-- 概览页 -->
+      <div v-show="activePage === 'overview'" class="page-content">
+        <MetricGrid
+          :observation="observation"
+          :accounts="accounts"
+          :feed-state="feedState"
+        />
+        <section class="two-col">
+          <HistoryChart />
+          <ActivityLog :feed-state="feedState" :event-count="eventCount" />
+        </section>
+        <RidgePanel :observation="observation" />
+      </div>
 
-    <RidgePanel :observation="observation" />
+      <!-- 市场页 -->
+      <div v-show="activePage === 'market'" class="page-content">
+        <section class="two-col">
+          <VenueHandoff :accounts="accounts" />
+          <StrategyLattice :orderbook-depth="config?.orderbook_depth ?? null" />
+        </section>
+        <RelationshipGraph />
+        <MetricGrid
+          :observation="observation"
+          :accounts="accounts"
+          :feed-state="feedState"
+        />
+      </div>
 
-    <section class="two-col lower-grid">
-      <VenueHandoff :accounts="accounts" />
-      <StrategyLattice :orderbook-depth="config?.orderbook_depth ?? null" />
-    </section>
+      <!-- 控制台页 -->
+      <div v-show="activePage === 'control'" class="page-content">
+        <ControlPanel
+          :can-operate="canOperate"
+          :archive-path="archivePath"
+          :continuous="continuous"
+          :fmt-time="fmtTime"
+          @load-accounts="loadAccounts"
+          @observe="observe"
+          @replay="replay"
+          @paper="paper"
+          @accounting-control="accountingControl"
+          @start-continuous="startContinuous"
+          @stop-continuous="stopContinuous"
+          @reconnect-smoke="reconnectSmoke"
+        />
+      </div>
 
-    <RelationshipGraph />
+      <!-- 报告页 -->
+      <div v-show="activePage === 'reports'" class="page-content">
+        <DetailPanel
+          :accounts="accounts"
+          :observation="observation"
+          :report="report"
+        />
+      </div>
 
-    <ControlPanel
-      :can-operate="canOperate"
-      :archive-path="archivePath"
-      :continuous="continuous"
-      :fmt-time="fmtTime"
-      @load-accounts="loadAccounts"
-      @observe="observe"
-      @replay="replay"
-      @paper="paper"
-      @accounting-control="accountingControl"
-      @start-continuous="startContinuous"
-      @stop-continuous="stopContinuous"
-      @reconnect-smoke="reconnectSmoke"
-    />
+      <!-- 设置页 -->
+      <div v-show="activePage === 'settings'" class="page-content">
+        <SettingsPage
+          :can-operate="canOperate"
+          @config-saved="loadConfig"
+        />
+      </div>
 
-    <DetailPanel
-      :accounts="accounts"
-      :observation="observation"
-      :report="report"
-    />
-
-    <AppFooter
-      :symbol="config?.symbol ?? null"
-      :version="status?.version ?? null"
-    />
-  </main>
+      <AppFooter
+        :symbol="config?.symbol ?? null"
+        :version="status?.version ?? null"
+      />
+    </main>
+  </div>
 </template>

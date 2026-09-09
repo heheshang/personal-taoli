@@ -7,7 +7,7 @@ defineProps<{
 
 <template>
   <footer>
-    <span>TAOLI OBSERVER · {{ symbol || 'MARKET' }}</span>
-    <span>SAFE MODE / NO ORDER ROUTES / {{ version || '—' }}</span>
+    <span>TAOLI 观测台 · {{ symbol || '市场' }}</span>
+    <span>安全模式 / 无订单路由 / {{ version || '—' }}</span>
   </footer>
 </template>
