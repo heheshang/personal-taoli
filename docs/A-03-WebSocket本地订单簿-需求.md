@@ -113,11 +113,11 @@
 发布时执行：
 
 ```bash
-cargo fmt --check
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo run --release -- --once --output json
-cargo run --release -- --reconnect-smoke
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p personal-taoli-observer --release -- --once --output json
+cargo run -p personal-taoli-observer --release -- --reconnect-smoke
 ```
 
 发布证据：

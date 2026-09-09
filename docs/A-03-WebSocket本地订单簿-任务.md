@@ -28,12 +28,12 @@
 | 分析 | 核对 Bybit snapshot/delta 与 `seq` 语义 | A03-R03 | 官方协议；重启 snapshot 和旧序列边界 | released |
 | 设计 | 建立场所无关的绝对数量本地簿 | A03-R01、A03-R02、A03-R03 | `LocalOrderBook`、`LevelUpdate` | released |
 | 设计 | 建立统一状态和单写者发布模型 | A03-R04、A03-R05 | `BookState`、`FeedPublisher`、`BookFeed` | released |
-| 实现 | 接入 Binance WebSocket 缓冲和 REST 快照衔接 | A03-R01、A03-R02 | `src/venues/binance_stream.rs` | released |
-| 实现 | 接入 Bybit snapshot/delta、heartbeat 和跨序列过滤 | A03-R03、A03-R05 | `src/venues/bybit_stream.rs` | released |
+| 实现 | 接入 Binance WebSocket 缓冲和 REST 快照衔接 | A03-R01、A03-R02 | `crates/core/src/venues/binance_stream.rs` | released |
+| 实现 | 接入 Bybit snapshot/delta、heartbeat 和跨序列过滤 | A03-R03、A03-R05 | `crates/core/src/venues/bybit_stream.rs` | released |
 | 实现 | 接入静默检测、错误撤下快照和自动重连 | A03-R04、A03-R05 | 两所 `subscribe` 重连循环 | released |
 | 实现 | 接入双方有效启动门禁、单次扫描和主动重连烟测 | A03-R05、A03-R06、A03-R07 | `wait_for_valid_pair`、`run_reconnect_smoke`、`scan_current` | released |
-| 验证 | 覆盖快照衔接、断档、乱序、绝对档位和状态边界 | A03-R01、A03-R02、A03-R03、A03-R04、A03-R05 | 发布时 `cargo test` 21 项通过 | released |
-| 验证 | 执行格式和严格静态检查 | A03-R01、A03-R02、A03-R03、A03-R04、A03-R05、A03-R06、A03-R07 | `cargo fmt --check`；Clippy 零警告 | released |
+| 验证 | 覆盖快照衔接、断档、乱序、绝对档位和状态边界 | A03-R01、A03-R02、A03-R03、A03-R04、A03-R05 | 发布时 `cargo test --workspace` 21 项通过 | released |
+| 验证 | 执行格式和严格静态检查 | A03-R01、A03-R02、A03-R03、A03-R04、A03-R05、A03-R06、A03-R07 | `cargo fmt --all -- --check`；Clippy 零警告 | released |
 | 验证 | 执行真实双所公共行情单次扫描 | A03-R06、A03-R07 | BTCUSDT 双向结果；接收偏差 5 ms | released |
 | 验证 | 执行真实双所主动重连恢复 | A03-R05 | 两所 generation 1→2、`reconnects=1`、恢复 `VALID` | released |
 | 发布 | 更新架构状态、追踪矩阵与剩余风险 | A03-R01、A03-R02、A03-R03、A03-R04、A03-R05、A03-R06、A03-R07 | 总文档 A-03 发布记录 | released |
@@ -41,11 +41,11 @@
 ## 4. 发布时验证顺序
 
 ```bash
-cargo fmt --check
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo run --release -- --once --output json
-cargo run --release -- --reconnect-smoke
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p personal-taoli-observer --release -- --once --output json
+cargo run -p personal-taoli-observer --release -- --reconnect-smoke
 ```
 
 判定规则：
@@ -58,9 +58,9 @@ cargo run --release -- --reconnect-smoke
 
 ## 5. 发布证据
 
-- `cargo fmt --check`：通过。
-- `cargo test`：21 项通过。
-- `cargo clippy --all-targets -- -D warnings`：通过，无警告。
+- `cargo fmt --all -- --check`：通过。
+- `cargo test --workspace`：21 项通过。
+- `cargo clippy --workspace --all-targets -- -D warnings`：通过，无警告。
 - 真实 `--once --output json`：Binance/Bybit BTCUSDT 本地簿同步成功，接收时间偏差 5 ms，两向因完整成本后净收益为负而拒绝。
 - 真实 `--reconnect-smoke`：Binance 与 Bybit 均从 generation 1 进入 generation 2，`reconnects=1`，自动重建并恢复 `VALID`。
 

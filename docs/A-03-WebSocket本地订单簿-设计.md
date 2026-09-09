@@ -24,12 +24,12 @@ flowchart LR
 
 职责：
 
-- `src/venues/binance_stream.rs`：WebSocket 缓冲、REST 快照衔接、`U/u` 连续性、重连循环。
-- `src/venues/bybit_stream.rs`：订阅、snapshot/delta、跨序列 `seq`、heartbeat 和重连循环。
-- `src/local_book.rs::LocalOrderBook`：场所无关的绝对档位更新、排序和快照校验。
-- `src/local_book.rs::{FeedPublisher,BookFeedStatus,BookFeed}`：统一状态发布、消费者订阅和主动重连命令。
-- `src/main.rs::{wait_for_valid_pair,run_reconnect_smoke,scan_current}`：双所启动门禁、恢复烟测和扫描入口。
-- `src/scan.rs`：消费已验证快照并继续执行年龄、双所接收偏差和经济准入；不负责流同步。
+- `crates/core/src/venues/binance_stream.rs`：WebSocket 缓冲、REST 快照衔接、`U/u` 连续性、重连循环。
+- `crates/core/src/venues/bybit_stream.rs`：订阅、snapshot/delta、跨序列 `seq`、heartbeat 和重连循环。
+- `crates/core/src/local_book.rs::LocalOrderBook`：场所无关的绝对档位更新、排序和快照校验。
+- `crates/core/src/local_book.rs::{FeedPublisher,BookFeedStatus,BookFeed}`：统一状态发布、消费者订阅和主动重连命令。
+- `crates/core/src/observer.rs::{wait_for_valid_pair,scan_current}` 与 `crates/observer-cli/src/main.rs::run_reconnect_smoke`：双所启动门禁、恢复烟测和扫描入口。
+- `crates/core/src/scan.rs`：消费已验证快照并继续执行年龄、双所接收偏差和经济准入；不负责流同步。
 
 ## 3. 并发与所有权
 

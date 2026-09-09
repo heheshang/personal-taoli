@@ -4,7 +4,7 @@
 
 ## 1. 架构决策
 
-- `src-tauri/src/main.rs` 是唯一 Tauri 应用入口，不再解析 CLI 参数。
+- `src-tauri/src/main.rs` 是唯一 Tauri 应用入口，不再解析 CLI 参数；只读观察 CLI 是独立 crate `crates/observer-cli`（二进制 `personal-taoli-observer`），与桌面共享 `crates/core`。
 - Rust command 直接编排现有 `config`、`account`、`venues`、`local_book`、`scan`、`archive` 和 PAPER 模块。
 - Vue + Element Plus + TypeScript 是唯一操作界面；不引入前端状态管理库，页面状态足够小。
 - Tauri 使用静态 `ui/` 前端资源；Vue 通过 `@tauri-apps/api/core` 的 `invoke` 调用 command。
@@ -53,7 +53,7 @@
 
 ## 6. 删除与替换路径
 
-- 删除根包中的 CLI 专用入口；`src-tauri/src/main.rs` 是唯一桌面二进制入口，`src-tauri/src/lib.rs` 只负责注册 command。
+- 删除根包中的 CLI 专用入口；`src-tauri/src/main.rs` 是唯一桌面二进制入口，`src-tauri/src/lib.rs` 只负责注册 command。桌面不再提供 CLI 形态；只读观察/回放/重连烟测命令行已迁移到 `crates/observer-cli`（`personal-taoli-observer`），引用 `crates/core` 的 `observer`、`venues`、`scan`、`archive` 与 `account`。
 - `src-tauri/src/commands/` 按职责拆分为 `system`、`account`、`observation`、`archive`、`paper`、`dto` 和 `support`，命令层不承载行情扫描和归档编排细节。
 - `crates/core` 是唯一领域与基础设施 crate；`observer` 负责一次观测编排，`scan` 负责机会计算，`venues` 负责交易所适配，PAPER 模块负责持久化安全核心。
 - 前端源码统一位于根目录 `src/`，Tauri 只加载构建产物 `ui/`；前端通过 `@tauri-apps/api` 调用稳定的 command DTO，不直接耦合 Rust 内部模块。

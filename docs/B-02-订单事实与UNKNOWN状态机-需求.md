@@ -46,10 +46,10 @@
 ## 7. 验收命令
 
 ```bash
-cargo fmt --check
-cargo test
-cargo clippy --all-targets -- -D warnings
-TAOLI_DATABASE_URL=postgresql://... cargo run --release -- --order-facts-smoke --output json
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+TAOLI_DATABASE_URL=postgresql://... cargo test -p personal-taoli-core order::tests -- --nocapture
 ```
 
 烟测必须证明提交明确拒绝、超时进入 UNKNOWN、暂未找到保持 UNKNOWN、后续确认恢复、重复成交去重、撤单竞态保留成交、重启恢复以及模拟适配器调用可计数；外部订单调用固定为 0。

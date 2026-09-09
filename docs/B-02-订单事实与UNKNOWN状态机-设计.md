@@ -7,10 +7,10 @@ B-02 在 B-01 `order_intents` 和 `NOT_SENT` 边界上增加独立订单事实�
 
 ## 2. 模块边界
 
-- `src/order.rs`：状态枚举、证据校验、PostgreSQL 事实写入、调查队列和确定性 PAPER 烟测。
-- `migrations/0002_order_facts.sql`：订单事实、调查尝试、成交事实与状态约束。
-- `src/main.rs`：`--order-facts-smoke` 运维入口；在创建 HTTP 客户端前返回。
-- `src/paper.rs`：保持 B-01 计划与资金预留语义；B-02 不把恢复等同于可发送。
+- `crates/core/src/order.rs`：状态枚举、证据校验、PostgreSQL 事实写入、调查队列和确定性 PAPER 烟测。
+- `crates/core/migrations/0002_order_facts.sql`：订单事实、调查尝试、成交事实与状态约束。
+- `src-tauri/src/commands/paper.rs`：`run_paper_smoke("B02")` 运维入口；在创建 HTTP 客户端前返回。
+- `crates/core/src/paper.rs`：保持 B-01 计划与资金预留语义；B-02 不把恢复等同于可发送。
 
 ## 3. 数据模型
 
@@ -60,4 +60,4 @@ ACCEPTED --cancel_confirmed--> ACCEPTED + cancel=CONFIRMED
 
 ## 8. 安全边界
 
-`--order-facts-smoke` 只使用临时 PostgreSQL 和内置模拟适配器，输出数据库事实和 `external_order_calls=0`。不输出数据库 URL、密钥或原始认证信息，不改变 A-05 运行门禁。
+`run_paper_smoke("B02")` 需要 `TAOLI_DATABASE_URL` 指向临时 PostgreSQL，只使用内置模拟适配器，输出数据库事实和 `external_order_calls=0`。不输出数据库 URL、密钥或原始认证信息，不改变 A-05 运行门禁。
