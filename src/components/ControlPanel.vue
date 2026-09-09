@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ElButton } from 'element-plus'
 import type { Continuous } from '../types'
+import { ACCOUNTING_CONTROL_KINDS, PAPER_KINDS } from '../commands'
+import type { AccountingControlKind, PaperKind } from '../commands'
 
 defineProps<{
   canOperate: boolean
@@ -13,8 +15,8 @@ const emit = defineEmits<{
   loadAccounts: []
   observe: []
   replay: []
-  paper: [kind: string]
-  accountingControl: [kind: string]
+  paper: [kind: PaperKind]
+  accountingControl: [kind: AccountingControlKind]
   startContinuous: []
   stopContinuous: []
   reconnectSmoke: []
@@ -31,8 +33,8 @@ const emit = defineEmits<{
       <ElButton :disabled="!canOperate" @click="emit('loadAccounts')">账户状态</ElButton>
       <ElButton type="primary" :disabled="!canOperate" @click="emit('observe')">执行观测</ElButton>
       <ElButton :disabled="!canOperate || !archivePath" @click="emit('replay')">回放归档</ElButton>
-      <ElButton v-for="kind in ['B01', 'B02', 'B03']" :key="kind" :disabled="!canOperate" @click="emit('paper', kind)">PAPER {{ kind }}</ElButton>
-      <ElButton v-for="kind in ['ACCOUNTING', 'RECONCILIATION', 'CONTROL']" :key="kind" :disabled="!canOperate" @click="emit('accountingControl', kind)">{{ kind === 'ACCOUNTING' ? '账务' : kind === 'RECONCILIATION' ? '对账' : '控制' }}</ElButton>
+      <ElButton v-for="kind in PAPER_KINDS" :key="kind" :disabled="!canOperate" @click="emit('paper', kind)">PAPER {{ kind }}</ElButton>
+      <ElButton v-for="kind in ACCOUNTING_CONTROL_KINDS" :key="kind" :disabled="!canOperate" @click="emit('accountingControl', kind)">{{ kind === 'ACCOUNTING' ? '账务' : kind === 'RECONCILIATION' ? '对账' : '控制' }}</ElButton>
       <ElButton :disabled="!canOperate || continuous?.running" @click="emit('startContinuous')">启动连续</ElButton>
       <ElButton :disabled="!canOperate || !continuous?.running" @click="emit('stopContinuous')">停止连续</ElButton>
       <ElButton :disabled="!canOperate" @click="emit('reconnectSmoke')">重连验证</ElButton>

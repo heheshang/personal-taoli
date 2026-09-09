@@ -10,7 +10,7 @@
 - Rust command 直接编排现有 `config`、`account`、`venues`、`local_book`、`scan`、`archive`、`observer` 和 PAPER 模块；命令层不承载行情扫描与归档编排细节。
 - Vue + Element Plus + TypeScript 是唯一操作界面；不引入前端状态管理库，页面状态足够小。
 - Tauri 使用静态 `ui/` 前端资源；Vue 通过 `@tauri-apps/api/core` 的 `invoke` 调用 command。
-- Rust 返回 JSON 可序列化 DTO；前端不接触数据库连接串、环境变量或凭证。
+- Rust 返回 JSON 可序列化 DTO；配置（数据库连接串、交易所密钥、观察参数）由前端设置页统一编辑并持有默认值，持久化为 JSON，后端启动时读取注入。
 
 ## 2. Command 契约
 
@@ -27,6 +27,10 @@
 | `stop_continuous_observation` | 无 | `ContinuousStatus` | 停止会话并冲刷归档；空闲时返回 `InvalidRequest` |
 | `continuous_observation_status` | 无 | `ContinuousStatus` | 无 |
 | `run_reconnect_smoke` | `config_path: Option<String>` | `ReconnectSmokeResult` | 对两所公共 feed 各强制一次重连，等待恢复；无订单 |
+| `load_app_config` | 无 | `AppConfig` | 读取 env 域配置（shell 环境变量 + `config/app-config.json` 非空覆盖） |
+| `save_app_config` | `config: AppConfig` | 无 | 写入 `config/app-config.json`；非空字段在下次启动时注入 `TAOLI_*` 环境变量 |
+| `get_observer_config` | `config_path: Option<String>` | `ObserverConfig` | 返回完整生效观察配置（json 优先，toml 兜底，内置默认兜底） |
+| `save_observer_config` | `config_path`, `config: ObserverConfig` | 无 | 写入完整观察配置 json；保存后即时生效（json 优先加载链） |
 
 `ContinuousStatus` 含 `running`、`archive_path`、`gap_path`、`started_at_ms`、`last_report_at_ms`、`last_report` 与 `error`；`last_report` 为最近一次 `ScanReport` 的 JSON。`ReconnectSmokeResult` 携带两所 `BookFeedStatus` 与固定 `no_orders: true`（界面呈现 READ ONLY）。
 
@@ -70,14 +74,14 @@
 - `src-tauri/src/commands/` 按职责拆分为 `system`、`account`、`observation`、`archive`、`paper`、`session`、`dto` 与 `support`；`session.rs` 持有 `SessionController` 与会话命令。
 - `crates/core` 是唯一领域与基础设施 crate；`observer` 负责一次/连续观测编排与重连烟测，`scan` 负责机会计算，`venues` 负责交易所适配，PAPER 模块负责持久化安全核心。
 - 前端源码统一位于根目录 `src/`，Tauri 只加载构建产物 `ui/`；前端通过 `@tauri-apps/api` 调用稳定的 command DTO，不直接耦合 Rust 内部模块。
-- 配置样例保留在根目录 `config/observer.toml`，数据库迁移归属 `crates/core/migrations/`，测试 fixture 归属 `crates/core/tests/fixtures/`。
+- 配置样例保留在根目录 `config/observer.toml`；运行时配置由前端写为 `src-tauri/config/observer.json` 与 `src-tauri/config/app-config.json`（相对应用进程工作目录），数据库迁移归属 `crates/core/migrations/`，测试 fixture 归属 `crates/core/tests/fixtures/`。
 
 ## 7. 开发、构建与生成物
 
 - 安装前端依赖：`npm ci`。
 - 启动桌面开发环境：`npm run tauri dev`。该命令先启动固定在 `http://localhost:1420` 的 Vite 服务，再启动 Tauri Rust 应用。
-- 使用 PAPER 烟测前，启动本地 PostgreSQL，并在项目根目录 `.env` 设置 `TAOLI_DATABASE_URL=postgresql://taoli:taoli@127.0.0.1:55432/taoli`；当前 Docker 容器通过宿主机 `127.0.0.1:55432` 暴露 PostgreSQL。Tauri 启动时自动读取 `.env`，shell 中已存在的环境变量优先。桌面端不会从前端输入、保存或展示该连接串；未配置时 PAPER command 按安全策略返回 `PAPER_ERROR`，不伪造成功。
-- 无人值守运行桌面连续观察：`TAOLI_OBSERVER_AUTOSTART=1 TAOLI_OBSERVER_ARCHIVE=<archive> ./target/release/personal-taoli`（`src-tauri` 产物，release 构建输出于 `target/release/personal-taoli`）；配置仍取 `config/observer.toml`。
+- 使用 PAPER 烟测前，启动本地 PostgreSQL，并配置 `TAOLI_DATABASE_URL=postgresql://taoli:taoli@127.0.0.1:55432/taoli`（当前 Docker 容器通过宿主机 `127.0.0.1:55432` 暴露 PostgreSQL）。连接串与交易所密钥全部由前端设置页维护：填写后保存为 `config/app-config.json`，Tauri 启动时读取该 JSON 并把非空字段注入 `TAOLI_*` 环境变量；shell 中已有的环境变量在 JSON 同字段为空时继续生效。未配置时 PAPER command 按安全策略返回 `PAPER_ERROR`，不伪造成功。
+- 无人值守运行桌面连续观察：`TAOLI_OBSERVER_AUTOSTART=1 TAOLI_OBSERVER_ARCHIVE=<archive> ./target/release/personal-taoli`（`src-tauri` 产物，release 构建输出于 `target/release/personal-taoli`）；配置读取顺序与交互模式一致：`config/observer.json`（前端保存）优先，`config/observer.toml` 兜底，缺省用内置默认值。
 - 单独构建前端：`npm run build`；产物写入根目录 `ui/`，该目录除 `.gitkeep` 外不进入版本控制。
 - Rust 检查与测试：`cargo fmt --all -- --check`、`cargo check --workspace`、`TAOLI_DATABASE_URL=… cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo build --workspace --release`。
 - `src-tauri/gen/` 是 Tauri 自动生成的 schema 目录，不提交；`src-tauri/icons/icon.png` 是 Tauri 打包所需资源，必须保留。

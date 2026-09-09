@@ -8,13 +8,46 @@ use std::{
 
 use commands::{
     SessionController, account_status, continuous_observation_status, desktop_status,
-    load_app_config, load_config_summary, observe_once, replay_observations,
-    run_accounting_control_smoke, run_paper_smoke, run_reconnect_smoke, save_app_config,
-    start_continuous_observation, stop_continuous_observation,
+    get_observer_config, load_app_config, load_app_config_file, load_config_summary, observe_once,
+    replay_observations, run_accounting_control_smoke, run_paper_smoke, run_reconnect_smoke,
+    save_app_config, save_observer_config, start_continuous_observation,
+    stop_continuous_observation,
 };
 use tauri::Manager;
 
 static EXIT_FLUSH_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Loads the saved app config (JSON) at startup and injects non-empty values
+/// into the `TAOLI_*` environment variables before any command or observer
+/// task runs. Empty saved values are ignored so shell-provided environment
+/// variables keep working. Runs in `setup`, single-threaded, before any
+/// command can execute, so the `set_var` calls do not race with readers.
+fn load_saved_env_config() {
+    let config = load_app_config_file();
+    let mut loaded = Vec::new();
+    for (name, value) in [
+        ("TAOLI_DATABASE_URL", config.database_url.as_str()),
+        ("TAOLI_BINANCE_API_KEY", config.binance_api_key.as_str()),
+        (
+            "TAOLI_BINANCE_API_SECRET",
+            config.binance_api_secret.as_str(),
+        ),
+        ("TAOLI_BYBIT_API_KEY", config.bybit_api_key.as_str()),
+        ("TAOLI_BYBIT_API_SECRET", config.bybit_api_secret.as_str()),
+    ] {
+        if !value.is_empty() {
+            // SAFETY: this runs in `setup` before any command or spawned
+            // observer task reads these variables; no concurrent env access.
+            unsafe {
+                env::set_var(name, value);
+            }
+            loaded.push(name);
+        }
+    }
+    if !loaded.is_empty() {
+        eprintln!("injected saved config into env: {}", loaded.join(", "));
+    }
+}
 
 /// Interprets `TAOLI_OBSERVER_AUTOSTART` (any non-empty value) as a request to
 /// start continuous observation before the window is shown. The archive path
@@ -67,6 +100,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SessionController::default())
         .setup(|app| {
+            load_saved_env_config();
             install_term_signal_handler(app.handle());
             autostart_continuous(app);
             Ok(())
@@ -85,6 +119,8 @@ pub fn run() {
             run_reconnect_smoke,
             load_app_config,
             save_app_config,
+            get_observer_config,
+            save_observer_config,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

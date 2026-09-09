@@ -3,9 +3,11 @@ use std::{env, fs, path::PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use personal_taoli_core::config::ObserverConfig;
+
 use crate::error::{ApiResponse, ErrorCode};
 
-use super::support::api_fail;
+use super::support::{api_fail, api_map, load_config};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -27,8 +29,10 @@ fn config_file_path() -> PathBuf {
     PathBuf::from("config/app-config.json")
 }
 
-#[tauri::command]
-pub async fn load_app_config() -> ApiResponse<AppConfig> {
+/// Effective env domain config: shell environment values merged with
+/// non-empty fields from the JSON file. Shared by the `load_app_config`
+/// command and the startup loader in `lib.rs`.
+pub(crate) fn load_app_config_file() -> AppConfig {
     let path = config_file_path();
 
     let mut config = AppConfig {
@@ -39,45 +43,48 @@ pub async fn load_app_config() -> ApiResponse<AppConfig> {
         bybit_api_secret: env::var("TAOLI_BYBIT_API_SECRET").unwrap_or_default(),
     };
 
-    if path.exists() {
-        if let Ok(raw) = fs::read_to_string(&path) {
-            if let Ok(saved) = serde_json::from_str::<AppConfig>(&raw) {
-                if !saved.database_url.is_empty() {
-                    config.database_url = saved.database_url;
-                }
-                if !saved.binance_api_key.is_empty() {
-                    config.binance_api_key = saved.binance_api_key;
-                }
-                if !saved.binance_api_secret.is_empty() {
-                    config.binance_api_secret = saved.binance_api_secret;
-                }
-                if !saved.bybit_api_key.is_empty() {
-                    config.bybit_api_key = saved.bybit_api_key;
-                }
-                if !saved.bybit_api_secret.is_empty() {
-                    config.bybit_api_secret = saved.bybit_api_secret;
-                }
-            }
+    if path.exists()
+        && let Ok(raw) = fs::read_to_string(&path)
+        && let Ok(saved) = serde_json::from_str::<AppConfig>(&raw)
+    {
+        if !saved.database_url.is_empty() {
+            config.database_url = saved.database_url;
+        }
+        if !saved.binance_api_key.is_empty() {
+            config.binance_api_key = saved.binance_api_key;
+        }
+        if !saved.binance_api_secret.is_empty() {
+            config.binance_api_secret = saved.binance_api_secret;
+        }
+        if !saved.bybit_api_key.is_empty() {
+            config.bybit_api_key = saved.bybit_api_key;
+        }
+        if !saved.bybit_api_secret.is_empty() {
+            config.bybit_api_secret = saved.bybit_api_secret;
         }
     }
 
-    ApiResponse::ok(config)
+    config
+}
+
+#[tauri::command]
+pub async fn load_app_config() -> ApiResponse<AppConfig> {
+    ApiResponse::ok(load_app_config_file())
 }
 
 #[tauri::command]
 pub async fn save_app_config(config: AppConfig) -> ApiResponse<()> {
     let path = config_file_path();
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent)
+    if let Some(parent) = path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))
-        {
-            return api_fail(
-                ErrorCode::ConfigError,
-                format!("failed to create config directory: {e}"),
-                false,
-            );
-        }
+    {
+        return api_fail(
+            ErrorCode::ConfigError,
+            format!("failed to create config directory: {e}"),
+            false,
+        );
     }
 
     let json = match serde_json::to_string_pretty(&config) {
@@ -101,9 +108,37 @@ pub async fn save_app_config(config: AppConfig) -> ApiResponse<()> {
         );
     }
 
-    // Environment variables will be loaded from JSON config on next startup
-    // For current session, they are already set via load_app_config
+    // Loaded on next startup by `lib.rs::run` setup, which injects the saved
+    // values into the TAOLI_* environment variables.
 
+    ApiResponse::ok(())
+}
+
+/// Returns the full effective observer config (JSON if present, TOML as
+/// backward-compatible fallback, built-in defaults otherwise).
+#[tauri::command]
+pub async fn get_observer_config(config_path: Option<String>) -> ApiResponse<ObserverConfig> {
+    match load_config(config_path) {
+        Ok((_, config)) => ApiResponse::ok(config),
+        Err(error) => api_map(Err(error), ErrorCode::ConfigError, false),
+    }
+}
+
+/// Persists the full observer config as JSON. Takes effect immediately: every
+/// config load (summary, observe, session, account) prefers the JSON file.
+#[tauri::command]
+pub async fn save_observer_config(
+    config_path: Option<String>,
+    config: ObserverConfig,
+) -> ApiResponse<()> {
+    let path = super::support::config_path(config_path);
+    if let Err(error) = config.save_to_json(&path) {
+        return api_fail(
+            ErrorCode::ConfigError,
+            format!("failed to save config to {}: {error}", path.display()),
+            false,
+        );
+    }
     ApiResponse::ok(())
 }
 

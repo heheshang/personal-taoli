@@ -18,5 +18,6 @@ pub use session::{
     SessionController, continuous_observation_status, run_reconnect_smoke,
     start_continuous_observation, stop_continuous_observation,
 };
-pub use settings::{load_app_config, save_app_config};
+pub(crate) use settings::load_app_config_file;
+pub use settings::{get_observer_config, load_app_config, save_app_config, save_observer_config};
 pub use system::{desktop_status, load_config_summary};

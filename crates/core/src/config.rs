@@ -88,8 +88,8 @@ impl ObserverConfig {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create directory {}", parent.display()))?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .context("failed to serialize config to JSON")?;
+        let json =
+            serde_json::to_string_pretty(self).context("failed to serialize config to JSON")?;
         fs::write(path, json)
             .with_context(|| format!("failed to write config {}", path.display()))?;
         Ok(())

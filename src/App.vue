@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { invoke } from '@tauri-apps/api/core'
-import type { ApiResponse, Status, Config, Account, Observe, Continuous } from './types'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { Status, Config, Account, Observe, Continuous } from './types'
+import { COMMANDS, invokeCommand } from './commands'
+import type { AppConfig } from './commands'
 import SidebarNav from './components/SidebarNav.vue'
 import TopBar from './components/TopBar.vue'
 import ConfigStrip from './components/ConfigStrip.vue'
@@ -39,70 +39,97 @@ function fmtTime(ms: number | null): string {
   return ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '—'
 }
 
+const POLL_INTERVAL_MS = 5000
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startPolling() {
+  if (pollTimer !== null) return
+  pollTimer = setInterval(() => {
+    invokeCommand<Continuous>(COMMANDS.continuousObservationStatus).then(data => {
+      if (data !== undefined) {
+        continuous.value = data
+        if (!data.running) stopPolling()
+      }
+    })
+  }, POLL_INTERVAL_MS)
+}
+
+/** 命令执行辅助：占用全局 busy（互斥所有操作）并统一解包响应。 */
 async function call<T>(name: string, args: Record<string, unknown> = {}): Promise<T | undefined> {
   busy.value = name
   try {
-    const response = await invoke<ApiResponse<T>>(name, args)
-    if (!response.success || response.data === null) {
-      const error = response.error
-      ElMessage.error(`${error?.code ?? 'INTERNAL_ERROR'}: ${error?.message ?? 'command failed'}`)
-      return undefined
-    }
-    return response.data
-  } catch (error) {
-    ElMessage.error(`IPC_ERROR: ${String(error)}`)
-    return undefined
+    return await invokeCommand<T>(name, args)
   } finally {
     busy.value = ''
   }
 }
 
 async function loadConfig() {
-  config.value = (await call<Config>('load_config_summary', { configPath: configPath.value || null })) ?? null
+  config.value = (await call<Config>(COMMANDS.loadConfigSummary, { configPath: configPath.value || null })) ?? null
   if (config.value && !archivePath.value) archivePath.value = config.value.archive_path
 }
 
 async function loadAccounts() {
-  accounts.value = (await call<Account[]>('account_status', { configPath: configPath.value || null })) ?? []
+  accounts.value = (await call<Account[]>(COMMANDS.accountStatus, { configPath: configPath.value || null })) ?? []
 }
 
 async function observe() {
-  observation.value = (await call<Observe>('observe_once', { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null
+  observation.value = (await call<Observe>(COMMANDS.observeOnce, { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null
 }
 
 async function replay() {
-  report.value = await call('replay_observations', { path: archivePath.value })
+  report.value = await call(COMMANDS.replayObservations, { path: archivePath.value })
 }
 
 async function startContinuous() {
-  continuous.value = (await call<Continuous>('start_continuous_observation', { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null
+  continuous.value = (await call<Continuous>(COMMANDS.startContinuousObservation, { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null
+  if (continuous.value?.running) startPolling()
 }
 
 async function stopContinuous() {
-  continuous.value = (await call<Continuous>('stop_continuous_observation')) ?? null
+  continuous.value = (await call<Continuous>(COMMANDS.stopContinuousObservation)) ?? null
+  if (!continuous.value?.running) stopPolling()
 }
 
 async function refreshContinuous() {
-  continuous.value = (await call<Continuous>('continuous_observation_status')) ?? null
+  continuous.value = (await call<Continuous>(COMMANDS.continuousObservationStatus)) ?? null
+  if (continuous.value?.running) startPolling()
 }
 
 async function reconnectSmoke() {
-  report.value = await call('run_reconnect_smoke', { configPath: configPath.value || null })
+  report.value = await call(COMMANDS.runReconnectSmoke, { configPath: configPath.value || null })
 }
 
 async function paper(kind: string) {
-  report.value = await call('run_paper_smoke', { kind, databaseUrlParam: databaseUrl.value || null })
+  report.value = await call(COMMANDS.runPaperSmoke, { kind, databaseUrlParam: databaseUrl.value || null })
 }
 
 async function accountingControl(kind: string) {
-  report.value = await call('run_accounting_control_smoke', { kind, databaseUrlParam: databaseUrl.value || null })
+  report.value = await call(COMMANDS.runAccountingControlSmoke, { kind, databaseUrlParam: databaseUrl.value || null })
 }
 
 onMounted(async () => {
-  status.value = (await call<Status>('desktop_status')) ?? null
+  status.value = (await call<Status>(COMMANDS.desktopStatus)) ?? null
   await loadConfig()
+  const appConfig = await invokeCommand<AppConfig>(COMMANDS.loadAppConfig)
+  if (appConfig?.database_url) databaseUrl.value = appConfig.database_url
   await refreshContinuous()
 })
+
+/** 配置保存后：数据库地址当前会话即刻生效（smoke 命令走 database_url_param 通道），其余重启生效。 */
+async function onConfigSaved(updated: AppConfig | null) {
+  if (updated?.database_url) databaseUrl.value = updated.database_url
+  await loadConfig()
+}
+
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -187,7 +214,7 @@ onMounted(async () => {
       <div v-show="activePage === 'settings'" class="page-content">
         <SettingsPage
           :can-operate="canOperate"
-          @config-saved="loadConfig"
+          @config-saved="onConfigSaved"
         />
       </div>
 
