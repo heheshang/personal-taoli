@@ -2,11 +2,9 @@ use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tokio::task::JoinHandle;
-use tokio_postgres::Client;
 
 use crate::{
-    db::{close_connection, connect, to_i64, validate_id, verify_schema},
+    db::{DomainConnection, to_i64, validate_id},
     market::unix_timestamp_ms,
 };
 
@@ -70,18 +68,22 @@ pub struct ReconciliationSmokeReport {
 }
 
 pub struct ReconciliationCore {
-    client: Client,
-    connection: JoinHandle<()>,
+    inner: DomainConnection,
 }
 impl ReconciliationCore {
     pub async fn acquire(database_url: &str) -> Result<Self> {
-        let (client, connection) = connect(database_url).await?;
-        verify_schema(&client).await?;
-        Ok(Self { client, connection })
+        let inner = DomainConnection::acquire(
+            database_url,
+            "accounting",
+            "reconciliation",
+            "reconciliation",
+        )
+        .await?;
+        Ok(Self { inner })
     }
     pub async fn record_snapshot(&mut self, snapshot: BalanceInput) -> Result<()> {
         validate_snapshot(&snapshot)?;
-        self.client.execute("INSERT INTO balance_snapshots(snapshot_id,account_id,venue,asset,total,free,locked,observed_at_ms,source,completeness) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(snapshot_id) DO NOTHING", &[&snapshot.snapshot_id, &snapshot.account_id, &snapshot.venue, &snapshot.asset, &snapshot.total, &snapshot.free, &snapshot.locked, &to_i64(snapshot.observed_at_ms)?, &snapshot.source, &snapshot.completeness]).await.context("failed to persist balance snapshot")?;
+        self.inner.client.execute("INSERT INTO balance_snapshots(snapshot_id,account_id,venue,asset,total,free,locked,observed_at_ms,source,completeness) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(snapshot_id) DO NOTHING", &[&snapshot.snapshot_id, &snapshot.account_id, &snapshot.venue, &snapshot.asset, &snapshot.total, &snapshot.free, &snapshot.locked, &to_i64(snapshot.observed_at_ms)?, &snapshot.source, &snapshot.completeness]).await.context("failed to persist balance snapshot")?;
         Ok(())
     }
     pub async fn reconcile(
@@ -100,6 +102,7 @@ impl ReconciliationCore {
             bail!("reconciliation timestamp must be positive");
         }
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -160,7 +163,7 @@ impl ReconciliationCore {
         })
     }
     pub async fn disconnect(self) {
-        close_connection(self.client, self.connection).await;
+        self.inner.disconnect().await;
     }
 }
 

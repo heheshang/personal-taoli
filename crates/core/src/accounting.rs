@@ -2,10 +2,9 @@ use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::task::JoinHandle;
-use tokio_postgres::{Client, Row};
+use tokio_postgres::Row;
 
-use crate::db::{close_connection, connect, to_i64, to_u64, validate_id, verify_schema};
+use crate::db::{DomainConnection, to_i64, to_u64, validate_id};
 use crate::market::unix_timestamp_ms;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,21 +76,21 @@ pub struct AccountingSmokeReport {
 }
 
 pub struct LedgerCore {
-    client: Client,
-    connection: JoinHandle<()>,
+    inner: DomainConnection,
 }
 
 impl LedgerCore {
     pub async fn acquire(database_url: &str) -> Result<Self> {
-        let (client, connection) = connect(database_url).await?;
-        verify_schema(&client).await?;
-        Ok(Self { client, connection })
+        let inner =
+            DomainConnection::acquire(database_url, "accounting", "ledger", "accounting").await?;
+        Ok(Self { inner })
     }
 
     pub async fn record_event(&mut self, input: LedgerEventInput) -> Result<LedgerEvent> {
         validate_event(&input)?;
         let now = unix_timestamp_ms()?;
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -132,7 +131,7 @@ impl LedgerCore {
         validate_id("account_id", account_id)?;
         validate_id("venue", venue)?;
         validate_id("asset", asset)?;
-        let row = self.client.query_one("SELECT COALESCE(SUM(amount) FILTER (WHERE direction='DEBIT'),0), COALESCE(SUM(amount) FILTER (WHERE direction='CREDIT'),0) FROM ledger_lines WHERE account_id=$1 AND venue=$2 AND asset=$3", &[&account_id, &venue, &asset]).await.context("failed to load ledger balance")?;
+        let row = self.inner.client.query_one("SELECT COALESCE(SUM(amount) FILTER (WHERE direction='DEBIT'),0), COALESCE(SUM(amount) FILTER (WHERE direction='CREDIT'),0) FROM ledger_lines WHERE account_id=$1 AND venue=$2 AND asset=$3", &[&account_id, &venue, &asset]).await.context("failed to load ledger balance")?;
         let debit: Decimal = row.get(0);
         let credit: Decimal = row.get(1);
         Ok(LedgerBalance {
@@ -147,12 +146,12 @@ impl LedgerCore {
 
     pub async fn load_event(&self, event_id: &str) -> Result<LedgerEvent> {
         validate_id("event_id", event_id)?;
-        let row = self.client.query_one("SELECT event_id,business_key,event_type,account_id,venue,occurred_at_ms,(SELECT COUNT(*) FROM ledger_lines WHERE event_id=ledger_events.event_id) FROM ledger_events WHERE event_id=$1", &[&event_id]).await.context("failed to load ledger event")?;
+        let row = self.inner.client.query_one("SELECT event_id,business_key,event_type,account_id,venue,occurred_at_ms,(SELECT COUNT(*) FROM ledger_lines WHERE event_id=ledger_events.event_id) FROM ledger_events WHERE event_id=$1", &[&event_id]).await.context("failed to load ledger event")?;
         event(row)
     }
 
     pub async fn disconnect(self) {
-        close_connection(self.client, self.connection).await;
+        self.inner.disconnect().await;
     }
 }
 
@@ -202,6 +201,7 @@ pub async fn run_accounting_smoke(database_url: &str) -> Result<AccountingSmokeR
     let unbalanced_event_rejected = core.record_event(unbalanced).await.is_err();
     let balance = core.balance(&event.account_id, &event.venue, "BTC").await?;
     let immutable_history = core
+        .inner
         .client
         .execute(
             "UPDATE ledger_events SET event_type='MUTATED' WHERE event_id=$1",

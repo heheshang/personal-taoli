@@ -1,11 +1,9 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::task::JoinHandle;
-use tokio_postgres::Client;
 
 use crate::{
-    db::{close_connection, connect, to_i64, to_u64, validate_id, verify_schema},
+    db::{DomainConnection, to_i64, to_u64, validate_id},
     market::unix_timestamp_ms,
 };
 
@@ -84,14 +82,13 @@ pub struct ControlSmokeReport {
 }
 
 pub struct ControlCore {
-    client: Client,
-    connection: JoinHandle<()>,
+    inner: DomainConnection,
 }
 impl ControlCore {
     pub async fn acquire(database_url: &str) -> Result<Self> {
-        let (client, connection) = connect(database_url).await?;
-        verify_schema(&client).await?;
-        Ok(Self { client, connection })
+        let inner =
+            DomainConnection::acquire(database_url, "control", "command", "control").await?;
+        Ok(Self { inner })
     }
     pub async fn submit(
         &mut self,
@@ -100,6 +97,7 @@ impl ControlCore {
     ) -> Result<ControlCommand> {
         validate_request(&request, now_ms)?;
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -142,6 +140,7 @@ impl ControlCore {
     ) -> Result<ControlCommand> {
         validate_id("command_id", command_id)?;
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -180,7 +179,7 @@ impl ControlCore {
     }
     pub async fn load(&self, command_id: &str) -> Result<ControlCommand> {
         validate_id("command_id", command_id)?;
-        let row = self.client.query_one("SELECT command_id,request_id,actor,action,status,expires_at_ms,result FROM control_commands WHERE command_id=$1", &[&command_id]).await.context("failed to load control command")?;
+        let row = self.inner.client.query_one("SELECT command_id,request_id,actor,action,status,expires_at_ms,result FROM control_commands WHERE command_id=$1", &[&command_id]).await.context("failed to load control command")?;
         Ok(ControlCommand {
             command_id: row.get(0),
             request_id: row.get(1),
@@ -192,7 +191,7 @@ impl ControlCore {
         })
     }
     pub async fn disconnect(self) {
-        close_connection(self.client, self.connection).await;
+        self.inner.disconnect().await;
     }
 }
 
