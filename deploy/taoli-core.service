@@ -1,0 +1,40 @@
+[Unit]
+Description=Taoli Trading Core
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=taoli
+Group=taoli
+WorkingDirectory=/opt/taoli
+ExecStart=/opt/taoli/taoli-core
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Environment
+Environment=RUST_LOG=info
+Environment=DATABASE_URL=postgresql://taoli:taoli@localhost:5432/taoli
+Environment=TAOLI_MODE=observe
+Environment=TAOLI_CONFIG_PATH=/opt/taoli/config/config.toml
+
+# Security
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/taoli/data /opt/taoli/logs
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=4G
+CPUQuota=200%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=taoli-core
+
+[Install]
+WantedBy=multi-user.target

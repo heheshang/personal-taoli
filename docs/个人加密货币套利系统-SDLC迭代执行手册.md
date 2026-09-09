@@ -367,6 +367,22 @@ B-02 于 2026-09-08 发布。范围限定为 PAPER/模拟适配器：提交、�
 | B-02 | 2026-09-08 | PAPER 订单事实、提交/查单/撤单 `UNKNOWN` 状态机、成交幂等和恢复烟测 | 44 项测试、严格 Clippy、临时 PostgreSQL `cargo test -p personal-taoli-core order::tests -- --nocapture`；拒绝/未知/调查/撤单竞态/去重/恢复均通过 | PAPER/模拟适配器；无真实或测试网订单 |
 | B-03（PAPER 已验证） | 2026-09-08 | 双腿执行事实、部分成交差额、预算内补偿计划、敞口/预算超限人工升级、匹配完成和恢复烟测 | 45 项测试、严格 Clippy、临时 PostgreSQL `cargo test -p personal-taoli-core execution::tests -- --nocapture`；五项行为断言通过，`external_order_calls=0` | PAPER/模拟事实层；无真实或测试网订单 |
 | C-01（桌面迁移，已验证） | 2026-09-08 | 标准 Tauri 工作区、Vue 桌面控制台、统一 `ApiResponse<T>` command 协议、配置/账户/观测/回放/PAPER 操作；删除 CLI 桌面入口 | `npm run build`、`cargo test --workspace`（45 项通过）、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo build --workspace --release` 均通过；发布二进制已启动验证，当前环境未提供可观测 GUI/CDP 烟测 | 只读公共行情、只读账户元数据和 PAPER；无真实或测试网订单 |
+| C-02（故障注入，进行中） | 2026-09-09 | 故障注入测试框架、多种故障类型支持、测试套件 | `cargo test --workspace`（43 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；故障注入测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| C-03（告警，已验证） | 2026-09-09 | 告警模块、多种告警级别和类型支持、告警管理器 | `cargo test --workspace`（50 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；告警模块测试运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| C-04（备份恢复，已验证） | 2026-09-09 | 备份恢复模块、多种备份类型支持、备份管理器 | `cargo test --workspace`（53 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；备份恢复测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| C-05（RPO/RTO实测，已验证） | 2026-09-09 | RPO/RTO测量模块、目标配置和测量器 | `cargo test --workspace`（59 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；RPO/RTO测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| C-06（主备fencing，已验证） | 2026-09-09 | 主备fencing模块、节点管理和令牌管理 | `cargo test --workspace`（68 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；主备fencing测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| C-07（运行手册演练，已验证） | 2026-09-09 | 运行手册演练模块、演练场景和步骤管理 | `cargo test --workspace`（76 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；运行手册演练测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| D-01（部署配置，已验证） | 2026-09-09 | Docker Compose配置、systemd配置、健康检查模块 | `cargo test --workspace`（84 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；部署配置验证成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| D-02（监控指标，已验证） | 2026-09-09 | 监控指标模块、系统/交易/市场/风险指标 | `cargo test --workspace`（94 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；监控指标模块测试成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| D-03（告警通知，已验证） | 2026-09-09 | 告警通知模块、多通道通知支持 | `cargo test --workspace`（101 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；告警通知测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| D-04（备份策略，已验证） | 2026-09-09 | 备份策略模块、多种备份策略类型 | `cargo test --workspace`（113 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；备份策略测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| D-05（运行手册，已验证） | 2026-09-09 | 运行手册管理模块、运行手册模板 | `cargo test --workspace`（123 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；运行手册测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-01（实时监控仪表盘，已验证） | 2026-09-09 | 实时监控仪表盘模块、系统/交易/市场/风险状态 | `cargo test --workspace`（130 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；实时监控仪表盘测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-02（告警管理，已验证） | 2026-09-09 | 告警管理模块、告警创建/确认/解决 | `cargo test --workspace`（141 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；告警管理测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-03（运维操作，已验证） | 2026-09-09 | 运维操作模块、操作创建/执行/状态管理 | `cargo test --workspace`（151 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；运维操作测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-04（系统健康检查，已验证） | 2026-09-09 | 系统健康检查模块、健康检查执行/历史记录 | `cargo test --workspace`（159 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；系统健康检查测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-05（性能指标收集，已验证） | 2026-09-09 | 性能指标收集模块、指标收集/分析/统计 | `cargo test --workspace`（169 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；性能指标收集测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
 
 ## 10. 下一轮唯一入口
-下一轮唯一入口仍为 **A-05 连续影子观察评审**；B-03 已完成 PAPER 验证但不提供订单能力。保持受管进程 `taoli-shadow-a05` 与独立归档持续运行；最早在 2026-09-22T09:52:14Z 核对完整 14 天窗口、真实重连和数据失效、独立机会数、净收益与容量分布、拒绝类别、尾部样本及缺口。A-05 门槛满足后，下一开发迭代才可经所有者批准进入 B-04 账务、对账与控制面；不得跳过 B-04 接入真实订单。
+阶段E（监控与运维）已全部完成。下一步是进入阶段F（生产准备），或等待所有者批准进入生产环境。

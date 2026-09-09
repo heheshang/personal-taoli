@@ -2401,6 +2401,7 @@ dependencies = [
  "async-trait",
  "futures-util",
  "hmac 0.12.1",
+ "rand 0.8.8",
  "reqwest 0.12.28",
  "rust_decimal",
  "serde",
