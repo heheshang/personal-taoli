@@ -5,8 +5,8 @@ use tokio::task::JoinHandle;
 use tokio_postgres::Client;
 
 use crate::{
+    db::{close_connection, connect, to_i64, to_u64, validate_id, verify_schema},
     market::unix_timestamp_ms,
-    paper::{close_connection, connect, validate_id, verify_schema},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,7 +197,7 @@ impl ControlCore {
 }
 
 pub async fn run_control_smoke(database_url: &str) -> Result<ControlSmokeReport> {
-    crate::paper::migrate(database_url).await?;
+    crate::db::migrate(database_url).await?;
     let stamp = format!("{}-{}", unix_timestamp_ms()?, std::process::id());
     let mut core = ControlCore::acquire(database_url).await?;
     let now = unix_timestamp_ms()?;
@@ -272,12 +272,4 @@ fn parse_status(value: &str) -> Result<ControlStatus> {
         "EXPIRED" => Ok(ControlStatus::Expired),
         _ => bail!("invalid control status"),
     }
-}
-fn to_i64(value: u64) -> Result<i64> {
-    value
-        .try_into()
-        .context("timestamp exceeds PostgreSQL BIGINT")
-}
-fn to_u64(value: i64) -> Result<u64> {
-    value.try_into().context("database timestamp is negative")
 }

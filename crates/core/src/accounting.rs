@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, Row};
 
+use crate::db::{close_connection, connect, to_i64, to_u64, validate_id, verify_schema};
 use crate::market::unix_timestamp_ms;
-use crate::paper::{close_connection, connect, validate_id, verify_schema};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -157,7 +157,7 @@ impl LedgerCore {
 }
 
 pub async fn run_accounting_smoke(database_url: &str) -> Result<AccountingSmokeReport> {
-    crate::paper::migrate(database_url).await?;
+    crate::db::migrate(database_url).await?;
     let stamp = format!("{}-{}", unix_timestamp_ms()?, std::process::id());
     let mut core = LedgerCore::acquire(database_url).await?;
     let event = LedgerEventInput {
@@ -268,12 +268,4 @@ fn event(row: Row) -> Result<LedgerEvent> {
         occurred_at_ms: to_u64(row.get::<_, i64>(5))?,
         line_count: row.get::<_, i64>(6) as usize,
     })
-}
-fn to_i64(value: u64) -> Result<i64> {
-    value
-        .try_into()
-        .context("timestamp exceeds PostgreSQL BIGINT")
-}
-fn to_u64(value: i64) -> Result<u64> {
-    value.try_into().context("database timestamp is negative")
 }

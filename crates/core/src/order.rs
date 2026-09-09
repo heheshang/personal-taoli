@@ -6,10 +6,13 @@ use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, Row};
 
+use crate::db::{
+    advisory_key, close_connection, connect, db_time, hex_digest, migrate, to_i64, validate_id,
+    verify_schema,
+};
 use crate::market::unix_timestamp_ms;
 use crate::paper::{
-    OrderIntentInput, OrderSide, ReservationInput, ReservePlanRequest, advisory_key,
-    close_connection, connect, migrate, set_paper_balance, validate_id, verify_schema,
+    OrderIntentInput, OrderSide, ReservationInput, ReservePlanRequest, set_paper_balance,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,14 +636,6 @@ fn validate_digest(value: &str) -> Result<()> {
     }
     Ok(())
 }
-fn db_time() -> Result<i64> {
-    to_i64(unix_timestamp_ms()?)
-}
-fn to_i64(value: u64) -> Result<i64> {
-    value
-        .try_into()
-        .context("timestamp exceeds PostgreSQL BIGINT")
-}
 fn validate_trade(trade: &TradeInput) -> Result<()> {
     validate_id("trade venue", &trade.venue)?;
     validate_id("exchange_order_id", &trade.exchange_order_id)?;
@@ -668,15 +663,6 @@ fn trade_digest(trade: &TradeInput) -> Result<String> {
     ))
     .context("failed to digest trade")?;
     Ok(hex_digest(Sha256::digest(bytes).as_slice()))
-}
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 pub async fn run_order_facts_smoke(database_url: &str) -> Result<OrderFactsSmokeReport> {

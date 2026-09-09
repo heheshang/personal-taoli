@@ -6,17 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
-use tokio_postgres::{Client, NoTls, Row, Transaction};
+use tokio_postgres::{Client, Row, Transaction};
 
+use crate::db::{
+    SCHEMA_VERSION, advisory_key, close_connection, connect, hex_digest, migrate, validate_id,
+    verify_schema,
+};
 use crate::market::unix_timestamp_ms;
-
-const SCHEMA_VERSION: i64 = 4;
-const INITIAL_PAPER_MIGRATION: &str = include_str!("../migrations/0001_paper_core.sql");
-const ORDER_FACTS_MIGRATION: &str = include_str!("../migrations/0002_order_facts.sql");
-const DOUBLE_LEG_EXECUTION_MIGRATION: &str =
-    include_str!("../migrations/0003_double_leg_execution.sql");
-const ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION: &str =
-    include_str!("../migrations/0004_accounting_reconciliation_control.sql");
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OrderSide {
@@ -139,34 +135,6 @@ pub struct PaperCore {
     connection: JoinHandle<()>,
     account_id: String,
     instrument_id: String,
-}
-
-pub async fn migrate(database_url: &str) -> Result<()> {
-    let (client, connection) = connect(database_url).await?;
-    let migration_lock = advisory_key("schema-migration", "b01-paper-core");
-    client
-        .query_one("SELECT pg_advisory_lock($1)", &[&migration_lock])
-        .await
-        .context("failed to acquire B-01 migration lock")?;
-    client
-        .batch_execute(INITIAL_PAPER_MIGRATION)
-        .await
-        .context("failed to apply B-01 database migration")?;
-    client
-        .batch_execute(ORDER_FACTS_MIGRATION)
-        .await
-        .context("failed to apply B-02 database migration")?;
-    client
-        .batch_execute(DOUBLE_LEG_EXECUTION_MIGRATION)
-        .await
-        .context("failed to apply B-03 database migration")?;
-    client
-        .batch_execute(ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION)
-        .await
-        .context("failed to apply B-04 database migration")?;
-    verify_schema(&client).await?;
-    close_connection(client, connection).await;
-    Ok(())
 }
 
 pub async fn set_paper_balance(
@@ -524,40 +492,6 @@ pub async fn run_paper_core_smoke(database_url: &str) -> Result<PaperCoreSmokeRe
     Ok(report)
 }
 
-pub(crate) async fn connect(database_url: &str) -> Result<(Client, JoinHandle<()>)> {
-    let (client, connection) = tokio_postgres::connect(database_url, NoTls)
-        .await
-        .context("failed to connect to the B-01 PostgreSQL database")?;
-    let task = tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            eprintln!("B-01 PostgreSQL connection closed: {error}");
-        }
-    });
-    Ok((client, task))
-}
-
-pub(crate) async fn close_connection(client: Client, connection: JoinHandle<()>) {
-    drop(client);
-    connection.abort();
-    let _ = connection.await;
-}
-
-pub(crate) async fn verify_schema(client: &Client) -> Result<()> {
-    let version: Option<i64> = client
-        .query_one("SELECT MAX(version) FROM schema_migrations", &[])
-        .await
-        .context("B-01 schema is not initialized")?
-        .get(0);
-    if version != Some(SCHEMA_VERSION) {
-        bail!(
-            "unsupported B-01 schema version: expected {}, found {:?}",
-            SCHEMA_VERSION,
-            version
-        );
-    }
-    Ok(())
-}
-
 fn validate_request(
     request: &ReservePlanRequest,
     writer_account: &str,
@@ -657,13 +591,6 @@ fn validate_request(
     Ok(())
 }
 
-pub(crate) fn validate_id(name: &str, value: &str) -> Result<()> {
-    if value.trim().is_empty() || value != value.trim() || value.contains('\0') {
-        bail!("{name} must be non-empty, trimmed and contain no NUL byte");
-    }
-    Ok(())
-}
-
 fn request_digest(request: &ReservePlanRequest) -> Result<String> {
     let mut canonical = request.clone();
     canonical.intents.sort_by(|a, b| a.leg_id.cmp(&b.leg_id));
@@ -674,26 +601,8 @@ fn request_digest(request: &ReservePlanRequest) -> Result<String> {
     Ok(hex_digest(Sha256::digest(bytes).as_slice()))
 }
 
-pub(crate) fn advisory_key(namespace: &str, value: &str) -> i64 {
-    let mut hasher = Sha256::new();
-    hasher.update(namespace.as_bytes());
-    hasher.update([0]);
-    hasher.update(value.as_bytes());
-    let digest = hasher.finalize();
-    i64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix is 8 bytes"))
-}
 fn balance_advisory_key(account_id: &str, venue: &str, asset: &str) -> i64 {
     advisory_key("paper-balance", &format!("{account_id}\0{venue}\0{asset}"))
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 async fn lock_and_check_balances(

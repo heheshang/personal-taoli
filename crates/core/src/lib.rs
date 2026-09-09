@@ -3,6 +3,7 @@ pub mod accounting;
 pub mod archive;
 pub mod config;
 pub mod control;
+pub(crate) mod db;
 pub mod execution;
 pub mod instrument;
 pub mod local_book;

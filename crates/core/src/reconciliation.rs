@@ -6,8 +6,8 @@ use tokio::task::JoinHandle;
 use tokio_postgres::Client;
 
 use crate::{
+    db::{close_connection, connect, to_i64, validate_id, verify_schema},
     market::unix_timestamp_ms,
-    paper::{close_connection, connect, validate_id, verify_schema},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,7 +165,7 @@ impl ReconciliationCore {
 }
 
 pub async fn run_reconciliation_smoke(database_url: &str) -> Result<ReconciliationSmokeReport> {
-    crate::paper::migrate(database_url).await?;
+    crate::db::migrate(database_url).await?;
     let stamp = format!("{}-{}", unix_timestamp_ms()?, std::process::id());
     let mut core = ReconciliationCore::acquire(database_url).await?;
     let account = format!("recon-account-{stamp}");
@@ -259,9 +259,4 @@ fn validate_snapshot(snapshot: &BalanceInput) -> Result<()> {
         bail!("invalid balance snapshot");
     }
     Ok(())
-}
-fn to_i64(value: u64) -> Result<i64> {
-    value
-        .try_into()
-        .context("timestamp exceeds PostgreSQL BIGINT")
 }

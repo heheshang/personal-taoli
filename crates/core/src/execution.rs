@@ -5,10 +5,12 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, Row};
 
+use crate::db::{
+    advisory_key, close_connection, connect, db_time, migrate, validate_id, verify_schema,
+};
 use crate::market::unix_timestamp_ms;
 use crate::paper::{
-    OrderIntentInput, OrderSide, PaperCore, ReservationInput, ReservePlanRequest, advisory_key,
-    close_connection, connect, migrate, set_paper_balance, validate_id, verify_schema,
+    OrderIntentInput, OrderSide, PaperCore, ReservationInput, ReservePlanRequest, set_paper_balance,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,12 +328,6 @@ fn parse_execution_state(value: &str) -> Result<ExecutionState> {
         "MANUAL_REQUIRED" => Ok(ExecutionState::ManualRequired),
         _ => bail!("unknown B-03 execution state: {value}"),
     }
-}
-
-fn db_time() -> Result<i64> {
-    unix_timestamp_ms()?
-        .try_into()
-        .context("timestamp exceeds PostgreSQL BIGINT")
 }
 
 pub async fn run_double_leg_smoke(database_url: &str) -> Result<DoubleLegSmokeReport> {
