@@ -3,10 +3,13 @@ use serde::Serialize;
 
 use personal_taoli_core::{
     account::AccountData,
+    accounting::AccountingSmokeReport,
+    control::ControlSmokeReport,
     execution::DoubleLegSmokeReport,
     local_book::{BookFeedStatus, BookState},
     order::OrderFactsSmokeReport,
     paper::PaperCoreSmokeReport,
+    reconciliation::ReconciliationSmokeReport,
     scan::ScanReport,
 };
 
@@ -68,4 +71,12 @@ pub enum PaperSmokeResult {
     B01(PaperCoreSmokeReport),
     B02(OrderFactsSmokeReport),
     B03(DoubleLegSmokeReport),
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", content = "report")]
+pub enum AccountingControlSmokeResult {
+    Accounting(AccountingSmokeReport),
+    Reconciliation(ReconciliationSmokeReport),
+    Control(ControlSmokeReport),
 }

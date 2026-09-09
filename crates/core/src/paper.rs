@@ -10,10 +10,13 @@ use tokio_postgres::{Client, NoTls, Row, Transaction};
 
 use crate::market::unix_timestamp_ms;
 
-const SCHEMA_VERSION: i64 = 3;
-const B01_MIGRATION: &str = include_str!("../migrations/0001_paper_core.sql");
-const B02_MIGRATION: &str = include_str!("../migrations/0002_order_facts.sql");
-const B03_MIGRATION: &str = include_str!("../migrations/0003_double_leg_execution.sql");
+const SCHEMA_VERSION: i64 = 4;
+const INITIAL_PAPER_MIGRATION: &str = include_str!("../migrations/0001_paper_core.sql");
+const ORDER_FACTS_MIGRATION: &str = include_str!("../migrations/0002_order_facts.sql");
+const DOUBLE_LEG_EXECUTION_MIGRATION: &str =
+    include_str!("../migrations/0003_double_leg_execution.sql");
+const ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION: &str =
+    include_str!("../migrations/0004_accounting_reconciliation_control.sql");
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OrderSide {
@@ -146,17 +149,21 @@ pub async fn migrate(database_url: &str) -> Result<()> {
         .await
         .context("failed to acquire B-01 migration lock")?;
     client
-        .batch_execute(B01_MIGRATION)
+        .batch_execute(INITIAL_PAPER_MIGRATION)
         .await
         .context("failed to apply B-01 database migration")?;
     client
-        .batch_execute(B02_MIGRATION)
+        .batch_execute(ORDER_FACTS_MIGRATION)
         .await
         .context("failed to apply B-02 database migration")?;
     client
-        .batch_execute(B03_MIGRATION)
+        .batch_execute(DOUBLE_LEG_EXECUTION_MIGRATION)
         .await
         .context("failed to apply B-03 database migration")?;
+    client
+        .batch_execute(ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION)
+        .await
+        .context("failed to apply B-04 database migration")?;
     verify_schema(&client).await?;
     close_connection(client, connection).await;
     Ok(())

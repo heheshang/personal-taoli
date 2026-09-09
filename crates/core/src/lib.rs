@@ -1,6 +1,8 @@
 pub mod account;
+pub mod accounting;
 pub mod archive;
 pub mod config;
+pub mod control;
 pub mod execution;
 pub mod instrument;
 pub mod local_book;
@@ -8,5 +10,6 @@ pub mod market;
 pub mod observer;
 pub mod order;
 pub mod paper;
+pub mod reconciliation;
 pub mod scan;
 pub mod venues;

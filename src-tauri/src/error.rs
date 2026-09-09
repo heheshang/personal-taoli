@@ -10,6 +10,7 @@ pub enum ErrorCode {
     ArchiveError,
     ArchiveNotFound,
     PaperError,
+    AccountingControlError,
 }
 
 #[derive(Debug, Clone, Serialize)]

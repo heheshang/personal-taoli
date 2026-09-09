@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "src-tauri"]
+members = ["crates/core", "crates/observer-cli", "src-tauri"]
 resolver = "2"
 
 [profile.release]

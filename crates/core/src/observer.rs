@@ -1,12 +1,10 @@
-use std::{path::Path, sync::Arc, time::Duration};
-
-use anyhow::{Context, Result, bail};
-use reqwest::Client;
-use tokio::time::timeout;
+use std::{future::Future, path::Path, sync::Arc, time::Duration};
 
 use crate::{
     account::{AccountData, load_account_data},
-    archive::{ArchiveWriter, ArchivedEvent, DecisionEvent, default_gap_path},
+    archive::{
+        ArchiveWriter, ArchivedEvent, DecisionEvent, FeedVersion, HealthEvent, default_gap_path,
+    },
     config::ObserverConfig,
     instrument::{InstrumentSpec, validate_pair},
     local_book::{BookFeed, BookFeedStatus, BookState},
@@ -16,6 +14,9 @@ use crate::{
     },
     venues::{BinanceMarketData, BybitMarketData, MarketDataVenue},
 };
+use anyhow::{Context, Result, bail};
+use reqwest::Client;
+use tokio::time::timeout;
 
 #[derive(Debug)]
 pub struct ObservationRun {
@@ -101,6 +102,131 @@ pub async fn observe_once(config: &ObserverConfig, archive_path: &Path) -> Resul
         feeds: [first_status, second_status],
         archived: true,
     })
+}
+
+/// Runs the read-only observer until `shutdown` resolves.
+///
+/// The market feeds and archive writer live for the whole run. Invalid feed states
+/// become health records; they never produce a decision record.
+pub async fn observe_continuously<F, S>(
+    config: &ObserverConfig,
+    archive_path: &Path,
+    mut on_report: F,
+    shutdown: S,
+) -> Result<()>
+where
+    F: FnMut(&ScanReport),
+    S: Future<Output = ()>,
+{
+    let gap_path = default_gap_path(archive_path);
+    let client = build_http_client(config)?;
+    let binance: Arc<dyn MarketDataVenue> = Arc::new(BinanceMarketData::new(
+        client.clone(),
+        &config.binance.base_url,
+        &config.binance.websocket_url,
+    )?);
+    let bybit: Arc<dyn MarketDataVenue> = Arc::new(BybitMarketData::new(
+        client.clone(),
+        &config.bybit.base_url,
+        &config.bybit.websocket_url,
+    )?);
+    let mut accounts = load_account_data(
+        &client,
+        &config.symbol,
+        &config.binance,
+        &config.bybit,
+        config.auth_recv_window_ms,
+        config.max_fee_age_ms,
+    )
+    .await;
+    let (first_instrument, second_instrument) = tokio::try_join!(
+        binance.load_instrument(&config.symbol),
+        bybit.load_instrument(&config.symbol),
+    )?;
+    validate_pair(
+        &first_instrument,
+        &second_instrument,
+        &config.symbol,
+        &config.base_asset,
+        &config.quote_asset,
+        config.quantity,
+    )?;
+
+    let stale_after = Duration::from_millis(config.max_snapshot_age_ms);
+    let mut first = binance.subscribe_order_book(
+        &config.symbol,
+        config.orderbook_depth,
+        stale_after,
+        config.reconnect_delay(),
+    )?;
+    let mut second = bybit.subscribe_order_book(
+        &config.symbol,
+        config.orderbook_depth,
+        stale_after,
+        config.reconnect_delay(),
+    )?;
+    let mut archive = ArchiveWriter::start(
+        archive_path,
+        &gap_path,
+        config.archive.queue_capacity,
+        config.archive.raw_retention_days,
+    )?;
+    let mut shutdown = Box::pin(shutdown);
+    tokio::select! {
+        result = wait_for_valid_pair(&mut first, &mut second, config.stream_start_timeout()) => result?,
+        _ = &mut shutdown => {
+            archive.finish()?;
+            return Ok(());
+        }
+    }
+
+    let mut scan_ticker = tokio::time::interval(config.poll_interval());
+    let mut account_ticker = tokio::time::interval(config.account_refresh_interval());
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            _ = account_ticker.tick() => {
+                accounts = load_account_data(
+                    &client,
+                    &config.symbol,
+                    &config.binance,
+                    &config.bybit,
+                    config.auth_recv_window_ms,
+                    config.max_fee_age_ms,
+                ).await;
+            }
+            _ = scan_ticker.tick() => {
+                let first_status = first.status();
+                let second_status = second.status();
+                if first_status.state == BookState::Valid && second_status.state == BookState::Valid {
+                    let event = scan_current(
+                        config,
+                        &first_status,
+                        &second_status,
+                        &first_instrument,
+                        &second_instrument,
+                        &accounts,
+                    )?;
+                    on_report(&event.report);
+                    archive.submit(ArchivedEvent::Decision(Box::new(event)))?;
+                } else {
+                    let observed_at_ms = unix_timestamp_ms()?;
+                    archive.submit(ArchivedEvent::Health(Box::new(HealthEvent {
+                        observed_at_ms,
+                        feeds: [&first_status, &second_status].map(FeedVersion::from),
+                        skip_reason: format!(
+                            "live books unavailable: {}={} {}={}",
+                            first_status.venue,
+                            state_name(first_status.state),
+                            second_status.venue,
+                            state_name(second_status.state),
+                        ),
+                    })))?;
+                }
+            }
+        }
+    }
+    archive.finish()
 }
 
 fn build_http_client(config: &ObserverConfig) -> Result<Client> {
