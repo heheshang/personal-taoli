@@ -13,7 +13,6 @@ import RidgePanel from './components/RidgePanel.vue'
 import VenueHandoff from './components/VenueHandoff.vue'
 import StrategyLattice from './components/StrategyLattice.vue'
 import RelationshipGraph from './components/RelationshipGraph.vue'
-import ControlPanel from './components/ControlPanel.vue'
 import DetailPanel from './components/DetailPanel.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import AppFooter from './components/AppFooter.vue'
@@ -55,6 +54,16 @@ function startPolling() {
     invokeCommand<Continuous>(COMMANDS.continuousObservationStatus).then(data => {
       if (data !== undefined) {
         continuous.value = data
+        // 连续观测流式展示：每轮轮询把会话最新扫描报告推入展示层
+        // （机会卡 / 概览指标），复用与 observe_once 一致的 ScanReport 形状。
+        if (data.running && data.last_report) {
+          observation.value = {
+            report: data.last_report,
+            accounts: observation.value?.accounts ?? [],
+            feeds: observation.value?.feeds ?? [],
+            archived: true,
+          }
+        }
         if (!data.running) stopPolling()
       }
     })
@@ -183,9 +192,12 @@ onUnmounted(stopPolling)
         />
       </div>
 
-      <!-- 控制台页 -->
+      <!-- 控制台页（功能板块 + 对应操作） -->
       <div v-show="activePage === 'control'" class="page-content">
-        <ControlPanel
+        <DetailPanel
+          :accounts="accounts"
+          :observation="observation"
+          :report="report"
           :can-operate="canOperate"
           :archive-path="archivePath"
           :continuous="continuous"
@@ -198,15 +210,6 @@ onUnmounted(stopPolling)
           @start-continuous="startContinuous"
           @stop-continuous="stopContinuous"
           @reconnect-smoke="reconnectSmoke"
-        />
-      </div>
-
-      <!-- 报告页 -->
-      <div v-show="activePage === 'reports'" class="page-content">
-        <DetailPanel
-          :accounts="accounts"
-          :observation="observation"
-          :report="report"
         />
       </div>
 

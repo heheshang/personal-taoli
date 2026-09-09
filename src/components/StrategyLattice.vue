@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import TermHint from './TermHint.vue'
+
 defineProps<{
   orderbookDepth: number | null
 }>()
@@ -15,9 +17,9 @@ defineProps<{
         <i /><i /><i /><i /><i /><i />
       </div>
       <div class="lattice-values">
-        <span>深度 <b>{{ orderbookDepth || '—' }}</b></span>
-        <span>风险缓冲 <b>已配置</b></span>
-        <span>执行模式 <b>仅 PAPER</b></span>
+        <span><TermHint term="深度" /> <b>{{ orderbookDepth || '—' }}</b></span>
+        <span><TermHint term="风险缓冲" /> <b>已配置</b></span>
+        <span><TermHint term="执行模式" /> <b>仅 PAPER</b></span>
       </div>
     </div>
   </article>

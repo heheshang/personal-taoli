@@ -17,10 +17,10 @@
     "windows": [
       {
         "title": "Taoli Observer",
-        "width": 1180,
-        "height": 780,
-        "minWidth": 900,
-        "minHeight": 620,
+        "width": 1360,
+        "height": 860,
+        "minWidth": 1024,
+        "minHeight": 680,
         "resizable": true
       }
     ]

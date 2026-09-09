@@ -8,14 +8,14 @@
       <svg viewBox="0 0 640 210" preserveAspectRatio="none" aria-label="history chart">
         <defs>
           <linearGradient id="fill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0" stop-color="#9adbc4" stop-opacity=".42" />
-            <stop offset="1" stop-color="#9adbc4" stop-opacity="0" />
+<stop offset="0" stop-color="#8fd3b8" stop-opacity=".38" />
+          <stop offset="1" stop-color="#8fd3b8" stop-opacity="0" />
           </linearGradient>
         </defs>
         <path d="M0 162 C70 160 95 166 155 151 S245 158 296 144 S354 149 400 142 S455 150 492 136 S526 141 552 75 S590 106 640 43 L640 210 L0 210Z" fill="url(#fill)" />
-        <path d="M0 162 C70 160 95 166 155 151 S245 158 296 144 S354 149 400 142 S455 150 492 136 S526 141 552 75 S590 106 640 43" fill="none" stroke="#28352f" stroke-width="3" />
-        <circle cx="552" cy="75" r="6" fill="#dc5974" />
-        <line x1="552" y1="75" x2="552" y2="210" stroke="#dc5974" stroke-dasharray="3 5" />
+        <path d="M0 162 C70 160 95 166 155 151 S245 158 296 144 S354 149 400 142 S455 150 492 136 S526 141 552 75 S590 106 640 43" fill="none" stroke="#1f2d26" stroke-width="2.5" />
+        <circle cx="552" cy="75" r="6" fill="#cc5570" />
+        <line x1="552" y1="75" x2="552" y2="210" stroke="#cc5570" stroke-dasharray="3 5" />
       </svg>
       <div class="axis">
         <span>开始</span>

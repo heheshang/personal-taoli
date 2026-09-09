@@ -9,6 +9,7 @@ import {
   COMMANDS,
 } from '../commands'
 import type { AppConfig, ObserverConfig } from '../commands'
+import TermHint from './TermHint.vue'
 
 const props = defineProps<{
   canOperate: boolean
@@ -96,7 +97,7 @@ onMounted(() => {
           </div>
           <div class="card-body">
             <div class="field-group">
-              <label>database_url</label>
+              <label><TermHint term="database_url" /></label>
               <ElInput v-model="envConfig.database_url" size="small" placeholder="postgresql://user:pass@host:port/db" />
               <small>PostgreSQL 连接地址，用于 PAPER 和账务验证</small>
             </div>
@@ -110,11 +111,11 @@ onMounted(() => {
           </div>
           <div class="card-body">
             <div class="field-group">
-              <label>binance_api_key</label>
+              <label><TermHint term="binance_api_key" /></label>
               <ElInput v-model="envConfig.binance_api_key" size="small" show-password placeholder="Binance API Key" />
             </div>
             <div class="field-group">
-              <label>binance_api_secret</label>
+              <label><TermHint term="binance_api_secret" /></label>
               <ElInput v-model="envConfig.binance_api_secret" size="small" show-password placeholder="Binance API Secret" />
             </div>
           </div>
@@ -127,11 +128,11 @@ onMounted(() => {
           </div>
           <div class="card-body">
             <div class="field-group">
-              <label>bybit_api_key</label>
+              <label><TermHint term="bybit_api_key" /></label>
               <ElInput v-model="envConfig.bybit_api_key" size="small" show-password placeholder="Bybit API Key" />
             </div>
             <div class="field-group">
-              <label>bybit_api_secret</label>
+              <label><TermHint term="bybit_api_secret" /></label>
               <ElInput v-model="envConfig.bybit_api_secret" size="small" show-password placeholder="Bybit API Secret" />
             </div>
           </div>
@@ -153,19 +154,19 @@ onMounted(() => {
               <ElInput v-model="observerConfig.symbol" size="small" />
             </div>
             <div class="field-group">
-              <label>base_asset</label>
+              <label><TermHint term="base_asset" /></label>
               <ElInput v-model="observerConfig.base_asset" size="small" />
             </div>
             <div class="field-group">
-              <label>quote_asset</label>
+              <label><TermHint term="quote_asset" /></label>
               <ElInput v-model="observerConfig.quote_asset" size="small" />
             </div>
             <div class="field-group">
-              <label>quantity（数量，小数文本）</label>
+              <label><TermHint term="quantity" />（数量，小数文本）</label>
               <ElInput v-model="observerConfig.quantity" size="small" />
             </div>
             <div class="field-group">
-              <label>orderbook_depth（档位）</label>
+              <label><TermHint term="orderbook_depth" />（档位）</label>
               <ElInputNumber v-model="observerConfig.orderbook_depth" size="small" :min="1" :max="100" controls-position="right" />
             </div>
           </div>
@@ -178,39 +179,39 @@ onMounted(() => {
           </div>
           <div class="card-body">
             <div class="field-group">
-              <label>poll_interval_ms（轮询间隔）</label>
+              <label><TermHint term="poll_interval_ms" />（轮询间隔）</label>
               <ElInputNumber v-model="observerConfig.poll_interval_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>http_timeout_ms（HTTP 超时）</label>
+              <label><TermHint term="http_timeout_ms" />（HTTP 超时）</label>
               <ElInputNumber v-model="observerConfig.http_timeout_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>stream_start_timeout_ms（流启动超时）</label>
+              <label><TermHint term="stream_start_timeout_ms" />（流启动超时）</label>
               <ElInputNumber v-model="observerConfig.stream_start_timeout_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>reconnect_delay_ms（重连延迟）</label>
+              <label><TermHint term="reconnect_delay_ms" />（重连延迟）</label>
               <ElInputNumber v-model="observerConfig.reconnect_delay_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>max_snapshot_age_ms（快照最大年龄）</label>
+              <label><TermHint term="max_snapshot_age_ms" />（快照最大年龄）</label>
               <ElInputNumber v-model="observerConfig.max_snapshot_age_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>max_pair_skew_ms（价差最大年龄）</label>
+              <label><TermHint term="max_pair_skew_ms" />（价差最大年龄）</label>
               <ElInputNumber v-model="observerConfig.max_pair_skew_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>account_refresh_interval_ms（账户刷新间隔）</label>
+              <label><TermHint term="account_refresh_interval_ms" />（账户刷新间隔）</label>
               <ElInputNumber v-model="observerConfig.account_refresh_interval_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>max_fee_age_ms（费率最大年龄）</label>
+              <label><TermHint term="max_fee_age_ms" />（费率最大年龄）</label>
               <ElInputNumber v-model="observerConfig.max_fee_age_ms" size="small" :min="0" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>auth_recv_window_ms（签名窗口）</label>
+              <label><TermHint term="auth_recv_window_ms" />（签名窗口）</label>
               <ElInputNumber v-model="observerConfig.auth_recv_window_ms" size="small" :min="0" controls-position="right" />
             </div>
           </div>
@@ -227,11 +228,11 @@ onMounted(() => {
               <ElInput v-model="observerConfig.archive.path" size="small" />
             </div>
             <div class="field-group">
-              <label>queue_capacity（队列容量）</label>
+              <label><TermHint term="queue_capacity" />（队列容量）</label>
               <ElInputNumber v-model="observerConfig.archive.queue_capacity" size="small" :min="1" controls-position="right" />
             </div>
             <div class="field-group">
-              <label>raw_retention_days（原始保留天数）</label>
+              <label><TermHint term="raw_retention_days" />（原始保留天数）</label>
               <ElInputNumber v-model="observerConfig.archive.raw_retention_days" size="small" :min="0" controls-position="right" />
             </div>
           </div>
@@ -252,23 +253,23 @@ onMounted(() => {
               <ElInput v-model="observerConfig.binance.websocket_url" size="small" />
             </div>
             <div class="field-group">
-              <label>fallback_taker_fee_rate（备用吃单费率，小数文本）</label>
+              <label><TermHint term="fallback_taker_fee_rate" />（备用吃单费率，小数文本）</label>
               <ElInput v-model="observerConfig.binance.fallback_taker_fee_rate" size="small" />
             </div>
             <div class="field-group">
-              <label>api_key_env（密钥环境变量名）</label>
+              <label><TermHint term="api_key_env" />（密钥环境变量名）</label>
               <ElInput v-model="observerConfig.binance.api_key_env" size="small" />
             </div>
             <div class="field-group">
-              <label>api_secret_env</label>
+              <label><TermHint term="api_secret_env" /></label>
               <ElInput v-model="observerConfig.binance.api_secret_env" size="small" />
             </div>
             <div class="field-group">
-              <label>region_eligible_confirmed</label>
+              <label><TermHint term="region_eligible_confirmed" /></label>
               <ElSwitch v-model="observerConfig.binance.region_eligible_confirmed" />
             </div>
             <div class="field-group">
-              <label>account_eligible_confirmed</label>
+              <label><TermHint term="account_eligible_confirmed" /></label>
               <ElSwitch v-model="observerConfig.binance.account_eligible_confirmed" />
             </div>
           </div>
@@ -289,23 +290,23 @@ onMounted(() => {
               <ElInput v-model="observerConfig.bybit.websocket_url" size="small" />
             </div>
             <div class="field-group">
-              <label>fallback_taker_fee_rate（备用吃单费率，小数文本）</label>
+              <label><TermHint term="fallback_taker_fee_rate" />（备用吃单费率，小数文本）</label>
               <ElInput v-model="observerConfig.bybit.fallback_taker_fee_rate" size="small" />
             </div>
             <div class="field-group">
-              <label>api_key_env（密钥环境变量名）</label>
+              <label><TermHint term="api_key_env" />（密钥环境变量名）</label>
               <ElInput v-model="observerConfig.bybit.api_key_env" size="small" />
             </div>
             <div class="field-group">
-              <label>api_secret_env</label>
+              <label><TermHint term="api_secret_env" /></label>
               <ElInput v-model="observerConfig.bybit.api_secret_env" size="small" />
             </div>
             <div class="field-group">
-              <label>region_eligible_confirmed</label>
+              <label><TermHint term="region_eligible_confirmed" /></label>
               <ElSwitch v-model="observerConfig.bybit.region_eligible_confirmed" />
             </div>
             <div class="field-group">
-              <label>account_eligible_confirmed</label>
+              <label><TermHint term="account_eligible_confirmed" /></label>
               <ElSwitch v-model="observerConfig.bybit.account_eligible_confirmed" />
             </div>
           </div>
@@ -318,27 +319,27 @@ onMounted(() => {
           </div>
           <div class="card-body">
             <div class="field-group">
-              <label>min_net_profit（最小净利润）</label>
+              <label><TermHint term="min_net_profit" />（最小净利润）</label>
               <ElInput v-model="observerConfig.strategy.min_net_profit" size="small" />
             </div>
             <div class="field-group">
-              <label>min_net_bps（最小净基差 bp）</label>
+              <label><TermHint term="min_net_bps" />（最小净基差 bp）</label>
               <ElInput v-model="observerConfig.strategy.min_net_bps" size="small" />
             </div>
             <div class="field-group">
-              <label>latency_loss_bps（延迟损失 bp）</label>
+              <label><TermHint term="latency_loss_bps" />（延迟损失 bp）</label>
               <ElInput v-model="observerConfig.strategy.latency_loss_bps" size="small" />
             </div>
             <div class="field-group">
-              <label>risk_buffer_bps（风险缓冲 bp）</label>
+              <label><TermHint term="risk_buffer_bps" />（风险缓冲 bp）</label>
               <ElInput v-model="observerConfig.strategy.risk_buffer_bps" size="small" />
             </div>
             <div class="field-group">
-              <label>rebalance_cost（再平衡成本）</label>
+              <label><TermHint term="rebalance_cost" />（再平衡成本）</label>
               <ElInput v-model="observerConfig.strategy.rebalance_cost" size="small" />
             </div>
             <div class="field-group">
-              <label>other_direct_cost（其他直接成本）</label>
+              <label><TermHint term="other_direct_cost" />（其他直接成本）</label>
               <ElInput v-model="observerConfig.strategy.other_direct_cost" size="small" />
             </div>
           </div>
@@ -361,81 +362,85 @@ onMounted(() => {
   padding: 0 0 20px;
 }
 .settings-header {
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 .settings-header h2 {
   margin: 0;
-  color: #3c5a4a;
-  font-size: 16px;
+  color: var(--text-1);
+  font-size: var(--fs-15);
   font-weight: 700;
 }
 .settings-header small {
-  color: #9ca79f;
-  font-size: 10px;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  margin-top: 6px;
+  display: block;
 }
 .settings-section {
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
 .settings-section h3 {
-  margin: 0 0 8px;
-  color: #3c5a4a;
-  font-size: 12px;
+  margin: 0 0 10px;
+  color: var(--text-1);
+  font-size: var(--fs-13);
   font-weight: 700;
   letter-spacing: .03em;
 }
 .settings-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 14px;
 }
 .settings-card {
-  background: #fbfcfa;
-  border: 1px solid #d7ddd6;
-  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   overflow: hidden;
+  box-shadow: var(--shadow-1);
 }
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 14px;
-  background: #f3f7f2;
-  border-bottom: 1px solid #e2e7e2;
+  padding: 11px 15px;
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border);
 }
 .card-title {
-  font-size: 11px;
+  font-size: var(--fs-12);
   font-weight: 700;
-  color: #3c5a4a;
+  color: var(--text-1);
   letter-spacing: .03em;
 }
 .card-body {
-  padding: 12px 14px;
+  padding: 14px 15px;
 }
 .field-group {
-  margin-bottom: 12px;
+  margin-bottom: 13px;
 }
 .field-group:last-child {
   margin-bottom: 0;
 }
 .field-group label {
   display: block;
-  margin-bottom: 4px;
-  color: #59675e;
-  font-size: 10px;
+  margin-bottom: 5px;
+  color: var(--text-2);
+  font-size: var(--fs-11);
   font-weight: 600;
   letter-spacing: .03em;
+  font-family: var(--font-mono);
 }
 .field-group small {
   display: block;
-  margin-top: 4px;
-  color: #9ca79f;
-  font-size: 8px;
+  margin-top: 5px;
+  color: var(--text-3);
+  font-size: var(--fs-10);
 }
 .settings-actions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 12px 0;
-  border-top: 1px solid #e2e7e2;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
 }
 </style>

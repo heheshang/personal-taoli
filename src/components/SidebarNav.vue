@@ -9,11 +9,10 @@ const emit = defineEmits<{
 }>()
 
 const pages = [
-  { id: 'overview', label: '概览', icon: '◉' },
-  { id: 'market', label: '市场', icon: '◎' },
-  { id: 'control', label: '控制台', icon: '⚙' },
-  { id: 'reports', label: '报告', icon: '▤' },
-  { id: 'settings', label: '设置', icon: '⛭' },
+  { id: 'overview', label: '概览' },
+  { id: 'market', label: '市场' },
+  { id: 'control', label: '控制台' },
+  { id: 'settings', label: '设置' },
 ]
 </script>
 
@@ -31,7 +30,40 @@ const pages = [
         :class="{ active: active === page.id }"
         @click="emit('navigate', page.id)"
       >
-        <span class="nav-icon">{{ page.icon }}</span>
+        <svg
+          v-if="page.id === 'overview'"
+          class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        >
+          <rect x="3" y="3" width="8" height="8" rx="2" />
+          <rect x="13" y="3" width="8" height="8" rx="2" />
+          <rect x="3" y="13" width="8" height="8" rx="2" />
+          <rect x="13" y="13" width="8" height="8" rx="2" />
+        </svg>
+        <svg
+          v-else-if="page.id === 'market'"
+          class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        >
+          <path d="M3 16l5-4 4 3 6-8" />
+          <path d="M15 7h3v3" />
+          <path d="M3 21h18" />
+        </svg>
+        <svg
+          v-else-if="page.id === 'control'"
+          class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        >
+          <rect x="3" y="4" width="18" height="6" rx="3" />
+          <rect x="3" y="14" width="18" height="6" rx="3" />
+          <circle cx="9" cy="7" r="2" fill="currentColor" stroke="none" />
+          <circle cx="15" cy="17" r="2" fill="currentColor" stroke="none" />
+        </svg>
+        <svg
+          v-else
+          class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="4.5" />
+          <circle cx="12" cy="12" r="8.5" stroke-dasharray="2.6 3.4" />
+          <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+        </svg>
         <span class="nav-label">{{ page.label }}</span>
         <i v-if="page.id === 'control' && continuousRunning" class="nav-dot pulse" />
       </button>
@@ -45,89 +77,103 @@ const pages = [
 
 <style scoped>
 .sidebar {
-  width: 72px;
+  width: 76px;
   min-height: 100vh;
-  background: #1a2b22;
+  background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16px 0;
+  padding: 18px 0;
   position: fixed;
   left: 0;
   top: 0;
   z-index: 100;
-  border-right: 1px solid #2a3d32;
+  border-right: 1px solid #22382c;
 }
 .sidebar-brand {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  margin-bottom: 32px;
+  gap: 6px;
+  margin-bottom: 30px;
 }
 .brand-icon {
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  color: #1a2b22;
-  background: #c8ef3b;
-  font-size: 20px;
+  border-radius: var(--radius-md);
+  color: var(--bg-sidebar);
+  background: var(--lime);
+  font-size: 22px;
   font-weight: 900;
   transform: rotate(-10deg);
+  box-shadow: 0 2px 8px rgba(200, 239, 59, .22);
 }
 .brand-text {
   color: #7b9b8a;
-  font-size: 9px;
-  letter-spacing: .12em;
+  font-size: var(--fs-10);
+  letter-spacing: .14em;
   font-weight: 700;
 }
 .nav-links {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   flex: 1;
+  width: 100%;
+  align-items: center;
 }
 .nav-item {
-  width: 52px;
-  height: 52px;
+  position: relative;
+  width: 62px;
+  height: 56px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 4px;
   border: none;
   background: transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all .15s;
-  position: relative;
+  transition: background .15s, color .15s;
   color: #5a7a6a;
 }
 .nav-item:hover {
-  background: #243830;
-  color: #a0c4b0;
+  background: #22372c;
+  color: #a5c6b2;
 }
 .nav-item.active {
-  background: #2a4a3a;
-  color: #c8ef3b;
+  background: #264134;
+  color: var(--lime);
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 24px;
+  border-radius: 0 3px 3px 0;
+  background: var(--lime);
 }
 .nav-icon {
-  font-size: 16px;
-  line-height: 1;
+  width: 19px;
+  height: 19px;
 }
 .nav-label {
-  font-size: 8px;
+  font-size: var(--fs-10);
   letter-spacing: .04em;
   font-weight: 600;
 }
 .nav-dot {
   position: absolute;
   top: 8px;
-  right: 8px;
-  width: 6px;
-  height: 6px;
+  right: 10px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: #26a269;
 }
@@ -135,13 +181,14 @@ const pages = [
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   padding-top: 16px;
-  border-top: 1px solid #2a3d32;
+  border-top: 1px solid #22382c;
+  width: 100%;
 }
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
 }
 .status-dot.on {
@@ -153,8 +200,8 @@ const pages = [
   background: #5a6a60;
 }
 .status-text {
-  color: #5a7a6a;
-  font-size: 7px;
+  color: #6d8a7a;
+  font-size: var(--fs-10);
   letter-spacing: .06em;
 }
 @keyframes pulse {

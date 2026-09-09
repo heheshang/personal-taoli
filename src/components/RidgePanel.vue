@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Observe } from '../types'
+import TermHint from './TermHint.vue'
 
 defineProps<{
   observation: Observe | null
@@ -14,9 +15,9 @@ defineProps<{
     </div>
     <div class="ridge-body">
       <div class="ridge-stats">
-        <span>有效数据源 <b>{{ observation ? '2 / 2' : '0 / 2' }}</b></span>
-        <span>已扫描 <b>{{ observation ? '2' : '0' }}</b></span>
-        <span>已准入 <b>{{ observation?.report ? '查看报告' : '—' }}</b></span>
+        <span><TermHint term="有效数据源" /> <b>{{ observation ? '2 / 2' : '0 / 2' }}</b></span>
+        <span><TermHint term="已扫描" /> <b>{{ observation ? '2' : '0' }}</b></span>
+        <span><TermHint term="已准入" /> <b>{{ observation?.report ? '查看报告' : '—' }}</b></span>
       </div>
       <div class="ridge-visual">
         <div v-for="n in 9" :key="n" class="ridge-line" :style="{ transform: `translateY(${n * 7}px) rotate(${n < 5 ? -5 : 5}deg)`, opacity: `${1 - n * .06}` }" />

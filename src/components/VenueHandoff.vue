@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Account } from '../types'
+import TermHint from './TermHint.vue'
 
 defineProps<{
   accounts: Account[]
@@ -10,7 +11,7 @@ defineProps<{
   <article class="panel handoff">
     <div class="panel-head">
       <h2><em class="teal-dot" /> 交易所交接</h2>
-      <span>费率 / 权限</span>
+      <span><TermHint term="费率" /> / <TermHint term="权限" /></span>
     </div>
     <div class="handoff-body">
       <div class="radar">
@@ -18,7 +19,7 @@ defineProps<{
         <span class="radar-ring r2" />
         <span class="radar-ring r3" />
         <i class="radar-line" />
-        <b>2 交易所</b>
+        <b><TermHint term="交易所" /> 2</b>
       </div>
       <div class="venue-list">
         <div v-for="venue in ['BINANCE', 'BYBIT']" :key="venue">
