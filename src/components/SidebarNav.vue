@@ -12,6 +12,7 @@ const pages = [
   { id: 'overview', label: '概览' },
   { id: 'market', label: '市场' },
   { id: 'control', label: '控制台' },
+  { id: 'simulation', label: '模拟套利' },
   { id: 'settings', label: '设置' },
 ]
 </script>
@@ -55,6 +56,15 @@ const pages = [
           <rect x="3" y="14" width="18" height="6" rx="3" />
           <circle cx="9" cy="7" r="2" fill="currentColor" stroke="none" />
           <circle cx="15" cy="17" r="2" fill="currentColor" stroke="none" />
+        </svg>
+        <svg
+          v-else-if="page.id === 'simulation'"
+          class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        >
+          <path d="M3 5l4 3-4 3" />
+          <path d="M7 8h14" />
+          <path d="M21 19l-4-3 4-3" />
+          <path d="M17 16H3" />
         </svg>
         <svg
           v-else

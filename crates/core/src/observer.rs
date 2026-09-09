@@ -12,6 +12,7 @@ use crate::{
     scan::{
         FreshnessLimits, InstrumentPair, ScanInput, ScanReport, VenueFeeRates, VenueFees, scan_pair,
     },
+    simulation::SimulationEngine,
     venues::{BinanceMarketData, BybitMarketData, MarketDataVenue},
 };
 use anyhow::{Context, Result, bail};
@@ -277,6 +278,12 @@ where
         config.archive.queue_capacity,
         config.archive.raw_retention_days,
     )?;
+    // F-02 模拟套利（D4）：独立于 SessionController；缺 DB/迁移失败仅告警，不阻断观察。
+    let mut simulation = if config.simulation.enabled {
+        SimulationEngine::spawn(config.simulation.clone()).await
+    } else {
+        None
+    };
     let mut scan_ticker = tokio::time::interval(config.poll_interval());
     let mut account_ticker = tokio::time::interval(config.account_refresh_interval());
     loop {
@@ -311,6 +318,9 @@ where
                             &run.accounts,
                         )?;
                         on_report(&event.report);
+                        if let Some(engine) = simulation.as_ref() {
+                            engine.offer(event.clone()).await;
+                        }
                         archive.submit(ArchivedEvent::Decision(Box::new(event)))?;
                     } else {
                         let observed_at_ms = unix_timestamp_ms()?;
@@ -330,7 +340,11 @@ where
             }
         }
     }
-    archive.finish()
+    archive.finish()?;
+    if let Some(engine) = simulation.take() {
+        engine.shutdown().await;
+    }
+    Ok(())
 }
 
 fn build_http_client(config: &ObserverConfig) -> Result<Client> {

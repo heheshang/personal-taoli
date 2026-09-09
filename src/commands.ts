@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import { ElMessage } from 'element-plus'
-import type { ApiResponse } from './types'
+import type {
+  ApiResponse,
+  SimulationOverview,
+  SimulationRunDetail,
+  SimulationRunsPage,
+} from './types'
 
 /**
  * Tauri 后台命令名，与 `src-tauri/src/lib.rs` 的 `invoke_handler` 注册集一一对应。
@@ -14,6 +19,10 @@ export const COMMANDS = {
   replayObservations: 'replay_observations',
   runPaperSmoke: 'run_paper_smoke',
   runAccountingControlSmoke: 'run_accounting_control_smoke',
+  runSimulationSmoke: 'run_simulation_smoke_command',
+  getSimulationOverview: 'get_simulation_overview_command',
+  getSimulationRuns: 'get_simulation_runs_command',
+  getSimulationRunDetail: 'get_simulation_run_detail_command',
   startContinuousObservation: 'start_continuous_observation',
   stopContinuousObservation: 'stop_continuous_observation',
   continuousObservationStatus: 'continuous_observation_status',
@@ -29,6 +38,21 @@ export type PaperKind = (typeof PAPER_KINDS)[number]
 
 export const ACCOUNTING_CONTROL_KINDS = ['ACCOUNTING', 'RECONCILIATION', 'CONTROL'] as const
 export type AccountingControlKind = (typeof ACCOUNTING_CONTROL_KINDS)[number]
+
+/** F-02 模拟套利烟测结果，与 `dto.rs` 的 `SimulationSmokeResult` 一致。 */
+export interface SimulationSmokeResult {
+  schema_version: number
+  s01_full_fill_at_worst: boolean
+  s02_partial_fill_depth_shortfall: boolean
+  s03_competed_away: boolean
+  s04_worse_than_scan_price: boolean
+  s05_insufficient_funds_rejected: boolean
+  s06_unknown_query_recovered_no_duplicate: boolean
+  s07_compensation_over_budget_manual: boolean
+  s08_idempotent_replay: boolean
+  s09_fact_recovery_consistent: boolean
+  external_order_calls: number
+}
 
 /** `load_app_config` / `save_app_config` 的配置形状，与 `settings.rs` 的 `AppConfig` 一致。 */
 export interface AppConfig {
@@ -79,6 +103,23 @@ export interface ObserverConfig {
     queue_capacity: number
     raw_retention_days: number
   }
+  simulation: {
+    enabled: boolean
+    seed: number
+    initial_quote_balance: string
+    initial_base_balance: string
+    decision_to_submit_ms_min: number
+    decision_to_submit_ms_max: number
+    fill_latency_ms_min: number
+    fill_latency_ms_max: number
+    adverse_move_bps: string
+    competitor_take_bps: string
+    unknown_submit_probability_bps: string
+    query_found_probability_bps: string
+    max_unmatched_exposure: string
+    compensation_budget: string
+    compensation_markup_bps: string
+  }
   binance: VenueConfig
   bybit: VenueConfig
   strategy: {
@@ -113,6 +154,23 @@ export const DEFAULT_OBSERVER_CONFIG: ObserverConfig = {
     path: 'data/archive/observations.ndjson',
     queue_capacity: 1024,
     raw_retention_days: 30,
+  },
+  simulation: {
+    enabled: false,
+    seed: 0,
+    initial_quote_balance: '10000',
+    initial_base_balance: '2',
+    decision_to_submit_ms_min: 50,
+    decision_to_submit_ms_max: 400,
+    fill_latency_ms_min: 20,
+    fill_latency_ms_max: 250,
+    adverse_move_bps: '15',
+    competitor_take_bps: '200',
+    unknown_submit_probability_bps: '300',
+    query_found_probability_bps: '6000',
+    max_unmatched_exposure: '100',
+    compensation_budget: '20',
+    compensation_markup_bps: '30',
   },
   binance: {
     base_url: 'https://api.binance.com',
@@ -196,4 +254,52 @@ export async function saveObserverConfig(
   })
   // 成功时 data 序列化为 null（≠ undefined），失败时 invokeCommand 返回 undefined
   return result !== undefined
+}
+
+/** F-02 模拟套利烟测（S01–S09，PostgreSQL 合成簿场景）。 */
+export async function runSimulationSmoke(
+  databaseUrl?: string,
+): Promise<SimulationSmokeResult | undefined> {
+  return invokeCommand<SimulationSmokeResult>(COMMANDS.runSimulationSmoke, {
+    databaseUrlParam: databaseUrl || null,
+  })
+}
+
+/** G-01 模拟套利仪表盘概览（聚合 + 最近列表 + 余额曲线 + 山脊 + 活动流）。 */
+export async function getSimulationOverview(
+  databaseUrl?: string,
+): Promise<SimulationOverview | undefined> {
+  return invokeCommand<SimulationOverview>(COMMANDS.getSimulationOverview, {
+    databaseUrlParam: databaseUrl || null,
+  })
+}
+
+/** G-01 run 分页列表（limit ≤ 200；symbol / scenario 可选过滤）。 */
+export async function getSimulationRuns(
+  options: {
+    limit?: number
+    offset?: number
+    symbol?: string | null
+    scenario?: string | null
+    databaseUrl?: string
+  } = {},
+): Promise<SimulationRunsPage | undefined> {
+  return invokeCommand<SimulationRunsPage>(COMMANDS.getSimulationRuns, {
+    databaseUrlParam: options.databaseUrl || null,
+    limit: options.limit ?? 100,
+    offset: options.offset ?? 0,
+    symbol: options.symbol ?? null,
+    scenario: options.scenario ?? null,
+  })
+}
+
+/** G-01 单 run 详情（报告全文 + 意图/成交/执行事件/审计/余额快照）。 */
+export async function getSimulationRunDetail(
+  runId: string,
+  databaseUrl?: string,
+): Promise<SimulationRunDetail | undefined> {
+  return invokeCommand<SimulationRunDetail>(COMMANDS.getSimulationRunDetail, {
+    databaseUrlParam: databaseUrl || null,
+    runId,
+  })
 }

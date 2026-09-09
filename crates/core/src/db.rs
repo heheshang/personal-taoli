@@ -14,13 +14,14 @@ use tokio_postgres::{Client, NoTls};
 
 use crate::market::unix_timestamp_ms;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 const INITIAL_PAPER_MIGRATION: &str = include_str!("../migrations/0001_paper_core.sql");
 const ORDER_FACTS_MIGRATION: &str = include_str!("../migrations/0002_order_facts.sql");
 const DOUBLE_LEG_EXECUTION_MIGRATION: &str =
     include_str!("../migrations/0003_double_leg_execution.sql");
 const ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION: &str =
     include_str!("../migrations/0004_accounting_reconciliation_control.sql");
+const SIMULATION_RUNS_MIGRATION: &str = include_str!("../migrations/0005_simulation_runs.sql");
 
 /// Applies every B-series migration under one advisory lock, then verifies
 /// the resulting schema version.  Idempotent per migration file.
@@ -47,6 +48,10 @@ pub(crate) async fn migrate(database_url: &str) -> Result<()> {
         .batch_execute(ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION)
         .await
         .context("failed to apply B-04 database migration")?;
+    client
+        .batch_execute(SIMULATION_RUNS_MIGRATION)
+        .await
+        .context("failed to apply G-01 database migration")?;
     verify_schema(&client).await?;
     close_connection(client, connection).await;
     Ok(())

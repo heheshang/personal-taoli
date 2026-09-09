@@ -28,5 +28,7 @@ pub mod rpo_rto;
 pub mod runbook;
 pub mod runbook_manager;
 pub mod scan;
+pub mod simulation;
+pub mod simulation_query;
 pub mod system_health;
 pub mod venues;

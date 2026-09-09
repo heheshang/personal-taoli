@@ -31,6 +31,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   configSaved: [config: AppConfig]
+  observerSaved: []
 }>()
 
 const loading = ref(false)
@@ -87,6 +88,7 @@ async function saveObserver() {
     const saved = await saveObserverConfigIpc(JSON.parse(JSON.stringify(observerConfig)))
     if (saved) {
       ElMessage.success('观察配置已保存并即时生效')
+      emit('observerSaved')
     }
   } finally {
     savingObserver.value = false

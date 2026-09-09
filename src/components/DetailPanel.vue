@@ -39,6 +39,7 @@ const emit = defineEmits<{
   replay: []
   paper: [kind: PaperKind]
   accountingControl: [kind: AccountingControlKind]
+  simulation: []
   startContinuous: []
   stopContinuous: []
   reconnectSmoke: []
@@ -63,6 +64,14 @@ const paperReport = computed(() => {
     return { kind: r.kind as string, ...report }
   }
   return null
+})
+
+/** F-02 模拟套利烟测报告视图（扁平结构，按 s01_* 探针识别）。 */
+const simulationReport = computed(() => {
+  if (!props.report || typeof props.report !== 'object') return null
+  const r = props.report as Record<string, unknown>
+  if (typeof r.s01_full_fill_at_worst !== 'boolean') return null
+  return r
 })
 
 function isOpportunity(d: Record<string, unknown>): boolean {
@@ -120,6 +129,15 @@ function formatKey(key: string): string {
     pause_commands: '暂停命令数',
     resume_commands: '恢复命令数',
     stop_commands: '停止命令数',
+    s01_full_fill_at_worst: 'S01 足额按最差档成交',
+    s02_partial_fill_depth_shortfall: 'S02 深度不足部分成交',
+    s03_competed_away: 'S03 敌手占盘无成交',
+    s04_worse_than_scan_price: 'S04 成交价劣于扫码基线',
+    s05_insufficient_funds_rejected: 'S05 资金不足拒绝',
+    s06_unknown_query_recovered_no_duplicate: 'S06 UNKNOWN查询恢复无重复',
+    s07_compensation_over_budget_manual: 'S07 补偿超预算人工介入',
+    s08_idempotent_replay: 'S08 幂等重放',
+    s09_fact_recovery_consistent: 'S09 事实恢复一致',
   }
   return map[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
@@ -399,12 +417,14 @@ const shadowReport = computed(() => {
              paperReport && paperReport.kind === 'B03' ? 'PAPER 双腿执行验证' :
              paperReport && paperReport.kind === 'ACCOUNTING' ? '账务验证' :
              paperReport && paperReport.kind === 'RECONCILIATION' ? '对账验证' :
-             paperReport && paperReport.kind === 'CONTROL' ? '控制面验证' : '验证报告' }}
+             paperReport && paperReport.kind === 'CONTROL' ? '控制面验证' :
+             simulationReport ? 'F-02 模拟套利验证' : '验证报告' }}
         </span>
         <div class="card-actions">
           <ElButton size="small" :disabled="!canOperate || !archivePath" @click="emit('replay')">回放归档</ElButton>
           <ElButton v-for="kind in PAPER_KINDS" :key="kind" size="small" :disabled="!canOperate" :title="PAPER_LABELS[kind].hint" @click="emit('paper', kind)">{{ PAPER_LABELS[kind].label }}</ElButton>
           <ElButton v-for="kind in ACCOUNTING_CONTROL_KINDS" :key="kind" size="small" :disabled="!canOperate" @click="emit('accountingControl', kind)">{{ kind === 'ACCOUNTING' ? '账务' : kind === 'RECONCILIATION' ? '对账' : '控制' }}</ElButton>
+          <ElButton size="small" :disabled="!canOperate" title="F-02 模拟套利：合成簿驱动 S01–S09 撮合烟测，全程无真实/测试网订单（external_order_calls=0）" @click="emit('simulation')">模拟套利</ElButton>
           <ElButton size="small" :disabled="!canOperate" @click="emit('reconnectSmoke')">重连验证</ElButton>
         </div>
       </template>
@@ -418,6 +438,20 @@ const shadowReport = computed(() => {
             <strong v-else>{{ trimDecimal(val) }}</strong>
           </div>
         </template>
+      </div>
+      <div v-else-if="simulationReport" class="report-grid">
+        <template v-for="(val, key) in simulationReport" :key="key">
+          <div class="report-item">
+            <small><TermHint :term="formatKey(String(key))" /></small>
+            <ElTag v-if="typeof val === 'boolean'" v-bind="statusTag(val)" size="small">
+              {{ statusTag(val).text }}
+            </ElTag>
+            <strong v-else>{{ trimDecimal(val) }}</strong>
+          </div>
+        </template>
+        <small class="smoke-note">
+          只读烟测 · 未产生任何真实/测试网订单（{{ String(simulationReport.external_order_calls ?? 0) }}）
+        </small>
       </div>
       <div v-else-if="reconnectSmoke" class="reconnect-grid">
         <div v-for="v in reconnectSmoke.venues" :key="v.venue" class="venue-state-card">

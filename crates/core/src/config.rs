@@ -34,6 +34,8 @@ pub struct ObserverConfig {
     pub binance: VenueConfig,
     pub bybit: VenueConfig,
     pub strategy: StrategyConfig,
+    #[serde(default)]
+    pub simulation: SimulationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +64,102 @@ pub struct ArchiveConfig {
     pub path: PathBuf,
     pub queue_capacity: usize,
     pub raw_retention_days: u16,
+}
+
+/// 模拟撮合引擎配置（F-02）。全字段 serde default：旧配置/前端往返缺字段时落入默认。
+/// 所有 bps 字段为万分比（0–10000）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SimulationConfig {
+    /// 连续观察是否把 accepted 机会接入模拟引擎。
+    pub enabled: bool,
+    /// 随机种子；0=按运行时间播种（回写报告），非 0=全链路确定性可复现。
+    pub seed: u64,
+    /// 每 run 买腿注入的报价资产（如 USDT）初始余额。
+    pub initial_quote_balance: Decimal,
+    /// 每 run 卖腿注入的基础资产（如 BTC）初始余额。
+    pub initial_base_balance: Decimal,
+    /// 决策→提交时延采样区间（毫秒，闭区间）。
+    pub decision_to_submit_ms_min: u64,
+    pub decision_to_submit_ms_max: u64,
+    /// 提交→成交回报时延采样区间（毫秒，闭区间）。
+    pub fill_latency_ms_min: u64,
+    pub fill_latency_ms_max: u64,
+    /// 成交价不利偏移（万分比）：买侧档价×(1+x)，卖侧档价×(1−x)。
+    pub adverse_move_bps: Decimal,
+    /// 敌手占盘比例（万分比）：每档有效量 = 档量×(1−x)。
+    pub competitor_take_bps: Decimal,
+    /// 提交落入 UNKNOWN 的概率（万分比）。
+    pub unknown_submit_probability_bps: Decimal,
+    /// UNKNOWN 后查询 Found 的概率（万分比）。
+    pub query_found_probability_bps: Decimal,
+    /// 传给 B-03 的未匹配敞口预算（USDT·unit）。
+    pub max_unmatched_exposure: Decimal,
+    /// 传给 B-03 的补偿预算（USDT·unit）。
+    pub compensation_budget: Decimal,
+    /// 补偿单位成本 = 双腿中间价×(1+markup)（万分比）。
+    pub compensation_markup_bps: Decimal,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            seed: 0,
+            initial_quote_balance: "10000".parse().unwrap(),
+            initial_base_balance: "2".parse().unwrap(),
+            decision_to_submit_ms_min: 50,
+            decision_to_submit_ms_max: 400,
+            fill_latency_ms_min: 20,
+            fill_latency_ms_max: 250,
+            adverse_move_bps: "15".parse().unwrap(),
+            competitor_take_bps: "200".parse().unwrap(),
+            unknown_submit_probability_bps: "300".parse().unwrap(),
+            query_found_probability_bps: "6000".parse().unwrap(),
+            max_unmatched_exposure: "100".parse().unwrap(),
+            compensation_budget: "20".parse().unwrap(),
+            compensation_markup_bps: "30".parse().unwrap(),
+        }
+    }
+}
+
+impl SimulationConfig {
+    fn validate(&self) -> Result<()> {
+        const TEN_THOUSAND: Decimal = Decimal::from_parts(10000, 0, 0, false, 0);
+        if self.decision_to_submit_ms_min > self.decision_to_submit_ms_max {
+            bail!("simulation.decision_to_submit_ms_min must not exceed its max");
+        }
+        if self.fill_latency_ms_min > self.fill_latency_ms_max {
+            bail!("simulation.fill_latency_ms_min must not exceed its max");
+        }
+        for (name, value) in [
+            ("adverse_move_bps", self.adverse_move_bps),
+            ("competitor_take_bps", self.competitor_take_bps),
+            (
+                "unknown_submit_probability_bps",
+                self.unknown_submit_probability_bps,
+            ),
+            (
+                "query_found_probability_bps",
+                self.query_found_probability_bps,
+            ),
+            ("compensation_markup_bps", self.compensation_markup_bps),
+        ] {
+            if value < Decimal::ZERO || value > TEN_THOUSAND {
+                bail!("simulation.{name} must be in [0, 10000], got {value}");
+            }
+        }
+        if self.initial_quote_balance <= Decimal::ZERO {
+            bail!("simulation.initial_quote_balance must be positive");
+        }
+        if self.initial_base_balance <= Decimal::ZERO {
+            bail!("simulation.initial_base_balance must be positive");
+        }
+        if self.max_unmatched_exposure < Decimal::ZERO || self.compensation_budget < Decimal::ZERO {
+            bail!("simulation exposure and compensation budgets must be non-negative");
+        }
+        Ok(())
+    }
 }
 
 impl ObserverConfig {
@@ -213,6 +311,7 @@ impl ObserverConfig {
                 rebalance_cost: "0".parse().unwrap(),
                 other_direct_cost: "0".parse().unwrap(),
             },
+            simulation: SimulationConfig::default(),
         }
     }
 
@@ -293,6 +392,7 @@ impl ObserverConfig {
         validate_non_negative("risk_buffer_bps", self.strategy.risk_buffer_bps)?;
         validate_non_negative("rebalance_cost", self.strategy.rebalance_cost)?;
         validate_non_negative("other_direct_cost", self.strategy.other_direct_cost)?;
+        self.simulation.validate()?;
         Ok(())
     }
 }
@@ -418,5 +518,76 @@ poll_interval_ms = 2000
             include_str!("../tests/fixtures/observer.toml").replace("[[pairs]]", "pairs = []");
         let config: ObserverConfig = toml::from_str(&raw).unwrap();
         assert!(config.validate().unwrap_err().to_string().contains("pairs"));
+    }
+
+    #[test]
+    fn simulation_defaults_when_table_missing() {
+        let raw = include_str!("../tests/fixtures/observer.toml");
+        let config: ObserverConfig = toml::from_str(raw).unwrap();
+        let sim = config.simulation.clone();
+        assert!(!sim.enabled);
+        assert_eq!(sim.adverse_move_bps, "15".parse::<Decimal>().unwrap());
+        assert_eq!(sim.competitor_take_bps, "200".parse::<Decimal>().unwrap());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn simulation_validate_rejects_out_of_range_bps() {
+        let sim = SimulationConfig {
+            adverse_move_bps: "10001".parse().unwrap(),
+            ..SimulationConfig::default()
+        };
+        assert!(
+            sim.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("adverse_move_bps")
+        );
+        let sim = SimulationConfig {
+            adverse_move_bps: "0".parse().unwrap(),
+            competitor_take_bps: Decimal::NEGATIVE_ONE,
+            ..SimulationConfig::default()
+        };
+        assert!(
+            sim.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("competitor_take_bps")
+        );
+    }
+
+    #[test]
+    fn simulation_validate_rejects_bad_ranges_and_balances() {
+        let sim = SimulationConfig {
+            decision_to_submit_ms_min: 500,
+            decision_to_submit_ms_max: 100,
+            ..SimulationConfig::default()
+        };
+        assert!(
+            sim.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("decision_to_submit_ms_min")
+        );
+        let sim2 = SimulationConfig {
+            initial_quote_balance: Decimal::ZERO,
+            ..SimulationConfig::default()
+        };
+        assert!(
+            sim2.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("initial_quote_balance")
+        );
+        let sim3 = SimulationConfig {
+            compensation_budget: Decimal::NEGATIVE_ONE,
+            ..SimulationConfig::default()
+        };
+        assert!(
+            sim3.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("non-negative")
+        );
     }
 }

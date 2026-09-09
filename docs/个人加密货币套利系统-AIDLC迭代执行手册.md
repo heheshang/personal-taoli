@@ -215,6 +215,24 @@ AI 职责：完成下列同步并提交候选发布记录。
 
 这些结果证明公共实时行情到净机会判断的只读路径及一次主动重连恢复可运行，不证明 24 小时连续稳定性、交易恢复或盈利能力。
 
+### 6.4 追踪矩阵追加：G-01 模拟套利仪表盘（2026-09-09）
+
+实现与验证详情见第 10 章发布记录 G-01 行及 `docs/G-01-模拟套利仪表盘-{需求,设计,任务}.md`。
+
+| 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
+|---|---|---|---|---|
+| G01-R01 | 侧栏「模拟套利」独立页，八大板块（统计/机会历史/交易明细获利/累计净盈亏曲线/流转图/余额与两账户详情变化图/活动日志/山脊图）均渲染数据或明确空态；页面切换不影响其他页 | `src/components/Simulation{Page,StatCards,Trades,ProfitChart,Flow,BalanceChart,Activity,Ridge}.vue`、`src/App.vue`、`src/components/SidebarNav.vue` | `npm run build` 零错误；浏览器 mock IPC 渲染断言（八板块、两账户详情、无横向溢出） | verified |
+| G01-R02 | run 列表 22 列与单 run 详情（report 全文+意图/成交/执行事件/审计流）与 `simulation_runs` 投影一致；净盈亏全程 Decimal（serde-str） | `crates/core/src/simulation_query.rs`（`run_detail`）、`src/commands.ts`、`src/types.ts` | 探针 detail 断言：intents/trades/events/audit/balances 与 DB 直查一致；`audit=1`（LIKE 通配符修复后） | verified |
+| G01-R03 | 累计模拟净盈亏曲线 + 扫描预期对照（SVG 折线/面积），数据点 hover；无数据空态；无第三方图表库 | `src/components/SimulationProfitChart.vue` | `npm run build` 零错误；浏览器 mock IPC 渲染断言 | verified |
+| G01-R04 | 流转图按真实 `execution_events`/`audit_events` 聚合点亮节点并计数（evaluated/reserved/filled/compensated/completed/escalated） | `crates/core/src/simulation_query.rs`（`load_flow_aggregate`）、`src/components/SimulationFlow.vue` | 探针 flow 断言：evaluated=20 reserved=87 filled=59 compensated=16 completed=59 escalated=11 | verified |
+| G01-R05 | 两账户详情卡（买腿 quote、卖腿 base：注入/成交后/补偿评估后三点）+ 余额变化曲线（USDT/BTC 双资产线） | `crates/core/src/simulation_query.rs`（`account_balances`/`balance_history`+`parse_sim_snapshot_id`）、`src/components/SimulationBalanceChart.vue` | 探针 balance_history=120 点、account_balances 与 `paper_balances` 一致；snapshot_id 8 段实测 | verified |
+| G01-R06 | 机会历史全 run（含 Rejected/CompetedAway/DepthShortfall）、symbol/scenario 过滤、分页（limit≤200）；总数与 `simulation_runs` 行数一致 | `crates/core/src/simulation_query.rs`（`list_runs`）、`src/components/SimulationTrades.vue` | 探针 runs page total=20 rows=20；列表与投影一致 | verified |
+| G01-R07 | 活动日志按时间降序审计事件流（`f02-*` 前缀聚合），run 归属由 aggregate/correlation id 解析 | `crates/core/src/simulation_query.rs`（activity）、`src/components/SimulationActivity.vue` | 探针 activity=50 条按降序返回 | verified |
+| G01-R08 | 山脊图按日桶密度曲线堆叠 + 中位数标记，稀疏桶自动合并 | `crates/core/src/simulation_query.rs`（`ridge`+`merge_sparse_buckets`）、`src/components/SimulationRidge.vue` | 探针 ridge 桶数据与 `simulation_runs` 检索一致 | verified |
+| G01-R09 | 查询层零写路径；无新增真实/测试网订单路径；`external_order_calls=0` 恒真 | `crates/core/src/simulation_query.rs`（`BEGIN READ ONLY` 独立连接） | 代码审查无写路径；F-02 smoke 单测不回归 | verified |
+| G01-R10 | `SCHEMA_VERSION` 4→5、migration 0005 幂等；旧库任一命令自动升级；0001–0004 零改动 | `crates/core/src/db.rs`、`crates/core/migrations/0005_simulation_runs.sql` | `schema_migrations` 含 1–5；`cargo test --workspace`（190 core + 8 tauri-lib） | verified |
+| G01-R11 | 五门禁全绿；纯逻辑测试（投影行/桶分组/前缀解析）净增 | `crates/core/src/simulation_query.rs`、`crates/core/src/simulation.rs`（`#[cfg(test)]`） | fmt/test/clippy/build/npm 全绿；`cargo test -p personal-taoli-core simulation::tests` 9 绿 | verified |
+
 ## 7. 阶段 A 剩余迭代队列
 
 按顺序执行。除非当前项被正式拒绝或阻塞，不并行开启后项。
@@ -455,8 +473,13 @@ AI 声称与证据（命令输出、测试日志、烟测记录）：
 | E-05（性能指标收集，released） | 2026-09-09 | 性能指标收集模块、指标收集/分析/统计 | `cargo test --workspace`（169 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；性能指标收集测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
 | UI-01（前端视觉优化，released） | 2026-09-09 | 设计令牌系统与五页面组件视觉面升级、侧栏/SVG 图标/装饰图形重绘、窗口 1360×860；名词项悬浮解释（R11）：`glossary.ts` 约 98 词条 + `TermHint.vue`，覆盖控制台机会卡/账户表头/验证报告/回放重连指标、设置页全部字段、概览/市场面板，`el-tooltip` 视觉悬浮、未收录词条不破版 | `npm run build` 零错误（`vue-tsc --noEmit` + `vite build`）；浏览器 1360×860 与 1100×780 两档五页面 DOM 契约断言（无横向溢出、令牌字号/布局生效、导航/表单输入/按钮状态正常）；hover「预期净收益」弹出「毛利扣除手续费与风险缓冲后的估算净利润」（2026-09-09 复核） | AIDLC 段外特批（手册 §11 之外）；仅前端展示层，无后端/协议/数据变更 |
 | F-01（多币种观察支持，已验证） | 2026-09-09 | 多币种并行观察：核心层 `PairConfig`+`ObserverConfig.pairs`+`effective_pairs()` 唯一真相源及旧格式迁移、`observe_once`/`observe_continuously`/`run_reconnect_smoke` 逐对循环；命令层 `PairSummary`/`ConfigSummary.pairs`/`PairReconnectSmokeResult`/`ReconnectSmokeResult`、`observe_once` 与 `account_status` 返回 `Vec`（账户表按 `fee.symbol` 币种列区分）；前端配置/账户/观测/重连/SettingsPage 全链路 pairs 化、设置页交易对增删 | `cargo fmt --all -- --check`、`cargo test --workspace`（173 项 core + 4 项 tauri-lib 通过）、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`npm run build` 零错误；浏览器 mock IPC 渲染层实测：概览 ConfigStrip 三币对（BTCUSDT+2 个币种/深度 20）、账户表币种列 BTC/ETH、扫描报告「共 2 对」、重连烟测 results 展平 4 venue、设置页添加/删除币种响应 | 只读公共行情与账户元数据；PAPER/模拟事实层无真实或测试网订单（`external_order_calls=0`）；A-05 14 天窗口继续运行至 2026-09-22T09:52:14Z 评审；released 待所有者签收 |
+| F-02（模拟套利，已验证） | 2026-09-09 | 仿真执行闭环：核心层 `SimulationConfig`（全字段 `#[serde(default)]`+`validate()`）与 `simulation.rs` 撮合引擎（逐档消费、adverse 偏移成交价、深度不足部分成交、敌手占盘、资金不足拒绝、UNKNOWN 查询恢复、幂等重放、补偿决策、每方向独立 PAPER 账户、`SimRng` 可复现采样）；`observer.rs` 连续观测接入（`SimulationEngine` 单槽队列+独立 task，积压丢弃计数）；命令层 `run_simulation_smoke_command`/`SimulationSmokeResult`（缺 `TAOLI_DATABASE_URL` 失败关闭）；前端控制台「模拟套利」入口与 S01–S09 探针报告网格；全部事实经 PostgreSQL 落库（复用 `PaperCore`/`OrderCore`/`ExecutionCore`），领域锁分段串行（acquire→操作→disconnect） | `cargo fmt --all -- --check`、`cargo test --workspace`（182 项 core + 5 项 tauri-lib 通过）、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo build --workspace --release` 通过、`npm run build` 零错误；PostgreSQL 烟测 S01–S09 全绿且 `external_order_calls=0`；浏览器 mock IPC 渲染实测：控制台「模拟套利」点击后标题切「F-02 模拟套利验证」，九项探针全「通过」+「外部订单调用次数 0」+「只读烟测 · 未产生任何真实/测试网订单」 | PAPER/模拟事实层：真实行情 → 决策 → 模拟撮合 → PAPER 事实落库 → 仿真报告闭环，全程无真实或测试网订单（`external_order_calls=0`）；仅在 `ObserverConfig.simulation.enabled=true` 时接入连续观测，默认关闭；A-05 14 天窗口继续运行至 2026-09-22T09:52:14Z 评审；released 待所有者签收 |
+
+| G-01（模拟套利仪表盘，已验证） | 2026-09-09 | F-02 之上的独立「模拟套利」页面与只读查询层：核心层 `simulation_query.rs`（独立连接 `BEGIN READ ONLY` 只读事务经 `open()`，不经领域单写者锁；`get_simulation_overview`/`get_simulation_runs`/`get_simulation_run_detail` 三命令；概览聚合、20 条最近、分页过滤（limit≤200）、单 run 详情（report 全文+意图/成交/执行事件/审计/余额）、按日山脊桶+稀疏合并、`f02-` 前缀活动流、两账户现值）；迁移 0005 `simulation_runs` 投影表（`SCHEMA_VERSION` 4→5、关键列索引、不可变触发器、`external_order_calls=0` CHECK）；引擎两处无害钩子（run 报告落库 bail 关闭 + 三节点余额快照 `source='SIMULATION'` 降级告警）；前端 `SimulationPage.vue` 容器与八板块（StatCards/ProfitChart/BalanceChart/Flow/Ridge/Trades/Activity）+ App.vue 挂载与 10s 轮询 | `cargo fmt --all -- --check`、`cargo test --workspace`（190 项 core + 8 项 tauri-lib 通过）、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo build --workspace --release` 通过、`npm run build` 零错误；PostgreSQL 真数据断言（16→20 run、96→120 SIMULATION 余额快照、snapshot_id 8 段、overview/flow/ridge/activity 与 DB 直查一致、detail 审计事件经 LIKE 通配符修复后返回非零） | PAPER/模拟事实层只读展示：查询无写路径、无新增真实/测试网订单路径、`external_order_calls=0` 恒真；仅在 `ObserverConfig.simulation.enabled=true` 时连续观测接入，默认关闭；A-05 14 天窗口继续运行至 2026-09-22T09:52:14Z 评审；released 待所有者签收；剩余风险：PAPER 预留释放缺失（运维另立项）、投影表行增长（索引+分页缓解）、山脊稀疏合并近似 |
 
 ## 11. 下一轮唯一入口
 阶段E（监控与运维）已全部完成。下一步是进入阶段F（生产准备），或等待所有者批准进入生产环境。
 UI-01（前端视觉优化）为段外特批迭代，已于 2026-09-09 发布（所有者签收，见第 10 章发布记录）；其完成不改变本入口：下一轮商业迭代仍唯一进入阶段F（生产准备）或经所有者批准进入生产环境。
 F-01（多币种观察支持）已于 2026-09-09 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收；其完成不改变本入口：阶段 F 首个迭代落地后，下一轮唯一入口为 F 阶段后续迭代（如 F-02 真实接入评估 / F-03 生产部署，按本手册 §11 立项）或经所有者批准进入生产环境。
+F-02（模拟套利）已于 2026-09-09 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：真实行情 → 决策 → 模拟撮合 → PAPER 事实落库 → 仿真报告闭环，全程无真实或测试网订单（`external_order_calls=0`）；其完成不改变本入口：下一轮唯一进入 F 阶段后续迭代（如 F-03 生产部署）或经所有者批准进入生产环境。
+G-01（模拟套利仪表盘）已于 2026-09-09 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：F-02 之上的只读可视化页面（八板块 + 每 run 两账户详情/变化图），查询层零写路径、`external_order_calls=0` 恒真；其完成不改变本入口：F-03 生产部署仍为保留编号，G 阶段后续唯一入口为「G-02 后续可视化/运维」（按本手册 §11 立项），或经所有者批准进入生产环境。

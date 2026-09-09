@@ -8,10 +8,11 @@ use std::{
 
 use commands::{
     SessionController, account_status, continuous_observation_status, desktop_status,
-    get_observer_config, load_app_config, load_app_config_file, load_config_summary, observe_once,
-    replay_observations, run_accounting_control_smoke, run_paper_smoke, run_reconnect_smoke,
-    save_app_config, save_observer_config, start_continuous_observation,
-    stop_continuous_observation,
+    get_observer_config, get_simulation_overview_command, get_simulation_run_detail_command,
+    get_simulation_runs_command, load_app_config, load_app_config_file, load_config_summary,
+    observe_once, replay_observations, run_accounting_control_smoke, run_paper_smoke,
+    run_reconnect_smoke, run_simulation_smoke_command, save_app_config, save_observer_config,
+    start_continuous_observation, stop_continuous_observation,
 };
 use tauri::Manager;
 
@@ -97,6 +98,13 @@ fn install_term_signal_handler(_app: &tauri::AppHandle) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 日志框架：RUST_LOG 可覆写（默认 info），F-02 节点日志经 tracing 输出。
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     tauri::Builder::default()
         .manage(SessionController::default())
         .setup(|app| {
@@ -113,6 +121,10 @@ pub fn run() {
             replay_observations,
             run_paper_smoke,
             run_accounting_control_smoke,
+            run_simulation_smoke_command,
+            get_simulation_overview_command,
+            get_simulation_runs_command,
+            get_simulation_run_detail_command,
             start_continuous_observation,
             stop_continuous_observation,
             continuous_observation_status,

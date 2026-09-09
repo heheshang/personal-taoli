@@ -11,6 +11,7 @@ pub enum ErrorCode {
     ArchiveNotFound,
     PaperError,
     AccountingControlError,
+    SimulationError,
 }
 
 #[derive(Debug, Clone, Serialize)]
