@@ -448,11 +448,11 @@ AI 声称与证据（命令输出、测试日志、烟测记录）：
 | D-03（告警通知，已验证） | 2026-09-09 | 告警通知模块、多通道通知支持 | `cargo test --workspace`（101 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；告警通知测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
 | D-04（备份策略，已验证） | 2026-09-09 | 备份策略模块、多种备份策略类型 | `cargo test --workspace`（113 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；备份策略测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
 | D-05（运行手册，已验证） | 2026-09-09 | 运行手册管理模块、运行手册模板 | `cargo test --workspace`（123 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；运行手册测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
-| E-01（实时监控仪表盘，已验证） | 2026-09-09 | 实时监控仪表盘模块、系统/交易/市场/风险状态 | `cargo test --workspace`（130 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；实时监控仪表盘测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
-| E-02（告警管理，已验证） | 2026-09-09 | 告警管理模块、告警创建/确认/解决 | `cargo test --workspace`（141 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；告警管理测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
-| E-03（运维操作，已验证） | 2026-09-09 | 运维操作模块、操作创建/执行/状态管理 | `cargo test --workspace`（151 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；运维操作测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
-| E-04（系统健康检查，已验证） | 2026-09-09 | 系统健康检查模块、健康检查执行/历史记录 | `cargo test --workspace`（159 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；系统健康检查测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
-| E-05（性能指标收集，已验证） | 2026-09-09 | 性能指标收集模块、指标收集/分析/统计 | `cargo test --workspace`（169 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；性能指标收集测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-01（实时监控仪表盘，released） | 2026-09-09 | 实时监控仪表盘模块、系统/交易/市场/风险状态 | `cargo test --workspace`（130 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；实时监控仪表盘测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-02（告警管理，released） | 2026-09-09 | 告警管理模块、告警创建/确认/解决 | `cargo test --workspace`（141 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；告警管理测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-03（运维操作，released） | 2026-09-09 | 运维操作模块、操作创建/执行/状态管理 | `cargo test --workspace`（151 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；运维操作测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-04（系统健康检查，released） | 2026-09-09 | 系统健康检查模块、健康检查执行/历史记录 | `cargo test --workspace`（159 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；系统健康检查测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
+| E-05（性能指标收集，released） | 2026-09-09 | 性能指标收集模块、指标收集/分析/统计 | `cargo test --workspace`（169 项通过）、`cargo clippy --workspace --all-targets -- -D warnings`、`npm run build` 均通过；性能指标收集测试套件运行成功 | 隔离环境测试；无真实或测试网订单副作用 |
 | UI-01（前端视觉优化，released） | 2026-09-09 | 设计令牌系统与五页面组件视觉面升级、侧栏/SVG 图标/装饰图形重绘、窗口 1360×860；名词项悬浮解释（R11）：`glossary.ts` 约 98 词条 + `TermHint.vue`，覆盖控制台机会卡/账户表头/验证报告/回放重连指标、设置页全部字段、概览/市场面板，`el-tooltip` 视觉悬浮、未收录词条不破版 | `npm run build` 零错误（`vue-tsc --noEmit` + `vite build`）；浏览器 1360×860 与 1100×780 两档五页面 DOM 契约断言（无横向溢出、令牌字号/布局生效、导航/表单输入/按钮状态正常）；hover「预期净收益」弹出「毛利扣除手续费与风险缓冲后的估算净利润」（2026-09-09 复核） | AIDLC 段外特批（手册 §11 之外）；仅前端展示层，无后端/协议/数据变更 |
 
 ## 11. 下一轮唯一入口
