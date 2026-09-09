@@ -66,6 +66,24 @@ pub struct ObserveResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ContinuousStatus {
+    pub running: bool,
+    pub archive_path: Option<String>,
+    pub gap_path: Option<String>,
+    pub started_at_ms: Option<u64>,
+    pub last_report_at_ms: Option<u64>,
+    pub last_report: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconnectSmokeResult {
+    pub binance: FeedSummary,
+    pub bybit: FeedSummary,
+    pub no_orders: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", content = "report")]
 pub enum PaperSmokeResult {
     B01(PaperCoreSmokeReport),

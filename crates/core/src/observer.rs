@@ -26,6 +26,67 @@ pub struct ObservationRun {
     pub archived: bool,
 }
 
+/// Outcome of a read-only reconnect smoke over both live public feeds.
+#[derive(Debug)]
+pub struct ReconnectSmokeOutcome {
+    pub binance: BookFeedStatus,
+    pub bybit: BookFeedStatus,
+}
+
+/// Brings both public order-book feeds VALID, forces one reconnect on each,
+/// then waits until both recover on a newer generation.
+///
+/// Read-only: no account credentials are used and no order side effects exist.
+pub async fn run_reconnect_smoke(config: &ObserverConfig) -> Result<ReconnectSmokeOutcome> {
+    let client = build_http_client(config)?;
+    let binance: Arc<dyn MarketDataVenue> = Arc::new(BinanceMarketData::new(
+        client.clone(),
+        &config.binance.base_url,
+        &config.binance.websocket_url,
+    )?);
+    let bybit: Arc<dyn MarketDataVenue> = Arc::new(BybitMarketData::new(
+        client,
+        &config.bybit.base_url,
+        &config.bybit.websocket_url,
+    )?);
+    let stale_after = Duration::from_millis(config.max_snapshot_age_ms);
+    let mut first = binance.subscribe_order_book(
+        &config.symbol,
+        config.orderbook_depth,
+        stale_after,
+        config.reconnect_delay(),
+    )?;
+    let mut second = bybit.subscribe_order_book(
+        &config.symbol,
+        config.orderbook_depth,
+        stale_after,
+        config.reconnect_delay(),
+    )?;
+    wait_for_valid_pair(&mut first, &mut second, config.stream_start_timeout()).await?;
+    let before = [first.status(), second.status()];
+    first.force_reconnect().await?;
+    second.force_reconnect().await?;
+    let recovered =
+        timeout(config.stream_start_timeout(), async {
+            loop {
+                let current = [first.status(), second.status()];
+                if current.iter().zip(&before).all(|(now, old)| {
+                    now.state == BookState::Valid && now.generation > old.generation
+                }) {
+                    return Ok::<_, anyhow::Error>(current);
+                }
+                tokio::select! {
+                    status = first.changed() => { status?; }
+                    status = second.changed() => { status?; }
+                }
+            }
+        })
+        .await
+        .context("timed out waiting for both feeds to recover after reconnect")??;
+    let [binance, bybit] = recovered;
+    Ok(ReconnectSmokeOutcome { binance, bybit })
+}
+
 pub async fn observe_once(config: &ObserverConfig, archive_path: &Path) -> Result<ObservationRun> {
     let gap_path = default_gap_path(archive_path);
     let client = build_http_client(config)?;

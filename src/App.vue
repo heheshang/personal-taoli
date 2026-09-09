@@ -9,12 +9,14 @@ type Status = { mode: string; version: string; real_order_capability: boolean }
 type Config = { symbol: string; base_asset: string; quote_asset: string; quantity: string; orderbook_depth: number; archive_path: string; binance_websocket_url: string; bybit_websocket_url: string }
 type Account = { venue: string; capability: Record<string, unknown>; permission: Record<string, unknown>; fee: Record<string, unknown>; rejection_reasons: string[] }
 type Observe = { report: Record<string, unknown>; accounts: Account[]; feeds: Record<string, unknown>[]; archived: boolean }
+type Continuous = { running: boolean; archive_path: string | null; gap_path: string | null; started_at_ms: number | null; last_report_at_ms: number | null; last_report: Record<string, unknown> | null; error: string | null }
 
 const status = ref<Status | null>(null)
 const config = ref<Config | null>(null)
 const accounts = ref<Account[]>([])
 const observation = ref<Observe | null>(null)
 const report = ref<unknown>(null)
+const continuous = ref<Continuous | null>(null)
 const busy = ref('')
 const configPath = ref('')
 const archivePath = ref('')
@@ -22,6 +24,9 @@ const canOperate = computed(() => busy.value === '')
 const liveLabel = computed(() => status.value?.real_order_capability ? 'LIVE' : 'PAPER / READ-ONLY')
 const feedState = computed(() => observation.value?.feeds.map(feed => String(feed.state)).join(' · ') || '等待一次观测')
 const eventCount = computed(() => observation.value ? '1 decision' : '0 events')
+function fmtTime(ms: number | null): string {
+  return ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '—'
+}
 async function call<T>(name: string, args: Record<string, unknown> = {}): Promise<T | undefined> {
   busy.value = name
   try {
@@ -44,9 +49,13 @@ async function loadConfig() {
 async function loadAccounts() { accounts.value = (await call<Account[]>('account_status', { configPath: configPath.value || null })) ?? [] }
 async function observe() { observation.value = (await call<Observe>('observe_once', { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null }
 async function replay() { report.value = await call('replay_observations', { path: archivePath.value }) }
+async function startContinuous() { continuous.value = (await call<Continuous>('start_continuous_observation', { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null }
+async function stopContinuous() { continuous.value = (await call<Continuous>('stop_continuous_observation')) ?? null }
+async function refreshContinuous() { continuous.value = (await call<Continuous>('continuous_observation_status')) ?? null }
+async function reconnectSmoke() { report.value = await call('run_reconnect_smoke', { configPath: configPath.value || null }) }
 async function paper(kind: string) { report.value = await call('run_paper_smoke', { kind }) }
 async function accountingControl(kind: string) { report.value = await call('run_accounting_control_smoke', { kind }) }
-onMounted(async () => { status.value = (await call<Status>('desktop_status')) ?? null; await loadConfig() })
+onMounted(async () => { status.value = (await call<Status>('desktop_status')) ?? null; await loadConfig(); await refreshContinuous() })
 </script>
 
 <template>
@@ -81,7 +90,7 @@ onMounted(async () => { status.value = (await call<Status>('desktop_status')) ??
     </section>
 
     <section class="panel graph"><div class="panel-head"><h2><em class="purple-dot" /> RELATIONSHIP GRAPH / SIMULATION</h2><span>VENUES · FLOW / LIABILITY</span></div><div class="graph-body"><div class="node left">BINANCE<small>PUBLIC FEED</small></div><div class="dashed-flow">········································▶</div><div class="node center">TAOLI CORE<small>DECISION / PAPER</small></div><div class="node right">BYBIT<small>PUBLIC FEED</small></div></div></section>
-    <section class="control-panel"><div class="control-title"><span class="eyebrow">CONTROL DECK</span><b>READ-ONLY ACTIONS</b></div><div class="control-actions"><el-button :disabled="!canOperate" @click="loadAccounts">ACCOUNT STATUS</el-button><el-button type="primary" :disabled="!canOperate" @click="observe">OBSERVE ONCE</el-button><el-button :disabled="!canOperate || !archivePath" @click="replay">REPLAY</el-button><el-button v-for="kind in ['B01','B02','B03']" :key="kind" :disabled="!canOperate" @click="paper(kind)">PAPER {{ kind }}</el-button><el-button v-for="kind in ['ACCOUNTING','RECONCILIATION','CONTROL']" :key="kind" :disabled="!canOperate" @click="accountingControl(kind)">ACCOUNTING {{ kind }}</el-button></div><small class="control-note">REPLAY requires an existing archive; PAPER and accounting controls are database-backed smoke operations.</small></section>
+    <section class="control-panel"><div class="control-title"><span class="eyebrow">CONTROL DECK</span><b>READ-ONLY ACTIONS</b></div><div class="control-actions"><el-button :disabled="!canOperate" @click="loadAccounts">ACCOUNT STATUS</el-button><el-button type="primary" :disabled="!canOperate" @click="observe">OBSERVE ONCE</el-button><el-button :disabled="!canOperate || !archivePath" @click="replay">REPLAY</el-button><el-button v-for="kind in ['B01','B02','B03']" :key="kind" :disabled="!canOperate" @click="paper(kind)">PAPER {{ kind }}</el-button><el-button v-for="kind in ['ACCOUNTING','RECONCILIATION','CONTROL']" :key="kind" :disabled="!canOperate" @click="accountingControl(kind)">ACCOUNTING {{ kind }}</el-button><el-button :disabled="!canOperate || continuous?.running" @click="startContinuous">CONTINUOUS START</el-button><el-button :disabled="!canOperate || !continuous?.running" @click="stopContinuous">CONTINUOUS STOP</el-button><el-button :disabled="!canOperate" @click="reconnectSmoke">RECONNECT SMOKE</el-button></div><div v-if="continuous" class="control-session"><template v-if="continuous.running"><i class="pulse" /><span>CONTINUOUS <b>RUNNING</b> · {{ continuous.archive_path || 'archive from config' }} · since {{ fmtTime(continuous.started_at_ms) }}</span></template><template v-else><span>CONTINUOUS STOPPED{{ continuous.error ? ' — ' + continuous.error : '' }}</span></template></div><small class="control-note">REPLAY requires an existing archive; PAPER and accounting controls are database-backed smoke operations.</small></section>
 
     <section v-if="accounts.length || observation || report" class="detail-panel"><el-card v-if="accounts.length" shadow="never"><template #header>ACCOUNT FACTS</template><el-table :data="accounts" stripe><el-table-column prop="venue" label="VENUE" width="120" /><el-table-column label="FEE SOURCE"><template #default="{ row }">{{ row.fee.source }} / {{ row.fee.buy_taker_rate }} / {{ row.fee.sell_taker_rate }}</template></el-table-column><el-table-column label="REJECTIONS"><template #default="{ row }">{{ row.rejection_reasons.join(' · ') || 'none' }}</template></el-table-column></el-table></el-card><pre v-if="observation">{{ JSON.stringify(observation.report, null, 2) }}</pre><pre v-if="report">{{ JSON.stringify(report, null, 2) }}</pre></section>
     <footer><span>TAOLI OBSERVER · {{ config?.symbol || 'MARKET' }}</span><span>SAFE MODE / NO ORDER ROUTES / {{ status?.version || '—' }}</span></footer>
