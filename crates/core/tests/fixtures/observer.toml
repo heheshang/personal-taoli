@@ -1,7 +1,3 @@
-symbol = "BTCUSDT"
-base_asset = "BTC"
-quote_asset = "USDT"
-quantity = "0.001"
 poll_interval_ms = 2000
 http_timeout_ms = 3000
 stream_start_timeout_ms = 10000
@@ -12,6 +8,12 @@ orderbook_depth = 50
 account_refresh_interval_ms = 300000
 max_fee_age_ms = 900000
 auth_recv_window_ms = 5000
+
+[[pairs]]
+symbol = "BTCUSDT"
+base_asset = "BTC"
+quote_asset = "USDT"
+quantity = "0.001"
 
 [archive]
 path = "data/archive/observations.ndjson"

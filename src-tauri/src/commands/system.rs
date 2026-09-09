@@ -1,7 +1,7 @@
 use crate::error::{ApiResponse, ErrorCode};
 
 use super::{
-    dto::{ConfigSummary, DesktopStatus},
+    dto::{ConfigSummary, DesktopStatus, PairSummary},
     support::{api_map, load_config},
 };
 
@@ -18,10 +18,16 @@ pub fn desktop_status() -> ApiResponse<DesktopStatus> {
 pub fn load_config_summary(config_path: Option<String>) -> ApiResponse<ConfigSummary> {
     match load_config(config_path) {
         Ok((_, config)) => ApiResponse::ok(ConfigSummary {
-            symbol: config.symbol,
-            base_asset: config.base_asset,
-            quote_asset: config.quote_asset,
-            quantity: config.quantity,
+            pairs: config
+                .effective_pairs()
+                .iter()
+                .map(|pair| PairSummary {
+                    symbol: pair.symbol.clone(),
+                    base_asset: pair.base_asset.clone(),
+                    quote_asset: pair.quote_asset.clone(),
+                    quantity: pair.quantity,
+                })
+                .collect(),
             orderbook_depth: config.orderbook_depth,
             archive_path: config.archive.path.display().to_string(),
             binance_websocket_url: config.binance.websocket_url,

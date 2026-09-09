@@ -15,7 +15,7 @@ use personal_taoli_core::{
 use crate::error::{ApiResponse, ErrorCode};
 
 use super::{
-    dto::{ContinuousStatus, FeedSummary, ReconnectSmokeResult},
+    dto::{ContinuousStatus, FeedSummary, PairReconnectSmokeResult, ReconnectSmokeResult},
     support::{api_fail, api_map, load_config},
 };
 
@@ -235,10 +235,16 @@ pub fn continuous_observation_status(app: AppHandle) -> ApiResponse<ContinuousSt
 pub async fn run_reconnect_smoke(config_path: Option<String>) -> ApiResponse<ReconnectSmokeResult> {
     let result = async {
         let (_, config) = load_config(config_path)?;
-        let outcome = personal_taoli_core::observer::run_reconnect_smoke(&config).await?;
+        let outcomes = personal_taoli_core::observer::run_reconnect_smoke(&config).await?;
         Ok::<_, anyhow::Error>(ReconnectSmokeResult {
-            binance: FeedSummary::from(&outcome.binance),
-            bybit: FeedSummary::from(&outcome.bybit),
+            results: outcomes
+                .into_iter()
+                .map(|outcome| PairReconnectSmokeResult {
+                    symbol: outcome.symbol,
+                    binance: FeedSummary::from(&outcome.binance),
+                    bybit: FeedSummary::from(&outcome.bybit),
+                })
+                .collect(),
             no_orders: true,
         })
     }

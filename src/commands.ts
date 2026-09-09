@@ -50,15 +50,20 @@ export interface VenueConfig {
   account_eligible_confirmed: boolean
 }
 
+/** 单个观察交易对（`crates/core/src/config.rs` 的 `PairConfig`）。 */
+export interface PairConfig {
+  symbol: string
+  base_asset: string
+  quote_asset: string
+  quantity: string
+}
+
 /**
  * 完整观察配置，与 `crates/core/src/config.rs` 的 `ObserverConfig` 逐字段一致。
  * 金额/费率类字段为 `Decimal`，经 serde-str 以字符串序列化。
  */
 export interface ObserverConfig {
-  symbol: string
-  base_asset: string
-  quote_asset: string
-  quantity: string
+  pairs: PairConfig[]
   poll_interval_ms: number
   http_timeout_ms: number
   stream_start_timeout_ms: number
@@ -91,10 +96,9 @@ export interface ObserverConfig {
  * 由前端持有并作为首次编辑/保存的基底。
  */
 export const DEFAULT_OBSERVER_CONFIG: ObserverConfig = {
-  symbol: 'BTCUSDT',
-  base_asset: 'BTC',
-  quote_asset: 'USDT',
-  quantity: '0.001',
+  pairs: [
+    { symbol: 'BTCUSDT', base_asset: 'BTC', quote_asset: 'USDT', quantity: '0.001' },
+  ],
   poll_interval_ms: 2000,
   http_timeout_ms: 3000,
   stream_start_timeout_ms: 10000,

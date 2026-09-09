@@ -9,11 +9,17 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ObserverConfig {
+pub struct PairConfig {
     pub symbol: String,
     pub base_asset: String,
     pub quote_asset: String,
     pub quantity: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObserverConfig {
+    /// 交易对列表，唯一交易对真相源（非空；旧单币种格式加载时自动迁移为单元素列表）。
+    pub pairs: Vec<PairConfig>,
     pub poll_interval_ms: u64,
     pub http_timeout_ms: u64,
     pub stream_start_timeout_ms: u64,
@@ -63,7 +69,7 @@ impl ObserverConfig {
         let path = path.as_ref();
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
-        let config: Self = toml::from_str(&raw)
+        let config: Self = toml::from_str(&Self::migrate_legacy_toml(&raw))
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         config.validate()?;
         Ok(config)
@@ -76,7 +82,7 @@ impl ObserverConfig {
         }
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
-        let config: Self = serde_json::from_str(&raw)
+        let config: Self = serde_json::from_str(&Self::migrate_legacy_json(&raw))
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         config.validate()?;
         Ok(config)
@@ -95,12 +101,77 @@ impl ObserverConfig {
         Ok(())
     }
 
+    /// 参与观察的交易对列表（唯一真相源，非空由 validate 保证）。
+    pub fn effective_pairs(&self) -> &[PairConfig] {
+        &self.pairs
+    }
+
+    /// 旧格式（顶层 symbol 单数字段）→ 新格式（pairs 列表）一次性文本迁移。
+    /// 只探测「有 symbol 且无 pairs」的旧文件；新格式原样返回。
+    fn migrate_legacy_toml(raw: &str) -> String {
+        let Ok(value) = toml::from_str::<toml::Value>(raw) else {
+            return raw.to_string();
+        };
+        let Some(table) = value.as_table() else {
+            return raw.to_string();
+        };
+        if table.contains_key("pairs") || !table.contains_key("symbol") {
+            return raw.to_string();
+        }
+        let mut pair = toml::map::Map::new();
+        for key in ["symbol", "base_asset", "quote_asset", "quantity"] {
+            if let Some(item) = table.get(key) {
+                pair.insert(key.to_string(), item.clone());
+            }
+        }
+        let mut migrated = table.clone();
+        for key in ["symbol", "base_asset", "quote_asset", "quantity"] {
+            migrated.remove(key);
+        }
+        migrated.insert(
+            "pairs".to_string(),
+            toml::Value::Array(vec![toml::Value::Table(pair)]),
+        );
+        toml::to_string(&toml::Value::Table(migrated)).unwrap_or_else(|_| raw.to_string())
+    }
+
+    /// 旧格式（顶层 symbol 单数字段）→ 新格式（pairs 列表）一次性文本迁移（JSON 变体）。
+    fn migrate_legacy_json(raw: &str) -> String {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return raw.to_string();
+        };
+        let Some(object) = value.as_object() else {
+            return raw.to_string();
+        };
+        if object.contains_key("pairs") || !object.contains_key("symbol") {
+            return raw.to_string();
+        }
+        let mut pair = serde_json::Map::new();
+        for key in ["symbol", "base_asset", "quote_asset", "quantity"] {
+            if let Some(item) = object.get(key) {
+                pair.insert(key.to_string(), item.clone());
+            }
+        }
+        let mut migrated = object.clone();
+        for key in ["symbol", "base_asset", "quote_asset", "quantity"] {
+            migrated.remove(key);
+        }
+        migrated.insert(
+            "pairs".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::Object(pair)]),
+        );
+        serde_json::to_string(&serde_json::Value::Object(migrated))
+            .unwrap_or_else(|_| raw.to_string())
+    }
+
     pub fn default_config() -> Self {
         Self {
-            symbol: "BTCUSDT".to_string(),
-            base_asset: "BTC".to_string(),
-            quote_asset: "USDT".to_string(),
-            quantity: "0.001".parse().unwrap(),
+            pairs: vec![PairConfig {
+                symbol: "BTCUSDT".to_string(),
+                base_asset: "BTC".to_string(),
+                quote_asset: "USDT".to_string(),
+                quantity: "0.001".parse().unwrap(),
+            }],
             poll_interval_ms: 2000,
             http_timeout_ms: 3000,
             stream_start_timeout_ms: 10000,
@@ -165,14 +236,23 @@ impl ObserverConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.symbol.trim().is_empty()
-            || self.base_asset.trim().is_empty()
-            || self.quote_asset.trim().is_empty()
-        {
-            bail!("symbol, base_asset and quote_asset must not be empty");
+        if self.pairs.is_empty() {
+            bail!("pairs must not be empty");
         }
-        if self.quantity <= Decimal::ZERO {
-            bail!("quantity must be positive");
+        let mut seen = std::collections::HashSet::new();
+        for pair in &self.pairs {
+            if pair.symbol.trim().is_empty()
+                || pair.base_asset.trim().is_empty()
+                || pair.quote_asset.trim().is_empty()
+            {
+                bail!("pair symbol, base_asset and quote_asset must not be empty");
+            }
+            if pair.quantity <= Decimal::ZERO {
+                bail!("pair {} quantity must be positive", pair.symbol);
+            }
+            if !seen.insert(pair.symbol.clone()) {
+                bail!("duplicate pair symbol {}", pair.symbol);
+            }
         }
         if self.poll_interval_ms == 0
             || self.http_timeout_ms == 0
@@ -274,5 +354,69 @@ mod tests {
                 .to_string()
                 .contains("orderbook_depth")
         );
+    }
+
+    #[test]
+    fn migrates_legacy_toml_with_single_symbol_to_pairs() {
+        let raw = r##"
+symbol = "BTCUSDT"
+base_asset = "BTC"
+quote_asset = "USDT"
+quantity = "0.001"
+poll_interval_ms = 2000
+[http]
+"##;
+        let migrated = ObserverConfig::migrate_legacy_toml(raw);
+        assert!(migrated.contains("[[pairs]]"));
+        let value: toml::Value = toml::from_str(&migrated).unwrap();
+        assert!(
+            !value.as_table().unwrap().contains_key("symbol"),
+            "top-level symbol must be removed"
+        );
+        let pairs = value.get("pairs").unwrap().as_array().unwrap();
+        assert_eq!(pairs.len(), 1);
+        let pair = pairs[0].as_table().unwrap();
+        assert_eq!(pair.get("symbol").unwrap().as_str().unwrap(), "BTCUSDT");
+        assert_eq!(pair.get("base_asset").unwrap().as_str(), Some("BTC"));
+        assert_eq!(pair.get("quote_asset").unwrap().as_str(), Some("USDT"));
+        assert_eq!(pair.get("quantity").unwrap().as_str(), Some("0.001"));
+        assert_ne!(
+            value.get("poll_interval_ms").unwrap().as_integer().unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn migrates_legacy_json_with_single_symbol_to_pairs() {
+        let raw = r#"{"symbol":"BTCUSDT","base_asset":"BTC","quote_asset":"USDT","quantity":"0.001","poll_interval_ms":2000}"#;
+        let migrated = ObserverConfig::migrate_legacy_json(raw);
+        let value: serde_json::Value = serde_json::from_str(&migrated).unwrap();
+        assert!(
+            value.get("symbol").is_none(),
+            "top-level symbol must be removed"
+        );
+        assert!(migrated.contains("\"pairs\""));
+        let pairs = value.get("pairs").unwrap().as_array().unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].get("symbol").unwrap().as_str().unwrap(), "BTCUSDT");
+        assert_eq!(pairs[0].get("base_asset").unwrap().as_str(), Some("BTC"));
+    }
+
+    #[test]
+    fn rejects_duplicate_pair_symbol() {
+        let pair_block = "[[pairs]]\nsymbol = \"BTCUSDT\"\nbase_asset = \"BTC\"\nquote_asset = \"USDT\"\nquantity = \"0.001\"";
+        let raw = include_str!("../tests/fixtures/observer.toml")
+            .replace(pair_block, &format!("{pair_block}\n{pair_block}"));
+        let config: ObserverConfig = toml::from_str(&raw).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("duplicate pair symbol"), "{err}");
+    }
+
+    #[test]
+    fn rejects_empty_pairs() {
+        let raw =
+            include_str!("../tests/fixtures/observer.toml").replace("[[pairs]]", "pairs = []");
+        let config: ObserverConfig = toml::from_str(&raw).unwrap();
+        assert!(config.validate().unwrap_err().to_string().contains("pairs"));
     }
 }

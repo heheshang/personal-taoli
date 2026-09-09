@@ -40,8 +40,12 @@ async function loadConfig() {
       Object.assign(envConfig, envData)
     }
     if (observerData !== undefined) {
-      // 后端总是返回完整对象：直接覆盖默认模板
-      Object.assign(observerConfig, observerData)
+      // 后端总是返回完整对象：直接覆盖默认模板；pairs 缺数组时保留默认模板避免模板崩溃
+      if (Array.isArray(observerData.pairs)) {
+        Object.assign(observerConfig, observerData)
+      } else {
+        Object.assign(observerConfig, { ...observerData, pairs: observerConfig.pairs })
+      }
     }
   } finally {
     loading.value = false
@@ -73,6 +77,20 @@ async function saveObserver() {
   } finally {
     savingObserver.value = false
   }
+}
+
+function addPair() {
+  observerConfig.pairs.push({
+    symbol: '',
+    base_asset: '',
+    quote_asset: '',
+    quantity: '0.001',
+  })
+}
+
+function removePair(idx: number) {
+  if (observerConfig.pairs.length <= 1) return
+  observerConfig.pairs.splice(idx, 1)
 }
 
 onMounted(() => {
@@ -143,29 +161,48 @@ onMounted(() => {
     <div class="settings-section">
       <h3>观察配置（ObserverConfig）</h3>
       <div class="settings-grid">
-        <!-- 交易对与数量 -->
+        <!-- 交易对列表 -->
         <div class="settings-card">
           <div class="card-header">
-            <span class="card-title">交易对与数量</span>
+            <span class="card-title">交易对列表（pairs）</span>
+            <ElButton size="small" :disabled="!canOperate" @click="addPair">添加币种</ElButton>
           </div>
           <div class="card-body">
-            <div class="field-group">
-              <label>symbol</label>
-              <ElInput v-model="observerConfig.symbol" size="small" />
+            <div
+              v-for="(pair, idx) in observerConfig.pairs"
+              :key="idx"
+              class="pair-editor"
+            >
+              <div class="pair-editor-head">
+                <b>{{ pair.symbol || `币种 ${idx + 1}` }}</b>
+                <ElButton
+                  size="small"
+                  text
+                  type="danger"
+                  :disabled="observerConfig.pairs.length <= 1 || !canOperate"
+                  @click="removePair(idx)"
+                >删除</ElButton>
+              </div>
+              <div class="pair-editor-grid">
+                <div class="field-group">
+                  <label>symbol</label>
+                  <ElInput v-model="pair.symbol" size="small" />
+                </div>
+                <div class="field-group">
+                  <label><TermHint term="base_asset" /></label>
+                  <ElInput v-model="pair.base_asset" size="small" />
+                </div>
+                <div class="field-group">
+                  <label><TermHint term="quote_asset" /></label>
+                  <ElInput v-model="pair.quote_asset" size="small" />
+                </div>
+                <div class="field-group">
+                  <label><TermHint term="quantity" />（数量，小数文本）</label>
+                  <ElInput v-model="pair.quantity" size="small" />
+                </div>
+              </div>
             </div>
-            <div class="field-group">
-              <label><TermHint term="base_asset" /></label>
-              <ElInput v-model="observerConfig.base_asset" size="small" />
-            </div>
-            <div class="field-group">
-              <label><TermHint term="quote_asset" /></label>
-              <ElInput v-model="observerConfig.quote_asset" size="small" />
-            </div>
-            <div class="field-group">
-              <label><TermHint term="quantity" />（数量，小数文本）</label>
-              <ElInput v-model="observerConfig.quantity" size="small" />
-            </div>
-            <div class="field-group">
+            <div class="field-group" style="margin-top: 12px;">
               <label><TermHint term="orderbook_depth" />（档位）</label>
               <ElInputNumber v-model="observerConfig.orderbook_depth" size="small" :min="1" :max="100" controls-position="right" />
             </div>
@@ -442,5 +479,34 @@ onMounted(() => {
   gap: 10px;
   padding: 14px 0;
   border-top: 1px solid var(--border);
+}
+.pair-editor {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--bg-inset);
+}
+.pair-editor:last-child {
+  margin-bottom: 0;
+}
+.pair-editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.pair-editor-head b {
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-family: var(--font-mono);
+}
+.pair-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.pair-editor-grid .field-group {
+  margin-bottom: 0;
 }
 </style>

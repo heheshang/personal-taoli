@@ -25,7 +25,7 @@ const PAPER_LABELS: Record<PaperKind, { label: string; hint: string }> = {
 
 const props = defineProps<{
   accounts: Account[]
-  observation: Observe | null
+  observation: Observe[] | null
   report: unknown
   canOperate: boolean
   archivePath: string
@@ -45,8 +45,9 @@ const emit = defineEmits<{
 }>()
 
 const scanReport = computed(() => {
-  if (!props.observation?.report) return null
-  const r = props.observation.report as Record<string, unknown>
+  const latest = props.observation?.[props.observation.length - 1]
+  if (!latest?.report) return null
+  const r = latest.report as Record<string, unknown>
   return {
     symbol: r.symbol as string,
     quantity: r.quantity as string,
@@ -185,24 +186,39 @@ const reconnectSmoke = computed(() => {
   const r = props.report as Record<string, unknown> | null
   if (!r || typeof r !== 'object' || Array.isArray(r)) return null
   if (!('no_orders' in r)) return null
-  const venues = (['binance', 'bybit'] as const)
-    .map(k => {
-      const v = r[k]
-      if (!v || typeof v !== 'object') return null
-      const o = v as Record<string, unknown>
-      return {
-        venue: String(o.venue ?? k),
-        symbol: String(o.symbol ?? '—'),
-        state: String(o.state ?? ''),
-        stateLabel: STATE_LABELS[String(o.state ?? '')] ?? String(o.state ?? '—'),
-        generation: Number(o.generation ?? 0),
-        reconnects: Number(o.reconnects ?? 0),
-        appliedUpdates: Number(o.applied_updates ?? 0),
-        reason: o.reason === null || o.reason === undefined ? null : String(o.reason),
+  const rawResults = r.results
+  const venues: Array<{
+    venue: string
+    symbol: string
+    state: string
+    stateLabel: string
+    generation: number
+    reconnects: number
+    appliedUpdates: number
+    reason: string | null
+  }> = []
+  if (Array.isArray(rawResults)) {
+    for (const entry of rawResults) {
+      if (!entry || typeof entry !== 'object') continue
+      const e = entry as Record<string, unknown>
+      for (const k of ['binance', 'bybit'] as const) {
+        const v = e[k]
+        if (!v || typeof v !== 'object') continue
+        const o = v as Record<string, unknown>
+        venues.push({
+          venue: String(o.venue ?? k),
+          symbol: String(e.symbol ?? o.symbol ?? '—'),
+          state: String(o.state ?? ''),
+          stateLabel: STATE_LABELS[String(o.state ?? '')] ?? String(o.state ?? '—'),
+          generation: Number(o.generation ?? 0),
+          reconnects: Number(o.reconnects ?? 0),
+          appliedUpdates: Number(o.applied_updates ?? 0),
+          reason: o.reason === null || o.reason === undefined ? null : String(o.reason),
+        })
       }
-    })
-    .filter((v): v is NonNullable<typeof v> => v !== null)
-  if (venues.length !== 2) return null
+    }
+  }
+  if (venues.length === 0) return null
   return { venues, noOrders: r.no_orders === true }
 })
 const shadowReport = computed(() => {
@@ -295,6 +311,9 @@ const shadowReport = computed(() => {
         <ElTableColumn prop="venue" width="120">
           <template #header><TermHint term="交易所" /></template>
         </ElTableColumn>
+        <ElTableColumn prop="fee.symbol" width="110">
+          <template #header><TermHint term="币种" /></template>
+        </ElTableColumn>
         <ElTableColumn>
           <template #header><TermHint term="费率来源" /></template>
           <template #default="{ row }">
@@ -314,7 +333,7 @@ const shadowReport = computed(() => {
     <!-- 观测扫描报告 -->
     <ElCard shadow="never">
       <template #header>
-        <span class="card-title">扫描报告{{ scanReport ? ` · ${scanReport.symbol} · 数量 ${scanReport.quantity}` : ' — 尚未执行观测' }}</span>
+        <span class="card-title">扫描报告{{ scanReport ? ` · ${scanReport.symbol} · 数量 ${scanReport.quantity}` : ' — 尚未执行观测' }}{{ observation?.length ? ` · 共 ${observation.length} 对` : '' }}</span>
         <div class="card-actions">
           <ElButton type="primary" size="small" :disabled="!canOperate" @click="emit('observe')">执行观测</ElButton>
           <ElButton size="small" :disabled="!canOperate || continuous?.running" @click="emit('startContinuous')">启动连续</ElButton>

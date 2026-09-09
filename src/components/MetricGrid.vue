@@ -3,7 +3,7 @@ import type { Account, Observe } from '../types'
 import TermHint from './TermHint.vue'
 
 defineProps<{
-  observation: Observe | null
+  observation: Observe[] | null
   accounts: Account[]
   feedState: string
 }>()
@@ -18,12 +18,12 @@ defineProps<{
     </article>
     <article class="metric-card accent">
       <span class="eyebrow"><TermHint term="预期净收益" /></span>
-      <strong>{{ observation ? '查看报告' : '—' }}</strong>
+      <strong>{{ observation?.length ? '查看报告' : '—' }}</strong>
       <small>扣除手续费 / 风险缓冲</small>
     </article>
     <article class="metric-card">
       <span class="eyebrow"><TermHint term="数据源状态" /></span>
-      <strong>{{ observation ? feedState : '同步中' }}</strong>
+      <strong>{{ observation?.length ? feedState : '同步中' }}</strong>
       <small>BINANCE · BYBIT</small>
     </article>
     <article class="metric-card gate">

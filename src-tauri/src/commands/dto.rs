@@ -21,11 +21,16 @@ pub struct DesktopStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ConfigSummary {
+pub struct PairSummary {
     pub symbol: String,
     pub base_asset: String,
     pub quote_asset: String,
     pub quantity: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigSummary {
+    pub pairs: Vec<PairSummary>,
     pub orderbook_depth: u16,
     pub archive_path: String,
     pub binance_websocket_url: String,
@@ -77,9 +82,15 @@ pub struct ContinuousStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ReconnectSmokeResult {
+pub struct PairReconnectSmokeResult {
+    pub symbol: String,
     pub binance: FeedSummary,
     pub bybit: FeedSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconnectSmokeResult {
+    pub results: Vec<PairReconnectSmokeResult>,
     pub no_orders: bool,
 }
 

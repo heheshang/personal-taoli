@@ -76,13 +76,14 @@ pub struct DecisionConfig {
     pub freshness: FreshnessLimits,
 }
 
-impl From<&ObserverConfig> for DecisionConfig {
-    fn from(config: &ObserverConfig) -> Self {
+impl DecisionConfig {
+    /// 从单个交易对 + 全局配置导出归档用决策配置（多币种：每对一份）。
+    pub fn from_pair(pair: &crate::config::PairConfig, config: &ObserverConfig) -> Self {
         Self {
-            symbol: config.symbol.clone(),
-            base_asset: config.base_asset.clone(),
-            quote_asset: config.quote_asset.clone(),
-            quantity: config.quantity,
+            symbol: pair.symbol.clone(),
+            base_asset: pair.base_asset.clone(),
+            quote_asset: pair.quote_asset.clone(),
+            quantity: pair.quantity,
             strategy: config.strategy.clone(),
             freshness: FreshnessLimits {
                 max_snapshot_age_ms: config.max_snapshot_age_ms,
@@ -106,7 +107,12 @@ pub struct DecisionEvent {
 }
 
 impl DecisionEvent {
+    /// 捕获一次扫描出的决策事件。`pair` 决定归档的 symbol/base/quantity，
+    /// 全局配置提供策略与新鲜度限制。
+    /// 签名由 F-01 设计文档 §3.5 固定（pair + 7 个输入），故允许参数数量。
+    #[allow(clippy::too_many_arguments)]
     pub fn capture(
+        pair: &crate::config::PairConfig,
         config: &ObserverConfig,
         statuses: [&BookFeedStatus; 2],
         instruments: [&InstrumentSpec; 2],
@@ -125,7 +131,7 @@ impl DecisionEvent {
             .snapshot
             .as_deref()
             .context("second VALID feed omitted its snapshot")?;
-        let decision_config = DecisionConfig::from(config);
+        let decision_config = DecisionConfig::from_pair(pair, config);
         let config_version = content_version(&decision_config)?;
         Ok(Self {
             evaluated_at_ms,

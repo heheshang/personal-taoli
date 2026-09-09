@@ -20,7 +20,7 @@ import AppFooter from './components/AppFooter.vue'
 const status = ref<Status | null>(null)
 const config = ref<Config | null>(null)
 const accounts = ref<Account[]>([])
-const observation = ref<Observe | null>(null)
+const observation = ref<Observe[] | null>(null)
 const report = ref<unknown>(null)
 const continuous = ref<Continuous | null>(null)
 const busy = ref('')
@@ -31,8 +31,8 @@ const activePage = ref('overview')
 
 const canOperate = computed(() => busy.value === '')
 const liveLabel = computed(() => status.value?.real_order_capability ? '实盘' : 'PAPER / 只读')
-const feedState = computed(() => observation.value?.feeds.map(feed => feed.state).join(' · ') || '等待一次观测')
-const eventCount = computed(() => observation.value ? '1 条决策' : '0 条事件')
+const feedState = computed(() => observation.value?.flatMap(item => item.feeds.map(feed => feed.state)).join(' · ') || '等待一次观测')
+const eventCount = computed(() => observation.value ? `${observation.value.length} 条决策` : '0 条事件')
 
 function fmtTime(ms: number | null): string {
   return ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '—'
@@ -57,12 +57,12 @@ function startPolling() {
         // 连续观测流式展示：每轮轮询把会话最新扫描报告推入展示层
         // （机会卡 / 概览指标），复用与 observe_once 一致的 ScanReport 形状。
         if (data.running && data.last_report) {
-          observation.value = {
+          observation.value = [{
             report: data.last_report,
-            accounts: observation.value?.accounts ?? [],
-            feeds: observation.value?.feeds ?? [],
+            accounts: observation.value?.flatMap(item => item.accounts) ?? [],
+            feeds: observation.value?.flatMap(item => item.feeds) ?? [],
             archived: true,
-          }
+          }]
         }
         if (!data.running) stopPolling()
       }
@@ -90,7 +90,7 @@ async function loadAccounts() {
 }
 
 async function observe() {
-  observation.value = (await call<Observe>(COMMANDS.observeOnce, { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null
+  observation.value = (await call<Observe[]>(COMMANDS.observeOnce, { configPath: configPath.value || null, archivePath: archivePath.value || null })) ?? null
 }
 
 async function replay() {
@@ -158,9 +158,7 @@ onUnmounted(stopPolling)
       />
 
       <ConfigStrip
-        :symbol="config?.symbol ?? null"
-        :quantity="config?.quantity ?? null"
-        :base-asset="config?.base_asset ?? null"
+        :pairs="config?.pairs ?? []"
         :orderbook-depth="config?.orderbook_depth ?? null"
       />
 
@@ -222,7 +220,7 @@ onUnmounted(stopPolling)
       </div>
 
       <AppFooter
-        :symbol="config?.symbol ?? null"
+        :symbol="config?.pairs?.[0]?.symbol ?? null"
         :version="status?.version ?? null"
       />
     </main>

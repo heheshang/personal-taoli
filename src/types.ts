@@ -16,11 +16,15 @@ export type Status = {
   real_order_capability: boolean
 }
 
-export type Config = {
+export type PairSummary = {
   symbol: string
   base_asset: string
   quote_asset: string
   quantity: string
+}
+
+export type Config = {
+  pairs: PairSummary[]
   orderbook_depth: number
   archive_path: string
   binance_websocket_url: string
@@ -28,6 +32,7 @@ export type Config = {
 }
 
 export type FeeSchedule = {
+  symbol: string
   source: string
   buy_taker_rate: string
   sell_taker_rate: string
