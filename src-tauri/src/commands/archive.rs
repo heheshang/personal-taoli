@@ -3,55 +3,52 @@ use std::{fs, path::Path};
 use crate::error::{ApiResponse, ErrorCode};
 use personal_taoli_core::archive::{ShadowReport, default_gap_path, replay_archive};
 
-use super::support::api_error;
+use super::support::{api_fail, api_map};
 
 #[tauri::command]
 pub fn replay_observations(path: String) -> ApiResponse<ShadowReport> {
     let path = path.trim();
     if path.is_empty() {
-        return ApiResponse::fail(api_error(
-            ErrorCode::InvalidRequest,
-            "archive path is required",
-            false,
-        ));
+        return api_fail(ErrorCode::InvalidRequest, "archive path is required", false);
     }
 
     let archive_path = Path::new(path);
     match fs::metadata(archive_path) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => {
-            return ApiResponse::fail(api_error(
+            return api_fail(
                 ErrorCode::ArchiveError,
                 format!("archive path is not a file: {}", archive_path.display()),
                 false,
-            ));
+            );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return ApiResponse::fail(api_error(
+            return api_fail(
                 ErrorCode::ArchiveNotFound,
                 format!(
                     "archive file not found: {}; run OBSERVE ONCE first or select an existing archive",
                     archive_path.display()
                 ),
                 false,
-            ));
+            );
         }
         Err(error) => {
-            return ApiResponse::fail(api_error(
+            return api_fail(
                 ErrorCode::ArchiveError,
                 format!(
                     "failed to inspect archive {}: {error}",
                     archive_path.display()
                 ),
                 false,
-            ));
+            );
         }
     }
 
-    match replay_archive(archive_path, default_gap_path(archive_path)) {
-        Ok(report) => ApiResponse::ok(report),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::ArchiveError, error, false)),
-    }
+    api_map(
+        replay_archive(archive_path, default_gap_path(archive_path)),
+        ErrorCode::ArchiveError,
+        false,
+    )
 }
 
 #[cfg(test)]

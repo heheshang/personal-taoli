@@ -5,7 +5,7 @@ use personal_taoli_core::observer::observe_once as run_observation;
 
 use super::{
     dto::{FeedSummary, ObserveResult},
-    support::{api_error, load_config},
+    support::{api_map, load_config},
 };
 
 #[tauri::command]
@@ -30,8 +30,5 @@ pub async fn observe_once(
         })
     }
     .await;
-    match result {
-        Ok(result) => ApiResponse::ok(result),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::MarketDataError, error, true)),
-    }
+    api_map(result, ErrorCode::MarketDataError, true)
 }

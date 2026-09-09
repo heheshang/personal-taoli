@@ -1,15 +1,16 @@
-use std::env;
-
 use crate::error::{ApiResponse, ErrorCode};
 use personal_taoli_core::{
     execution::run_double_leg_smoke, order::run_order_facts_smoke, paper::run_paper_core_smoke,
 };
 
-use super::{dto::PaperSmokeResult, support::api_error};
+use super::{
+    dto::PaperSmokeResult,
+    support::{api_fail, api_map, database_url},
+};
 
 #[tauri::command]
 pub async fn run_paper_smoke(kind: String) -> ApiResponse<PaperSmokeResult> {
-    run_paper_smoke_with_database_url(kind, env::var("TAOLI_DATABASE_URL").ok()).await
+    run_paper_smoke_with_database_url(kind, database_url()).await
 }
 
 async fn run_paper_smoke_with_database_url(
@@ -19,11 +20,11 @@ async fn run_paper_smoke_with_database_url(
     let database_url = match database_url {
         Some(value) if !value.trim().is_empty() => value,
         Some(_) | None => {
-            return ApiResponse::fail(api_error(
+            return api_fail(
                 ErrorCode::PaperError,
                 "TAOLI_DATABASE_URL is required for PAPER smoke tests; start PostgreSQL and launch the app with this environment variable set",
                 false,
-            ));
+            );
         }
     };
     let result = match kind.as_str() {
@@ -37,17 +38,14 @@ async fn run_paper_smoke_with_database_url(
             .await
             .map(PaperSmokeResult::B03),
         _ => {
-            return ApiResponse::fail(api_error(
+            return api_fail(
                 ErrorCode::InvalidRequest,
                 format!("unsupported PAPER smoke kind {kind}"),
                 false,
-            ));
+            );
         }
     };
-    match result {
-        Ok(report) => ApiResponse::ok(report),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::PaperError, error, false)),
-    }
+    api_map(result, ErrorCode::PaperError, false)
 }
 
 #[cfg(test)]

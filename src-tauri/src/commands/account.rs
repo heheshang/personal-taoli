@@ -1,7 +1,7 @@
 use crate::error::{ApiResponse, ErrorCode};
 use personal_taoli_core::account::{AccountData, load_account_data};
 
-use super::support::{api_error, http_client, load_config};
+use super::support::{api_map, http_client, load_config};
 
 #[tauri::command]
 pub async fn account_status(config_path: Option<String>) -> ApiResponse<[AccountData; 2]> {
@@ -21,8 +21,5 @@ pub async fn account_status(config_path: Option<String>) -> ApiResponse<[Account
         )
     }
     .await;
-    match result {
-        Ok(accounts) => ApiResponse::ok(accounts),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::NetworkError, error, true)),
-    }
+    api_map(result, ErrorCode::NetworkError, true)
 }

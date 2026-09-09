@@ -16,7 +16,7 @@ use crate::error::{ApiResponse, ErrorCode};
 
 use super::{
     dto::{ContinuousStatus, FeedSummary, ReconnectSmokeResult},
-    support::{api_error, load_config},
+    support::{api_fail, api_map, load_config},
 };
 
 /// millisecond timestamp of the last report and its serialized shape.
@@ -199,16 +199,17 @@ pub async fn start_continuous_observation(
 ) -> ApiResponse<ContinuousStatus> {
     let state = app.state::<SessionController>();
     if state.status().running {
-        return ApiResponse::fail(api_error(
+        return api_fail(
             ErrorCode::InvalidRequest,
             "continuous observation is already running",
             false,
-        ));
+        );
     }
-    match state.start(config_path, archive_path, None).await {
-        Ok(status) => ApiResponse::ok(status),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::MarketDataError, error, true)),
-    }
+    api_map(
+        state.start(config_path, archive_path, None).await,
+        ErrorCode::MarketDataError,
+        true,
+    )
 }
 
 #[tauri::command]
@@ -216,12 +217,12 @@ pub async fn stop_continuous_observation(app: AppHandle) -> ApiResponse<Continuo
     let state = app.state::<SessionController>();
     match state.stop(Duration::from_secs(30)).await {
         Ok(Some(status)) => ApiResponse::ok(status),
-        Ok(None) => ApiResponse::fail(api_error(
+        Ok(None) => api_fail(
             ErrorCode::InvalidRequest,
             "continuous observation is not running",
             false,
-        )),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::MarketDataError, error, true)),
+        ),
+        Err(error) => api_map(Err(error), ErrorCode::MarketDataError, true),
     }
 }
 
@@ -242,8 +243,5 @@ pub async fn run_reconnect_smoke(config_path: Option<String>) -> ApiResponse<Rec
         })
     }
     .await;
-    match result {
-        Ok(result) => ApiResponse::ok(result),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::MarketDataError, error, true)),
-    }
+    api_map(result, ErrorCode::MarketDataError, true)
 }

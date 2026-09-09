@@ -1,26 +1,24 @@
-use std::env;
-
 use crate::error::{ApiResponse, ErrorCode};
 use personal_taoli_core::{
     accounting::run_accounting_smoke, control::run_control_smoke,
     reconciliation::run_reconciliation_smoke,
 };
 
-use super::{dto::AccountingControlSmokeResult, support::api_error};
+use super::{
+    dto::AccountingControlSmokeResult,
+    support::{api_fail, api_map, database_url},
+};
 
 #[tauri::command]
 pub async fn run_accounting_control_smoke(
     kind: String,
 ) -> ApiResponse<AccountingControlSmokeResult> {
-    let Some(database_url) = env::var("TAOLI_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return ApiResponse::fail(api_error(
+    let Some(database_url) = database_url() else {
+        return api_fail(
             ErrorCode::AccountingControlError,
             "TAOLI_DATABASE_URL is required for accounting, reconciliation, and control smoke tests; start PostgreSQL and launch the app with this environment variable set",
             false,
-        ));
+        );
     };
 
     run_accounting_control_smoke_with_database_url(kind, Some(database_url)).await
@@ -31,11 +29,11 @@ async fn run_accounting_control_smoke_with_database_url(
     database_url: Option<String>,
 ) -> ApiResponse<AccountingControlSmokeResult> {
     let Some(database_url) = database_url.filter(|value| !value.trim().is_empty()) else {
-        return ApiResponse::fail(api_error(
+        return api_fail(
             ErrorCode::AccountingControlError,
             "TAOLI_DATABASE_URL is required",
             false,
-        ));
+        );
     };
 
     let result = match kind.as_str() {
@@ -49,18 +47,15 @@ async fn run_accounting_control_smoke_with_database_url(
             .await
             .map(AccountingControlSmokeResult::Control),
         _ => {
-            return ApiResponse::fail(api_error(
+            return api_fail(
                 ErrorCode::InvalidRequest,
                 format!("unsupported accounting control smoke kind {kind}"),
                 false,
-            ));
+            );
         }
     };
 
-    result.map_or_else(
-        |error| ApiResponse::fail(api_error(ErrorCode::AccountingControlError, error, false)),
-        ApiResponse::ok,
-    )
+    api_map(result, ErrorCode::AccountingControlError, false)
 }
 
 #[cfg(test)]

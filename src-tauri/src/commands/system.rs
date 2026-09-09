@@ -2,7 +2,7 @@ use crate::error::{ApiResponse, ErrorCode};
 
 use super::{
     dto::{ConfigSummary, DesktopStatus},
-    support::{api_error, load_config},
+    support::{api_map, load_config},
 };
 
 #[tauri::command]
@@ -27,6 +27,6 @@ pub fn load_config_summary(config_path: Option<String>) -> ApiResponse<ConfigSum
             binance_websocket_url: config.binance.websocket_url,
             bybit_websocket_url: config.bybit.websocket_url,
         }),
-        Err(error) => ApiResponse::fail(api_error(ErrorCode::ConfigError, error, false)),
+        Err(error) => api_map(Err(error), ErrorCode::ConfigError, false),
     }
 }

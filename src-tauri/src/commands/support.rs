@@ -5,7 +5,7 @@ use reqwest::Client;
 
 use personal_taoli_core::config::ObserverConfig;
 
-use crate::error::{ApiError, ErrorCode};
+use crate::error::{ApiError, ApiResponse, ErrorCode};
 
 pub(super) fn config_path(path: Option<String>) -> PathBuf {
     if let Some(path) = path {
@@ -45,10 +45,32 @@ pub(super) fn http_client(config: &ObserverConfig) -> Result<Client> {
         .context("failed to build HTTP client")
 }
 
-pub(super) fn api_error(
+/// Reads `TAOLI_DATABASE_URL` for smoke commands; missing and blank values
+/// both count as absent.
+pub(super) fn database_url() -> Option<String> {
+    env::var("TAOLI_DATABASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// Direct failure response for validation and early-return paths.
+pub(super) fn api_fail<T>(
     code: ErrorCode,
-    error: impl std::fmt::Display,
+    message: impl std::fmt::Display,
     retryable: bool,
-) -> ApiError {
-    ApiError::new(code, format!("{error:#}"), retryable)
+) -> ApiResponse<T> {
+    ApiResponse::fail(ApiError::new(code, format!("{message}"), retryable))
+}
+
+/// Classifies a command result: success passes through unchanged, failure is
+/// reported under `code` with the full error chain and retryability.
+pub(super) fn api_map<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    code: ErrorCode,
+    retryable: bool,
+) -> ApiResponse<T> {
+    match result {
+        Ok(value) => ApiResponse::ok(value),
+        Err(error) => ApiResponse::fail(ApiError::new(code, format!("{error:#}"), retryable)),
+    }
 }
