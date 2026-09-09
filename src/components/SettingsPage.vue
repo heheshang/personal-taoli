@@ -8,8 +8,22 @@ import {
   saveObserverConfig as saveObserverConfigIpc,
   COMMANDS,
 } from '../commands'
-import type { AppConfig, ObserverConfig } from '../commands'
+import type { AppConfig, ObserverConfig, PairConfig } from '../commands'
 import TermHint from './TermHint.vue'
+
+/** 常见现货交易对预设：添加币种时下拉选择，选中后自动填充四字段（仍可手动修改）。 */
+const PRESET_PAIRS: PairConfig[] = [
+  { symbol: 'BTCUSDT', base_asset: 'BTC', quote_asset: 'USDT', quantity: '0.001' },
+  { symbol: 'ETHUSDT', base_asset: 'ETH', quote_asset: 'USDT', quantity: '0.01' },
+  { symbol: 'SOLUSDT', base_asset: 'SOL', quote_asset: 'USDT', quantity: '1' },
+  { symbol: 'BNBUSDT', base_asset: 'BNB', quote_asset: 'USDT', quantity: '0.01' },
+  { symbol: 'XRPUSDT', base_asset: 'XRP', quote_asset: 'USDT', quantity: '20' },
+  { symbol: 'DOGEUSDT', base_asset: 'DOGE', quote_asset: 'USDT', quantity: '100' },
+  { symbol: 'ADAUSDT', base_asset: 'ADA', quote_asset: 'USDT', quantity: '20' },
+  { symbol: 'AVAXUSDT', base_asset: 'AVAX', quote_asset: 'USDT', quantity: '0.1' },
+  { symbol: 'LINKUSDT', base_asset: 'LINK', quote_asset: 'USDT', quantity: '1' },
+  { symbol: 'DOTUSDT', base_asset: 'DOT', quote_asset: 'USDT', quantity: '1' },
+]
 
 const props = defineProps<{
   canOperate: boolean
@@ -79,13 +93,14 @@ async function saveObserver() {
   }
 }
 
-function addPair() {
-  observerConfig.pairs.push({
-    symbol: '',
-    base_asset: '',
-    quote_asset: '',
-    quantity: '0.001',
-  })
+/** 下拉选中预设交易对即添加；已在列表中的 symbol 在选项中禁用。 */
+const selectedPairSymbol = ref<string>()
+
+function addPair(presetSymbol: string) {
+  const preset = PRESET_PAIRS.find(p => p.symbol === presetSymbol)
+  if (!preset) return
+  observerConfig.pairs.push({ ...preset })
+  selectedPairSymbol.value = ''
 }
 
 function removePair(idx: number) {
@@ -165,7 +180,22 @@ onMounted(() => {
         <div class="settings-card">
           <div class="card-header">
             <span class="card-title">交易对列表（pairs）</span>
-            <ElButton size="small" :disabled="!canOperate" @click="addPair">添加币种</ElButton>
+            <ElSelect
+              v-model="selectedPairSymbol"
+              size="small"
+              :disabled="!canOperate"
+              placeholder="添加币种…"
+              class="pair-add-select"
+              @change="addPair"
+            >
+              <ElOption
+                v-for="preset in PRESET_PAIRS"
+                :key="preset.symbol"
+                :label="`${preset.symbol}（${preset.quantity} ${preset.base_asset}）`"
+                :value="preset.symbol"
+                :disabled="observerConfig.pairs.some(p => p.symbol === preset.symbol)"
+              />
+            </ElSelect>
           </div>
           <div class="card-body">
             <div
@@ -479,6 +509,10 @@ onMounted(() => {
   gap: 10px;
   padding: 14px 0;
   border-top: 1px solid var(--border);
+}
+.pair-add-select {
+  width: 220px;
+  text-align: left;
 }
 .pair-editor {
   border: 1px solid var(--border);
