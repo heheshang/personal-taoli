@@ -15,4 +15,4 @@
 | 实现 | 创建 Vue + Element Plus + TypeScript 前端 | `src/`、`ui/` | verified |
 | 实现 | 接通配置、账户、观测、回放和 PAPER 操作 | Tauri invoke 调用与 `ApiResponse<T>` | verified |
 | 验证 | 开发、构建前端、Rust 应用并执行命令协议烟测 | `npm run tauri dev`、`npm run build`、`cargo fmt --all -- --check`、`cargo test --workspace`、`cargo build --workspace --release` | verified |
-| 发布 | 更新架构与 SDLC 记录 | C-01 设计文档、运行命令与目录边界 | verified |
+| 发布 | 更新架构与 AIDLC 记录 | C-01 设计文档、运行命令与目录边界 | verified |

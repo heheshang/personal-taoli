@@ -14,7 +14,7 @@
 | 实现 | 增加订单事实 migration 与 Rust 模块 | `crates/core/migrations/0002_*`, `crates/core/src/order.rs` | released |
 | 实现 | 增加无网络 PAPER 订单事实烟测入口 | Tauri `run_paper_smoke("B02")` | released |
 | 验证 | 覆盖成功、拒绝、UNKNOWN、调查、撤单竞态、成交幂等和恢复 | Rust 测试、临时 PostgreSQL | released |
-| 发布 | 更新架构、SDLC 和边界状态 | 发布记录 | released |
+| 发布 | 更新架构、AIDLC 和边界状态 | 发布记录 | released |
 
 ## 3. 必须通过的行为
 

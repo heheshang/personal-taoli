@@ -15,11 +15,11 @@
 - 需求：[A-03 WebSocket 本地订单簿：需求文档](A-03-WebSocket本地订单簿-需求.md)
 - 设计：[A-03 WebSocket 本地订单簿：设计文档](A-03-WebSocket本地订单簿-设计.md)
 - 总体架构：[个人加密货币套利系统：架构与需求设计](个人加密货币套利系统-架构与需求设计.md)
-- 流程与追踪：[个人加密货币套利系统：SDLC 迭代执行手册](个人加密货币套利系统-SDLC迭代执行手册.md)
+- 流程与追踪：[个人加密货币套利系统：AIDLC 迭代执行手册](个人加密货币套利系统-AIDLC迭代执行手册.md)
 
 ## 3. 任务清单
 
-状态只使用 SDLC 规定的 `proposed`、`ready`、`in_progress`、`blocked`、`verified`、`released`、`rejected`。
+状态只使用 AIDLC 规定的 `proposed`、`ready`、`in_progress`、`blocked`、`verified`、`released`、`rejected`。
 
 | 阶段 | 任务 | 关联需求 | 产出或证据 | 状态 |
 |---|---|---|---|---|
