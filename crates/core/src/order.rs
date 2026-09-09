@@ -3,13 +3,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::task::JoinHandle;
-use tokio_postgres::{Client, Row};
+use tokio_postgres::Row;
 
-use crate::db::{
-    advisory_key, close_connection, connect, db_time, hex_digest, migrate, to_i64, validate_id,
-    verify_schema,
-};
+use crate::db::{DomainConnection, db_time, hex_digest, migrate, to_i64, validate_id};
 use crate::market::unix_timestamp_ms;
 use crate::paper::{
     OrderIntentInput, OrderSide, ReservationInput, ReservePlanRequest, set_paper_balance,
@@ -145,10 +141,7 @@ pub struct OrderFactsSmokeReport {
 }
 
 pub struct OrderCore {
-    client: Client,
-    connection: JoinHandle<()>,
-    account_id: String,
-    instrument_id: String,
+    inner: DomainConnection,
 }
 
 impl OrderCore {
@@ -157,41 +150,20 @@ impl OrderCore {
         account_id: impl Into<String>,
         instrument_id: impl Into<String>,
     ) -> Result<Self> {
-        let account_id = account_id.into();
-        let instrument_id = instrument_id.into();
-        validate_id("account_id", &account_id)?;
-        validate_id("instrument_id", &instrument_id)?;
-        let (client, connection) = connect(database_url).await?;
-        verify_schema(&client).await?;
-        let lock_key = advisory_key(
-            "execution-domain",
-            &format!("{account_id}\0{instrument_id}"),
-        );
-        let acquired: bool = client
-            .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_key])
-            .await
-            .context("failed to acquire B-02 execution lock")?
-            .get(0);
-        if !acquired {
-            close_connection(client, connection).await;
-            bail!("B-02 execution domain already has a writer");
-        }
-        Ok(Self {
-            client,
-            connection,
-            account_id,
-            instrument_id,
-        })
+        let inner =
+            DomainConnection::acquire(database_url, account_id, instrument_id, "order").await?;
+        Ok(Self { inner })
     }
 
     pub async fn ensure_intent(&mut self, intent_id: &str) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
         validate_id("intent_id", &intent_id)?;
         let now = db_time()?;
-        self.client
+        self.inner
+            .client
             .execute(
                 "INSERT INTO order_facts(intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,updated_at_ms) SELECT oi.intent_id,ep.account_id,ep.instrument_id,oi.venue,oi.quantity,'NOT_SENT','NONE','PENDING',$2 FROM order_intents oi JOIN execution_plans ep ON ep.plan_id=oi.plan_id WHERE oi.intent_id=$1 AND ep.account_id=$3 AND ep.instrument_id=$4 ON CONFLICT(intent_id) DO NOTHING",
-                &[&intent_id, &now, &self.account_id, &self.instrument_id],
+                &[&intent_id, &now, &self.inner.account_id, &self.inner.instrument_id],
             )
             .await
             .context("failed to materialize B-02 order fact")?;
@@ -207,6 +179,7 @@ impl OrderCore {
         validate_id("intent_id", &intent_id)?;
         validate_digest(request_digest)?;
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -243,6 +216,7 @@ impl OrderCore {
     ) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -303,6 +277,7 @@ impl OrderCore {
     ) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -370,6 +345,7 @@ impl OrderCore {
         let intent_id = intent_id.to_owned();
         validate_id("intent_id", &intent_id)?;
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -414,6 +390,7 @@ impl OrderCore {
     ) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -459,6 +436,7 @@ impl OrderCore {
         let intent_id = intent_id.to_owned();
         validate_trade(&trade)?;
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -547,17 +525,17 @@ impl OrderCore {
 
     pub async fn load(&self, intent_id: &str) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
-        let row = self.client.query_one("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE intent_id=$1 AND account_id=$2 AND instrument_id=$3", &[&intent_id, &self.account_id, &self.instrument_id]).await.context("failed to load B-02 order fact")?;
+        let row = self.inner.client.query_one("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE intent_id=$1 AND account_id=$2 AND instrument_id=$3", &[&intent_id, &self.inner.account_id, &self.inner.instrument_id]).await.context("failed to load B-02 order fact")?;
         snapshot(row)
     }
 
     pub async fn recover_nonterminal(&self) -> Result<Vec<OrderFactSnapshot>> {
-        let rows = self.client.query("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE account_id=$1 AND instrument_id=$2 AND submission_status NOT IN ('DEFINITELY_REJECTED') ORDER BY intent_id", &[&self.account_id, &self.instrument_id]).await.context("failed to recover B-02 order facts")?;
+        let rows = self.inner.client.query("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE account_id=$1 AND instrument_id=$2 AND submission_status NOT IN ('DEFINITELY_REJECTED') ORDER BY intent_id", &[&self.inner.account_id, &self.inner.instrument_id]).await.context("failed to recover B-02 order facts")?;
         rows.into_iter().map(snapshot).collect()
     }
 
     pub async fn disconnect(self) {
-        close_connection(self.client, self.connection).await;
+        self.inner.disconnect().await;
     }
 }
 
@@ -744,7 +722,7 @@ pub async fn run_order_facts_smoke(database_url: &str) -> Result<OrderFactsSmoke
         .plan
         .intents
         .iter()
-        .find(|intent| intent.side == "BUY")
+        .find(|intent| intent.side == OrderSide::Buy)
         .context("smoke BUY intent missing")?
         .intent_id
         .clone();
@@ -799,7 +777,7 @@ pub async fn run_order_facts_smoke(database_url: &str) -> Result<OrderFactsSmoke
         .plan
         .intents
         .iter()
-        .find(|intent| intent.side == "SELL")
+        .find(|intent| intent.side == OrderSide::Sell)
         .context("smoke SELL intent missing")?
         .intent_id
         .clone();

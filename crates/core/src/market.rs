@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +93,36 @@ pub fn unix_timestamp_ms() -> Result<u64> {
         .duration_since(UNIX_EPOCH)?
         .as_millis()
         .try_into()?)
+}
+
+/// Parses raw price/quantity pairs into typed `Level` values.
+pub fn parse_levels(raw: &[[String; 2]]) -> Result<Vec<Level>> {
+    raw.iter()
+        .map(|[price, quantity]| {
+            Ok(Level {
+                price: price.parse().context("invalid level price")?,
+                quantity: quantity.parse().context("invalid level quantity")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+/// Parses raw price/quantity pairs into `LevelUpdate` values.
+pub fn parse_updates(raw: &[[String; 2]]) -> Result<Vec<LevelUpdate>> {
+    raw.iter()
+        .map(|[price, quantity]| {
+            Ok(LevelUpdate {
+                price: price.parse().context("invalid level price")?,
+                quantity: quantity.parse().context("invalid level quantity")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct LevelUpdate {
+    pub price: Decimal,
+    pub quantity: Decimal,
 }
 
 fn validate_levels(levels: &[Level], descending: bool) -> Result<()> {

@@ -2,12 +2,9 @@ use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::task::JoinHandle;
-use tokio_postgres::{Client, Row};
+use tokio_postgres::Row;
 
-use crate::db::{
-    advisory_key, close_connection, connect, db_time, migrate, validate_id, verify_schema,
-};
+use crate::db::{DomainConnection, db_time, migrate, validate_id};
 use crate::market::unix_timestamp_ms;
 use crate::paper::{
     OrderIntentInput, OrderSide, PaperCore, ReservationInput, ReservePlanRequest, set_paper_balance,
@@ -89,10 +86,7 @@ pub struct DoubleLegSmokeReport {
 }
 
 pub struct ExecutionCore {
-    client: Client,
-    connection: JoinHandle<()>,
-    account_id: String,
-    instrument_id: String,
+    inner: DomainConnection,
 }
 
 impl ExecutionCore {
@@ -101,31 +95,9 @@ impl ExecutionCore {
         account_id: impl Into<String>,
         instrument_id: impl Into<String>,
     ) -> Result<Self> {
-        let account_id = account_id.into();
-        let instrument_id = instrument_id.into();
-        validate_id("account_id", &account_id)?;
-        validate_id("instrument_id", &instrument_id)?;
-        let (client, connection) = connect(database_url).await?;
-        verify_schema(&client).await?;
-        let lock_key = advisory_key(
-            "execution-domain",
-            &format!("{account_id}\0{instrument_id}"),
-        );
-        let acquired: bool = client
-            .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_key])
-            .await
-            .context("failed to acquire B-03 execution lock")?
-            .get(0);
-        if !acquired {
-            close_connection(client, connection).await;
-            bail!("B-03 execution domain already has a writer");
-        }
-        Ok(Self {
-            client,
-            connection,
-            account_id,
-            instrument_id,
-        })
+        let inner =
+            DomainConnection::acquire(database_url, account_id, instrument_id, "execution").await?;
+        Ok(Self { inner })
     }
 
     pub async fn initialize_plan(
@@ -143,6 +115,7 @@ impl ExecutionCore {
             bail!("B-03 execution limits have invalid values");
         }
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -150,7 +123,7 @@ impl ExecutionCore {
         let plan_exists: bool = tx
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM execution_plans WHERE plan_id=$1 AND account_id=$2 AND instrument_id=$3)",
-                &[&plan_id, &self.account_id, &self.instrument_id],
+                &[&plan_id, &self.inner.account_id, &self.inner.instrument_id],
             )
             .await
             .context("failed to verify B-03 execution plan")?
@@ -194,6 +167,7 @@ impl ExecutionCore {
             bail!("B-03 fill and compensation values must be non-negative");
         }
         let tx = self
+            .inner
             .client
             .transaction()
             .await
@@ -288,6 +262,7 @@ impl ExecutionCore {
 
     pub async fn load(&self, plan_id: &str) -> Result<ExecutionSnapshot> {
         let row = self
+            .inner
             .client
             .query_one(
                 "SELECT plan_id,target_quantity,max_unmatched_exposure,compensation_budget,state,leg_a_filled,leg_b_filled,unmatched_quantity,unmatched_exposure,compensation_spent,last_version,updated_at_ms FROM execution_facts WHERE plan_id=$1", 
@@ -299,7 +274,7 @@ impl ExecutionCore {
     }
 
     pub async fn disconnect(self) {
-        close_connection(self.client, self.connection).await;
+        self.inner.disconnect().await;
     }
 }
 

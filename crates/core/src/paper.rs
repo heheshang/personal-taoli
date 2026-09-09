@@ -5,12 +5,11 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::task::JoinHandle;
-use tokio_postgres::{Client, Row, Transaction};
+use tokio_postgres::{Row, Transaction};
 
 use crate::db::{
-    SCHEMA_VERSION, advisory_key, close_connection, connect, hex_digest, migrate, validate_id,
-    verify_schema,
+    DomainConnection, SCHEMA_VERSION, advisory_key, close_connection, connect, hex_digest, migrate,
+    to_i64, validate_id, verify_schema,
 };
 use crate::market::unix_timestamp_ms;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +69,7 @@ pub struct RecoveredIntent {
     pub attempt_id: String,
     pub client_order_id: String,
     pub venue: String,
-    pub side: String,
+    pub side: OrderSide,
     pub quantity: Decimal,
     pub limit_price: Decimal,
     pub submission_status: String,
@@ -131,10 +130,7 @@ pub struct PaperCoreSmokeReport {
 }
 
 pub struct PaperCore {
-    client: Client,
-    connection: JoinHandle<()>,
-    account_id: String,
-    instrument_id: String,
+    inner: DomainConnection,
 }
 
 pub async fn set_paper_balance(
@@ -158,7 +154,7 @@ pub async fn set_paper_balance(
     if observed_at_ms == 0 {
         bail!("PAPER balance observed_at_ms must be positive");
     }
-    let observed_at_ms = to_i64(observed_at_ms, "observed_at_ms")?;
+    let observed_at_ms = to_i64(observed_at_ms)?;
     let (mut client, connection) = connect(database_url).await?;
     verify_schema(&client).await?;
     let transaction = client
@@ -202,43 +198,18 @@ impl PaperCore {
         account_id: impl Into<String>,
         instrument_id: impl Into<String>,
     ) -> Result<Self> {
-        let account_id = account_id.into();
-        let instrument_id = instrument_id.into();
-        validate_id("account_id", &account_id)?;
-        validate_id("instrument_id", &instrument_id)?;
-        let (client, connection) = connect(database_url).await?;
-        verify_schema(&client).await?;
-        let lock_key = advisory_key(
-            "execution-domain",
-            &format!("{account_id}\0{instrument_id}"),
-        );
-        let acquired: bool = client
-            .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_key])
-            .await
-            .context("failed to acquire PAPER single-writer lock")?
-            .get(0);
-        if !acquired {
-            close_connection(client, connection).await;
-            bail!(
-                "PAPER execution domain already has a writer: account={} instrument={}",
-                account_id,
-                instrument_id
-            );
-        }
-        Ok(Self {
-            client,
-            connection,
-            account_id,
-            instrument_id,
-        })
+        let inner =
+            DomainConnection::acquire(database_url, account_id, instrument_id, "PAPER").await?;
+        Ok(Self { inner })
     }
 
     pub async fn reserve_plan(&mut self, request: ReservePlanRequest) -> Result<ReserveOutcome> {
-        validate_request(&request, &self.account_id, &self.instrument_id)?;
+        validate_request(&request, &self.inner.account_id, &self.inner.instrument_id)?;
         let digest = request_digest(&request)?;
         let created_at_ms = unix_timestamp_ms()?;
-        let created_at_db = to_i64(created_at_ms, "created_at_ms")?;
+        let created_at_db = to_i64(created_at_ms)?;
         let transaction = self
+            .inner
             .client
             .transaction()
             .await
@@ -288,10 +259,10 @@ impl PaperCore {
 
     pub async fn recover_active_plans(&self) -> Result<Vec<RecoveredPlan>> {
         let rows = self
-            .client
+            .inner.client
             .query(
                 "SELECT plan_id FROM execution_plans WHERE account_id=$1 AND instrument_id=$2 AND state='RESERVED' ORDER BY created_at_ms, plan_id",
-                &[&self.account_id, &self.instrument_id],
+                &[&self.inner.account_id, &self.inner.instrument_id],
             )
             .await
             .context("failed to list active PAPER plans")?;
@@ -304,12 +275,12 @@ impl PaperCore {
     }
 
     pub async fn disconnect(self) {
-        close_connection(self.client, self.connection).await;
+        self.inner.disconnect().await;
     }
 
     async fn load_plan(&self, plan_id: &str) -> Result<RecoveredPlan> {
         let row = self
-            .client
+            .inner.client
             .query_one(
                 "SELECT plan_id,request_id,request_digest,account_id,instrument_id,opportunity_id,strategy_config_version,target_quantity,max_unmatched_exposure,state,created_at_ms FROM execution_plans WHERE plan_id=$1",
                 &[&plan_id],
@@ -317,7 +288,7 @@ impl PaperCore {
             .await
             .context("failed to load PAPER execution plan")?;
         let intent_rows = self
-            .client
+            .inner.client
             .query(
                 "SELECT intent_id,leg_id,attempt_id,client_order_id,venue,side,quantity,limit_price,submission_status FROM order_intents WHERE plan_id=$1 ORDER BY leg_id",
                 &[&plan_id],
@@ -325,7 +296,7 @@ impl PaperCore {
             .await
             .context("failed to load PAPER order intents")?;
         let reservation_rows = self
-            .client
+            .inner.client
             .query(
                 "SELECT reservation_id,venue,asset,amount,state FROM fund_reservations WHERE plan_id=$1 ORDER BY venue,asset",
                 &[&plan_id],
@@ -411,6 +382,7 @@ pub async fn run_paper_core_smoke(database_url: &str) -> Result<PaperCoreSmokeRe
         bail!("PAPER recovery did not return the committed active plan");
     }
     let recovered_risk_decisions: i64 = recovered_core
+        .inner
         .client
         .query_one(
             "SELECT count(*) FROM risk_decisions WHERE plan_id=$1 AND approved",
@@ -420,6 +392,7 @@ pub async fn run_paper_core_smoke(database_url: &str) -> Result<PaperCoreSmokeRe
         .context("failed to verify recovered PAPER risk decision")?
         .get(0);
     let recovered_audit_events: i64 = recovered_core
+        .inner
         .client
         .query_one(
             "SELECT count(*) FROM audit_events WHERE aggregate_id=$1 AND event_type='PlanReserved'",
@@ -429,6 +402,7 @@ pub async fn run_paper_core_smoke(database_url: &str) -> Result<PaperCoreSmokeRe
         .context("failed to verify recovered PAPER audit event")?
         .get(0);
     let audit_events_immutable = recovered_core
+        .inner
         .client
         .execute(
             "UPDATE audit_events SET payload=payload WHERE aggregate_id=$1",
@@ -733,16 +707,24 @@ fn recovered_plan(
             .context("database returned a negative plan timestamp")?,
         intents: intent_rows
             .into_iter()
-            .map(|intent| RecoveredIntent {
-                intent_id: intent.get(0),
-                leg_id: intent.get(1),
-                attempt_id: intent.get(2),
-                client_order_id: intent.get(3),
-                venue: intent.get(4),
-                side: intent.get(5),
-                quantity: intent.get(6),
-                limit_price: intent.get(7),
-                submission_status: intent.get(8),
+            .map(|intent| {
+                let side_str: String = intent.get(5);
+                let side = match side_str.as_str() {
+                    "BUY" => OrderSide::Buy,
+                    "SELL" => OrderSide::Sell,
+                    _ => panic!("unknown order side: {side_str}"),
+                };
+                RecoveredIntent {
+                    intent_id: intent.get(0),
+                    leg_id: intent.get(1),
+                    attempt_id: intent.get(2),
+                    client_order_id: intent.get(3),
+                    venue: intent.get(4),
+                    side,
+                    quantity: intent.get(6),
+                    limit_price: intent.get(7),
+                    submission_status: intent.get(8),
+                }
             })
             .collect(),
         reservations: reservation_rows
@@ -825,12 +807,6 @@ fn smoke_request(
             },
         ],
     }
-}
-
-fn to_i64(value: u64, name: &str) -> Result<i64> {
-    value
-        .try_into()
-        .with_context(|| format!("{name} exceeds PostgreSQL BIGINT"))
 }
 
 #[cfg(test)]

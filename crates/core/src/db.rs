@@ -127,3 +127,64 @@ pub(crate) fn to_i64(value: u64) -> Result<i64> {
 pub(crate) fn to_u64(value: i64) -> Result<u64> {
     value.try_into().context("database timestamp is negative")
 }
+
+/// Database connection with advisory lock for single-writer domains.
+///
+/// Encapsulates the common pattern of:
+/// 1. Connecting to PostgreSQL
+/// 2. Verifying schema
+/// 3. Acquiring an advisory lock for the execution domain
+/// 4. Providing disconnect on drop
+pub(crate) struct DomainConnection {
+    pub client: Client,
+    pub connection: JoinHandle<()>,
+    pub account_id: String,
+    pub instrument_id: String,
+}
+
+impl DomainConnection {
+    /// Acquires a domain lock for the given account and instrument.
+    ///
+    /// This is the shared implementation used by PaperCore, OrderCore, and ExecutionCore.
+    pub async fn acquire(
+        database_url: &str,
+        account_id: impl Into<String>,
+        instrument_id: impl Into<String>,
+        domain: &str,
+    ) -> Result<Self> {
+        let account_id = account_id.into();
+        let instrument_id = instrument_id.into();
+        validate_id("account_id", &account_id)?;
+        validate_id("instrument_id", &instrument_id)?;
+        let (client, connection) = connect(database_url).await?;
+        verify_schema(&client).await?;
+        let lock_key = advisory_key(
+            "execution-domain",
+            &format!("{account_id}\0{instrument_id}"),
+        );
+        let acquired: bool = client
+            .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_key])
+            .await
+            .context(format!("failed to acquire {domain} single-writer lock"))?
+            .get(0);
+        if !acquired {
+            close_connection(client, connection).await;
+            bail!(
+                "{domain} execution domain already has a writer: account={} instrument={}",
+                account_id,
+                instrument_id
+            );
+        }
+        Ok(Self {
+            client,
+            connection,
+            account_id,
+            instrument_id,
+        })
+    }
+
+    /// Disconnects from the database.
+    pub async fn disconnect(self) {
+        close_connection(self.client, self.connection).await;
+    }
+}
