@@ -9,6 +9,8 @@
 //! produced by the original code; see `examples/score_diff.rs`. That is why
 //! `py.rs` reproduces CPython semantics rather than using idiomatic Rust.
 
+pub mod features;
+pub mod panel_data;
 pub mod py;
 pub mod rules;
 pub mod score;
@@ -24,6 +26,14 @@ pub const RULES_JSON: &str = include_str!("../tools/out/rules.json");
 
 /// Investor metadata (66 records).
 pub const INVESTORS_JSON: &str = include_str!("../tools/out/investors.json");
+
+/// Static panel tables (personas, profiles, knowledge, feature keywords).
+pub const PANEL_DATA_JSON: &str = include_str!("../tools/out/panel_data.json");
+
+/// Parsed panel tables.
+pub fn panel_data() -> anyhow::Result<panel_data::PanelData> {
+    panel_data::PanelData::parse(PANEL_DATA_JSON)
+}
 
 /// The investor database as the original Python module defines it.
 pub fn investors() -> anyhow::Result<Vec<serde_json::Value>> {
