@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -205,16 +206,21 @@ impl ObserverConfig {
     }
 
     /// 旧格式（顶层 symbol 单数字段）→ 新格式（pairs 列表）一次性文本迁移。
-    /// 只探测「有 symbol 且无 pairs」的旧文件；新格式原样返回。
-    fn migrate_legacy_toml(raw: &str) -> String {
+    ///
+    /// 先用廉价子串探测分流：只有「像旧格式」的文本才走完整的 `Value` 解析 + 重序列化，
+    /// 否则原样借用返回（调用方本就要再解析一次，旧写法等于把新格式解析两遍）。
+    fn migrate_legacy_toml(raw: &str) -> Cow<'_, str> {
+        if raw.contains("pairs") || !raw.contains("symbol") {
+            return Cow::Borrowed(raw);
+        }
         let Ok(value) = toml::from_str::<toml::Value>(raw) else {
-            return raw.to_string();
+            return Cow::Borrowed(raw);
         };
         let Some(table) = value.as_table() else {
-            return raw.to_string();
+            return Cow::Borrowed(raw);
         };
         if table.contains_key("pairs") || !table.contains_key("symbol") {
-            return raw.to_string();
+            return Cow::Borrowed(raw);
         }
         let mut pair = toml::map::Map::new();
         for key in ["symbol", "base_asset", "quote_asset", "quantity"] {
@@ -230,19 +236,25 @@ impl ObserverConfig {
             "pairs".to_string(),
             toml::Value::Array(vec![toml::Value::Table(pair)]),
         );
-        toml::to_string(&toml::Value::Table(migrated)).unwrap_or_else(|_| raw.to_string())
+        match toml::to_string(&toml::Value::Table(migrated)) {
+            Ok(migrated) => Cow::Owned(migrated),
+            Err(_) => Cow::Borrowed(raw),
+        }
     }
 
     /// 旧格式（顶层 symbol 单数字段）→ 新格式（pairs 列表）一次性文本迁移（JSON 变体）。
-    fn migrate_legacy_json(raw: &str) -> String {
+    fn migrate_legacy_json(raw: &str) -> Cow<'_, str> {
+        if raw.contains("pairs") || !raw.contains("symbol") {
+            return Cow::Borrowed(raw);
+        }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
-            return raw.to_string();
+            return Cow::Borrowed(raw);
         };
         let Some(object) = value.as_object() else {
-            return raw.to_string();
+            return Cow::Borrowed(raw);
         };
         if object.contains_key("pairs") || !object.contains_key("symbol") {
-            return raw.to_string();
+            return Cow::Borrowed(raw);
         }
         let mut pair = serde_json::Map::new();
         for key in ["symbol", "base_asset", "quote_asset", "quantity"] {
@@ -258,8 +270,10 @@ impl ObserverConfig {
             "pairs".to_string(),
             serde_json::Value::Array(vec![serde_json::Value::Object(pair)]),
         );
-        serde_json::to_string(&serde_json::Value::Object(migrated))
-            .unwrap_or_else(|_| raw.to_string())
+        match serde_json::to_string(&serde_json::Value::Object(migrated)) {
+            Ok(migrated) => Cow::Owned(migrated),
+            Err(_) => Cow::Borrowed(raw),
+        }
     }
 
     pub fn default_config() -> Self {
