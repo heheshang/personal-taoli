@@ -1,0 +1,3 @@
+# Regenerable differential-test fixture (~4 MB). Produced by
+# `tools/compile_rules.py`; not needed to build the crate.
+tools/out/rule_vectors.json
