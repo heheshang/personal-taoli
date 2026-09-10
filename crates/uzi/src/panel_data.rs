@@ -89,10 +89,29 @@ pub struct Affinity {
     pub note: String,
 }
 
+/// Style tables from `stock_style`.
+///
+/// `person_overrides` keys are flattened as `"<style>\u{0}<investor>"` because
+/// JSON object keys cannot be tuples.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StyleData {
+    pub person_overrides: BTreeMap<String, f64>,
+    pub group_weights: BTreeMap<String, BTreeMap<String, f64>>,
+    pub dim_multipliers: BTreeMap<String, BTreeMap<String, f64>>,
+    pub labels: BTreeMap<String, String>,
+    pub explanations: BTreeMap<String, String>,
+    pub cycle_industries: Vec<String>,
+    pub growth_industries: Vec<String>,
+    pub defensive_industries: Vec<String>,
+    pub all_styles: Vec<String>,
+    pub thresholds: Value,
+}
+
 /// Everything the panel stage needs that is not logic.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PanelData {
     pub schema: i64,
+    pub style: StyleData,
     pub personas: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     pub persona_fallback: BTreeMap<String, Vec<String>>,
     pub profiles: BTreeMap<String, BTreeMap<String, String>>,

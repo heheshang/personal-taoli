@@ -16,6 +16,8 @@ pub mod panel_data;
 pub mod py;
 pub mod rules;
 pub mod score;
+pub mod style;
+pub mod synthesis;
 
 pub use rules::{Rule, RuleSet, eval};
 pub use score::score_dimensions;

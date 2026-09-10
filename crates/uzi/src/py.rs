@@ -44,6 +44,19 @@ pub fn py_str(v: &Value) -> String {
     }
 }
 
+/// `x or ""` — truthiness-guarded string, the idiom the Python guards use.
+///
+/// `py_str(Null)` is `"None"` (correct `str(None)`), which is *not* empty, so a
+/// bare `!s.is_empty()` check silently treats an absent value as present. Every
+/// place the original writes `x or ""` or `if x:` must go through this instead.
+pub fn py_str_or_empty(v: &Value) -> String {
+    if crate::rules::truthy(v) {
+        py_str(v)
+    } else {
+        String::new()
+    }
+}
+
 /// `d.get(key)` — a missing key and an explicit `null` both yield `Null`.
 pub fn get<'a>(v: &'a Value, key: &str) -> &'a Value {
     v.get(key).unwrap_or(&Value::Null)

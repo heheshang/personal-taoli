@@ -43,8 +43,31 @@ def main() -> int:
     )
     print(f"local_tables    : {sorted(local_tables)}")
 
+    import lib.stock_style as style  # noqa: E402
+    style_tables = {
+        # Tuple keys become "style\u0000investor" so the JSON stays flat.
+        "person_overrides": {
+            f"{k[0]}\u0000{k[1]}": v for k, v in style.PERSON_OVERRIDES.items()
+        },
+        "group_weights": style.STYLE_GROUP_WEIGHTS,
+        "dim_multipliers": style.STYLE_DIM_MULTIPLIERS,
+        "labels": style.STYLE_LABELS,
+        "explanations": style.STYLE_EXPLANATIONS,
+        "cycle_industries": sorted(style.CYCLE_INDUSTRIES),
+        "growth_industries": sorted(style.GROWTH_INDUSTRIES),
+        "defensive_industries": sorted(style.DEFENSIVE_INDUSTRIES),
+        "all_styles": list(style.ALL_STYLES),
+        "thresholds": {
+            "quant_factor_min_count": __import__("lib.quant_signal", fromlist=["x"]).QUANT_FACTOR_MIN_COUNT,
+            "quant_top1_threshold": __import__("lib.quant_signal", fromlist=["x"]).QUANT_TOP1_THRESHOLD,
+        },
+    }
+    print(f"style_tables    : {len(style_tables['group_weights'])} styles, "
+          f"{len(style_tables['person_overrides'])} overrides")
+
     doc = {
         "schema": SCHEMA,
+        "style": style_tables,
         "personas": personas.PERSONAS,
         "persona_fallback": {
             k: v for k, v in personas._GENERIC_FALLBACK.items()

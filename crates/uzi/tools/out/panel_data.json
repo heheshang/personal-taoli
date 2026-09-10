@@ -1,5 +1,244 @@
 {
  "schema": 1,
+ "style": {
+  "person_overrides": {
+   "white_horse\u0000buffett": 1.5,
+   "white_horse\u0000duan": 1.4,
+   "white_horse\u0000munger": 1.3,
+   "distressed\u0000klarman": 1.5,
+   "distressed\u0000templeton": 1.4,
+   "growth_tech\u0000wood": 1.5,
+   "growth_tech\u0000thiel": 1.3,
+   "growth_tech\u0000lynch": 1.2,
+   "cycle\u0000soros": 1.4,
+   "cycle\u0000dalio": 1.3,
+   "small_speculative\u0000zhao_lg": 1.5,
+   "small_speculative\u0000zhang_mz": 1.3,
+   "quant_factor\u0000simons": 1.5,
+   "quant_factor\u0000thorp": 1.3,
+   "quant_factor\u0000shaw": 1.3
+  },
+  "group_weights": {
+   "white_horse": {
+    "A": 1.5,
+    "B": 0.7,
+    "C": 1.0,
+    "D": 0.8,
+    "E": 1.5,
+    "F": 0.3,
+    "G": 1.0,
+    "H": 0.8,
+    "I": 0.4
+   },
+   "growth_tech": {
+    "A": 0.7,
+    "B": 1.5,
+    "C": 0.8,
+    "D": 1.2,
+    "E": 0.7,
+    "F": 0.7,
+    "G": 1.0,
+    "H": 1.5,
+    "I": 1.5
+   },
+   "cycle": {
+    "A": 1.0,
+    "B": 0.5,
+    "C": 1.5,
+    "D": 1.0,
+    "E": 1.0,
+    "F": 1.0,
+    "G": 0.8,
+    "H": 0.6,
+    "I": 0.7
+   },
+   "small_speculative": {
+    "A": 0.4,
+    "B": 0.7,
+    "C": 0.5,
+    "D": 1.3,
+    "E": 0.5,
+    "F": 1.5,
+    "G": 0.7,
+    "H": 0.8,
+    "I": 1.3
+   },
+   "dividend_defense": {
+    "A": 1.5,
+    "B": 0.5,
+    "C": 1.0,
+    "D": 0.7,
+    "E": 1.3,
+    "F": 0.3,
+    "G": 1.0,
+    "H": 0.4,
+    "I": 0.2
+   },
+   "distressed": {
+    "A": 1.5,
+    "B": 0.4,
+    "C": 1.0,
+    "D": 0.7,
+    "E": 1.3,
+    "F": 0.5,
+    "G": 0.5,
+    "H": 0.5,
+    "I": 0.5
+   },
+   "quant_factor": {
+    "A": 0.8,
+    "B": 0.8,
+    "C": 0.8,
+    "D": 1.0,
+    "E": 0.8,
+    "F": 0.7,
+    "G": 1.5,
+    "H": 0.8,
+    "I": 0.8
+   },
+   "balanced": {
+    "A": 1.0,
+    "B": 1.0,
+    "C": 1.0,
+    "D": 1.0,
+    "E": 1.0,
+    "F": 1.0,
+    "G": 1.0,
+    "H": 1.0,
+    "I": 1.0
+   }
+  },
+  "dim_multipliers": {
+   "white_horse": {
+    "1_financials": 1.5,
+    "10_valuation": 1.5,
+    "14_moat": 1.5,
+    "16_lhb": 0.3,
+    "17_sentiment": 0.5
+   },
+   "growth_tech": {
+    "7_industry": 1.5,
+    "14_moat": 1.3,
+    "1_financials": 0.8,
+    "10_valuation": 0.7
+   },
+   "cycle": {
+    "3_macro": 1.5,
+    "8_materials": 1.5,
+    "9_futures": 1.5
+   },
+   "small_speculative": {
+    "16_lhb": 1.5,
+    "17_sentiment": 1.5,
+    "2_kline": 1.3,
+    "12_capital_flow": 1.3,
+    "1_financials": 0.5,
+    "14_moat": 0.3
+   },
+   "dividend_defense": {
+    "1_financials": 1.3,
+    "11_governance": 1.3,
+    "16_lhb": 0.3,
+    "17_sentiment": 0.5
+   },
+   "distressed": {
+    "1_financials": 1.5,
+    "10_valuation": 1.5,
+    "11_governance": 1.5
+   },
+   "quant_factor": {
+    "12_capital_flow": 1.5,
+    "2_kline": 1.3,
+    "16_lhb": 0.7
+   },
+   "balanced": {}
+  },
+  "labels": {
+   "white_horse": "白马价值",
+   "growth_tech": "高成长科技",
+   "cycle": "周期股",
+   "small_speculative": "小盘投机",
+   "dividend_defense": "分红防御",
+   "distressed": "困境反转",
+   "quant_factor": "量化因子型",
+   "balanced": "中性兜底"
+  },
+  "explanations": {
+   "white_horse": "大盘 + 高 ROE + 低 PE · 价值派 (A 组+E 组) 加权 ×1.5、游资降权 ×0.3",
+   "growth_tech": "高成长 + 科技/医药/新能源 · 成长派 (B 组) 加权 ×1.5、技术派 ×1.2",
+   "cycle": "周期行业 · 宏观派 (C 组) 加权 ×1.5、原料/期货维度加权 ×1.5",
+   "small_speculative": "A 股小盘 · 游资 (F 组) 加权 ×1.5、龙虎榜/舆情维度加权 ×1.5",
+   "dividend_defense": "高股息 + 银行/电力 · 价值派加权、财务/治理维度加权 ×1.3",
+   "distressed": "PB<1 + ROE 低 · 卡拉曼/邓普顿加权 ×1.5、估值/财务维度加权",
+   "quant_factor": "多家量化基金重仓 · 量化派 (G 组) 加权 ×1.5、资金流维度加权",
+   "balanced": "无明显风格倾向 · 全派系等权"
+  },
+  "cycle_industries": [
+   "化工",
+   "原油",
+   "工程机械",
+   "建材",
+   "有色金属",
+   "水泥",
+   "海运",
+   "煤炭",
+   "猪肉",
+   "玻璃",
+   "石油石化",
+   "种植业",
+   "航运",
+   "造纸",
+   "钢铁"
+  ],
+  "growth_industries": [
+   "5G",
+   "AI",
+   "云计算",
+   "信息技术",
+   "光学光电子",
+   "光模块",
+   "创新药",
+   "医疗器械",
+   "医药生物",
+   "半导体",
+   "数字经济",
+   "新材料",
+   "新能源",
+   "汽车整车",
+   "生物医药",
+   "电动汽车",
+   "电池",
+   "软件服务",
+   "锂电池"
+  ],
+  "defensive_industries": [
+   "保险",
+   "公用事业",
+   "家电",
+   "水务",
+   "港口",
+   "燃气",
+   "电力",
+   "白酒",
+   "银行",
+   "食品饮料",
+   "高速公路"
+  ],
+  "all_styles": [
+   "white_horse",
+   "growth_tech",
+   "cycle",
+   "small_speculative",
+   "dividend_defense",
+   "distressed",
+   "quant_factor",
+   "balanced"
+  ],
+  "thresholds": {
+   "quant_factor_min_count": 3,
+   "quant_top1_threshold": 2.0
+  }
+ },
  "personas": {
   "buffett": {
    "bullish": [
