@@ -81,6 +81,10 @@ export type SimulationOverview = {
   total_net_profit: string
   scanned_net_profit: string
   profit_runs: number
+  /** 合成簿探针 run 数（`run_simulation_smoke`）。 */
+  smoke_runs: number
+  /** 实时观察 run 数（连续观察循环的已准入机会）。 */
+  live_runs: number
   by_scenario: ScenarioCount[]
   recent_runs: SimulationRunRow[]
   cumulative_points: NetProfitPoint[]
@@ -133,6 +137,8 @@ export type SimulationRunRow = {
   execution_state: string
   idempotent_replay: boolean
   external_order_calls: number
+  /** `SMOKE`（合成簿探针，非市场数据）或 `LIVE`（实时观察）。 */
+  source: string
 }
 
 export type SimulationRunsPage = { total: number; runs: SimulationRunRow[] }

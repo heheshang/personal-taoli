@@ -205,6 +205,28 @@ pub enum SimulationScenario {
     Rejected,
 }
 
+/// run 的数据来源。
+///
+/// `Smoke` 表示 `run_simulation_smoke` 用合成簿驱动的探针场景（场所名 `s01-buy`…
+/// `s09-sell`，symbol 为夹具常量，**不是市场数据**）；`Live` 表示连续观察循环把
+/// 真实扫描出的已准入机会交给引擎。仪表盘必须能区分二者，否则探针产物会被当成
+/// 市场仿真结果展示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SimulationRunSource {
+    Smoke,
+    Live,
+}
+
+impl SimulationRunSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Smoke => "SMOKE",
+            Self::Live => "LIVE",
+        }
+    }
+}
+
 /// 单方向模拟执行 run 的完整报告（命令层/前端序列化用）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -214,6 +236,8 @@ pub struct SimulationRunReport {
     pub seed: u64,
     /// 本次 run 的命名空间根：`f02-{unix_timestamp_ms}-{pid}`。
     pub run_id: String,
+    /// 数据来源：合成簿探针 or 实时观察。
+    pub source: SimulationRunSource,
     pub symbol: String,
     pub quantity: Decimal,
     pub buy_venue: String,
@@ -448,11 +472,11 @@ async fn persist_simulation_run(
                  compensation_decision, execution_state, unmatched_quantity,
                  unmatched_exposure, estimated_compensation_cost,
                  unknown_submit_tried, query_found, idempotent_replay,
-                 skipped_frames, external_order_calls, report
+                 skipped_frames, external_order_calls, report, source
              ) VALUES(
                  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
                  $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
-                 $31,$32,$33,$34,$35,$36,$37,$38,$39,$40
+                 $31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41
              ) ON CONFLICT (run_id) DO NOTHING",
     )
     .bind(&report.run_id)
@@ -495,6 +519,7 @@ async fn persist_simulation_run(
     .bind(to_i64(report.skipped_frames)?)
     .bind(0_i64)
     .bind(&report_json)
+    .bind(report.source.as_str())
     .execute(&pool)
     .await
     .context("failed to persist simulation run projection")?;
@@ -596,6 +621,7 @@ pub async fn run_simulation_run(
     opportunity: &Opportunity,
     config: &SimulationConfig,
     skipped_frames: u64,
+    source: SimulationRunSource,
 ) -> Result<SimulationRunReport> {
     migrate(database_url).await?;
     let evaluated_at_ms = event.evaluated_at_ms;
@@ -687,6 +713,7 @@ pub async fn run_simulation_run(
 
     let mut report = SimulationRunReport {
         schema_version: schema_version(),
+        source,
         seed,
         run_id: run_id.clone(),
         symbol: symbol.clone(),
@@ -1213,8 +1240,15 @@ async fn run_all_directions(
 ) -> Result<usize> {
     let mut ran = 0;
     for opportunity in event.report.directions.iter().filter(|d| d.accepted) {
-        let report =
-            run_simulation_run(database_url, event, opportunity, config, skipped_frames).await?;
+        let report = run_simulation_run(
+            database_url,
+            event,
+            opportunity,
+            config,
+            skipped_frames,
+            SimulationRunSource::Live,
+        )
+        .await?;
         tracing::info!(
             "F-02 run {} {} -> {} scenario={:?} net={}",
             report.run_id,
@@ -1450,6 +1484,11 @@ mod smoke_fixtures {
 pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeReport> {
     use smoke_fixtures::{dec, smoke_book, smoke_event};
 
+    // 合成簿探针，不是市场数据：产物标记 source=SMOKE，日志显著区分，避免被误读成
+    // 实时模拟（夹具 symbol 恒为 BTCUSDT，与当前观察的币对无关）。
+    tracing::info!(
+        "F-02 simulation smoke: SYNTHETIC FIXTURES (venues s01..s09, symbol label BTCUSDT) — not market data; persisted runs are marked source=SMOKE"
+    );
     migrate(database_url).await?;
     let stamp = format!("{}-{}", unix_timestamp_ms()?, std::process::id());
     let evaluated_at_ms = unix_timestamp_ms()?;
@@ -1492,7 +1531,15 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     ];
     let s01_event = smoke_event(s01_books.clone(), quantity, evaluated_at_ms);
     let s01_opp = s01_event.report.directions[0].clone();
-    let s01 = run_simulation_run(database_url, &s01_event, &s01_opp, &s01_config, 0).await?;
+    let s01 = run_simulation_run(
+        database_url,
+        &s01_event,
+        &s01_opp,
+        &s01_config,
+        0,
+        SimulationRunSource::Smoke,
+    )
+    .await?;
     let s01_full_fill_at_worst = s01.scenario == SimulationScenario::Normal
         && s01.buy.filled == dec(quantity)
         && s01.sell.filled == dec(quantity)
@@ -1529,7 +1576,15 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     ];
     let s02_event = smoke_event(s02_books.clone(), quantity, evaluated_at_ms);
     let s02_opp = s02_event.report.directions[0].clone();
-    let s02 = run_simulation_run(database_url, &s02_event, &s02_opp, &s02_config, 0).await?;
+    let s02 = run_simulation_run(
+        database_url,
+        &s02_event,
+        &s02_opp,
+        &s02_config,
+        0,
+        SimulationRunSource::Smoke,
+    )
+    .await?;
     let s02_partial_fill_depth_shortfall = s02.scenario == SimulationScenario::DepthShortfall
         && s02.buy.depth_shortfall
         && s02.buy.filled == dec("0.0005")
@@ -1560,7 +1615,15 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     ];
     let s03_event = smoke_event(s03_books.clone(), quantity, evaluated_at_ms);
     let s03_opp = s03_event.report.directions[0].clone();
-    let s03 = run_simulation_run(database_url, &s03_event, &s03_opp, &s03_config, 0).await?;
+    let s03 = run_simulation_run(
+        database_url,
+        &s03_event,
+        &s03_opp,
+        &s03_config,
+        0,
+        SimulationRunSource::Smoke,
+    )
+    .await?;
     let s03_competed_away = s03.scenario == SimulationScenario::CompetedAway
         && s03.buy.filled == Decimal::ZERO
         && s03.sell.filled == Decimal::ZERO
@@ -1589,7 +1652,15 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     ];
     let s04_event = smoke_event(s04_books.clone(), quantity, evaluated_at_ms);
     let s04_opp = s04_event.report.directions[0].clone();
-    let s04 = run_simulation_run(database_url, &s04_event, &s04_opp, &s04_config, 0).await?;
+    let s04 = run_simulation_run(
+        database_url,
+        &s04_event,
+        &s04_opp,
+        &s04_config,
+        0,
+        SimulationRunSource::Smoke,
+    )
+    .await?;
     let s04_worse_than_scan_price = s04.scenario == SimulationScenario::Normal
         && s04.buy.avg_price > s04_opp.buy_worst_price
         && s04.sell.avg_price < s04_opp.sell_worst_price;
@@ -1602,7 +1673,15 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     };
     let s05_event = smoke_event(s01_books.clone(), quantity, evaluated_at_ms);
     let s05_opp = s05_event.report.directions[0].clone();
-    let s05 = run_simulation_run(database_url, &s05_event, &s05_opp, &s05_config, 0).await?;
+    let s05 = run_simulation_run(
+        database_url,
+        &s05_event,
+        &s05_opp,
+        &s05_config,
+        0,
+        SimulationRunSource::Smoke,
+    )
+    .await?;
     let plan_count =
         business_count(database_url, "execution_plans", "plan_id", &s05.plan_id).await?;
     // 投影行必须成功落库且占位枚举合法（0005 CHECK 不再被空串触发）。
@@ -1641,7 +1720,15 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     };
     let s06_event = smoke_event(s01_books.clone(), quantity, evaluated_at_ms);
     let s06_opp = s06_event.report.directions[0].clone();
-    let s06_run = run_simulation_run(database_url, &s06_event, &s06_opp, &s06_config, 0).await?;
+    let s06_run = run_simulation_run(
+        database_url,
+        &s06_event,
+        &s06_opp,
+        &s06_config,
+        0,
+        SimulationRunSource::Smoke,
+    )
+    .await?;
     if s06_run.scenario != SimulationScenario::Normal {
         bail!("S06 run was not Normal: {:?}", s06_run.scenario);
     }
@@ -1695,7 +1782,15 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     ];
     let s07_event = smoke_event(s07_books.clone(), quantity, evaluated_at_ms);
     let s07_opp = s07_event.report.directions[0].clone();
-    let s07 = run_simulation_run(database_url, &s07_event, &s07_opp, &s07_config, 0).await?;
+    let s07 = run_simulation_run(
+        database_url,
+        &s07_event,
+        &s07_opp,
+        &s07_config,
+        0,
+        SimulationRunSource::Smoke,
+    )
+    .await?;
     let s07_compensation_over_budget_manual = s07.sell.depth_shortfall
         && s07.sell.filled == dec("0.0003")
         && s07.buy.filled == dec(quantity)
@@ -1972,6 +2067,7 @@ mod tests {
         // 报告 DTO 序列化契约：场景/执行状态为 SCREAMING_SNAKE_CASE，Decimal 为字符串。
         let report = SimulationRunReport {
             schema_version: 4,
+            source: SimulationRunSource::Smoke,
             seed: 0,
             run_id: "f02-1-1".into(),
             symbol: "BTCUSDT".into(),
@@ -2037,6 +2133,7 @@ mod tests {
     fn g01_report(buy_cost: Decimal, sell_filled: Decimal) -> SimulationRunReport {
         SimulationRunReport {
             schema_version: schema_version(),
+            source: SimulationRunSource::Smoke,
             seed: 0,
             run_id: "f02-1-1".into(),
             symbol: "BTCUSDT".into(),

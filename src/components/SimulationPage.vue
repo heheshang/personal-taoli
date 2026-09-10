@@ -99,15 +99,16 @@ onUnmounted(stopPolling)
     <section class="sim-toolbar panel sim-span-12">
       <div class="sim-title">
         <h2><em class="green-dot" /> 模拟套利引擎</h2>
-        <span class="muted">F-02 合成簿仿真 · 只读仪表盘 · 无真实/测试网订单路径</span>
+        <span class="muted">只读仪表盘 · 无真实/测试网订单路径</span>
       </div>
       <div class="sim-actions">
         <span v-if="simConfig" class="cfg-summary">
           注入 {{ trimDecimal(simConfig.initial_quote_balance) }}+{{ trimDecimal(simConfig.initial_base_balance) }} · 决策→提交 {{ simConfig.decision_to_submit_ms_min }}–{{ simConfig.decision_to_submit_ms_max }}ms · 补偿预算 {{ trimDecimal(simConfig.compensation_budget) }}
         </span>
         <ElButton size="small" :disabled="smokeRunning" @click="runOneSmoke">
-          {{ smokeRunning ? '烟测运行中…' : '运行一次烟测' }}
+          {{ smokeRunning ? '烟测运行中…' : '运行合成簿烟测' }}
         </ElButton>
+        <span class="probe-note">烟测用合成簿（venues s01–s09，symbol 为夹具常量），不是市场数据</span>
         <ElTag v-if="smoke" :type="smoke.external_order_calls === 0 ? 'success' : 'danger'">
           外部订单调用 {{ smoke.external_order_calls }}
         </ElTag>
@@ -186,6 +187,12 @@ onUnmounted(stopPolling)
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+.probe-note {
+  color: var(--text-3);
+  font-size: var(--fs-10);
+  max-width: 260px;
+  line-height: 1.4;
 }
 .cfg-summary {
   color: var(--text-3);

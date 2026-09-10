@@ -33,6 +33,10 @@ pub struct SimulationOverview {
     pub scanned_net_profit: Decimal,
     /// 净盈亏 > 0 的成功 run 数。
     pub profit_runs: u64,
+    /// 合成簿探针 run 数（`run_simulation_smoke`）。
+    pub smoke_runs: u64,
+    /// 实时观察 run 数（连续观察循环的已准入机会）。
+    pub live_runs: u64,
     /// 场景分布（全部 run）。
     pub by_scenario: Vec<ScenarioCount>,
     /// 最近 20 个 run（列表板块）。
@@ -112,6 +116,8 @@ pub struct SimulationRunRow {
     pub execution_state: String,
     pub idempotent_replay: bool,
     pub external_order_calls: u64,
+    /// `SMOKE`（合成簿探针）或 `LIVE`（实时观察）。
+    pub source: String,
 }
 
 /// 分页列表（`get_simulation_runs` 返回）。
@@ -299,7 +305,9 @@ pub async fn get_simulation_overview(database_url: &str) -> Result<SimulationOve
                  COUNT(*) FILTER (WHERE scenario <> 'REJECTED')::BIGINT,
                  COALESCE(SUM(simulated_net_profit) FILTER (WHERE scenario <> 'REJECTED'), 0),
                  COALESCE(SUM(scanned_net_profit) FILTER (WHERE scenario <> 'REJECTED'), 0),
-                 COUNT(*) FILTER (WHERE simulated_net_profit > 0)::BIGINT
+                 COUNT(*) FILTER (WHERE simulated_net_profit > 0)::BIGINT,
+                 COUNT(*) FILTER (WHERE source = 'SMOKE')::BIGINT,
+                 COUNT(*) FILTER (WHERE source = 'LIVE')::BIGINT
              FROM simulation_runs",
     )
     .fetch_one(&mut *txn)
@@ -310,6 +318,8 @@ pub async fn get_simulation_overview(database_url: &str) -> Result<SimulationOve
     let total_net_profit = agg.try_get::<Decimal, _>(2)?;
     let scanned_net_profit = agg.try_get::<Decimal, _>(3)?;
     let profit_runs = to_u64(agg.try_get::<i64, _>(4)?)?;
+    let smoke_runs = to_u64(agg.try_get::<i64, _>(5)?)?;
+    let live_runs = to_u64(agg.try_get::<i64, _>(6)?)?;
 
     let scenario_rows =
         sqlx::query("SELECT scenario, COUNT(*)::BIGINT FROM simulation_runs GROUP BY scenario")
@@ -443,6 +453,8 @@ pub async fn get_simulation_overview(database_url: &str) -> Result<SimulationOve
         total_net_profit,
         scanned_net_profit,
         profit_runs,
+        smoke_runs,
+        live_runs,
         by_scenario,
         recent_runs: runs,
         cumulative_points,
@@ -517,11 +529,11 @@ pub async fn get_simulation_run_detail(
         bail!("simulation run not found: {run_id}");
     };
     let run_row = run_row_at(&row, 0)?;
-    let report: JsonValue = row.try_get(22)?;
-    let plan_id: String = row.try_get(23)?;
-    let buy_intent_id: String = row.try_get(24)?;
-    let sell_intent_id: String = row.try_get(25)?;
-    let account_id: String = row.try_get(26)?;
+    let report: JsonValue = row.try_get(23)?;
+    let plan_id: String = row.try_get(24)?;
+    let buy_intent_id: String = row.try_get(25)?;
+    let sell_intent_id: String = row.try_get(26)?;
+    let account_id: String = row.try_get(27)?;
 
     let intents = read_intent_rows(&mut txn, &plan_id).await?;
 
@@ -673,7 +685,7 @@ const RUN_PROJECTION: &str =
                 bought_quantity, sold_quantity, buy_avg_price, sell_avg_price,
                 buy_fee, sell_fee, scanned_net_profit, simulated_net_profit,
                 compensation_decision, execution_state, idempotent_replay,
-                external_order_calls";
+                external_order_calls, source";
 
 /// 从 `base` 起读取 `RUN_PROJECTION` 的 22 列；详情查询在其后追加额外列，故带偏移。
 fn run_row_at(row: &PgRow, base: usize) -> Result<SimulationRunRow> {
@@ -700,6 +712,7 @@ fn run_row_at(row: &PgRow, base: usize) -> Result<SimulationRunRow> {
         execution_state: row.try_get(base + 19)?,
         idempotent_replay: row.try_get(base + 20)?,
         external_order_calls: to_u64(row.try_get::<i64, _>(base + 21)?).unwrap_or(0),
+        source: row.try_get(base + 22)?,
     })
 }
 
@@ -990,6 +1003,8 @@ mod tests {
             total_net_profit: dec("12.500"),
             scanned_net_profit: dec("13.000"),
             profit_runs: 2,
+            smoke_runs: 3,
+            live_runs: 0,
             by_scenario: vec![ScenarioCount {
                 scenario: "NORMAL".into(),
                 count: 2,

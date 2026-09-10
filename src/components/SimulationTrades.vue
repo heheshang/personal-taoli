@@ -45,6 +45,13 @@ const STATE_LABELS: Record<string, string> = {
   MANUAL_REQUIRED: '需人工',
 }
 
+/** 来源徽章：合成簿探针与实时 run 必须在列表里可区分。 */
+function sourceTag(src: string): { type: 'success' | 'info'; text: string } {
+  return src === 'SMOKE'
+    ? { type: 'info', text: '合成簿' }
+    : { type: 'success', text: '实时' }
+}
+
 function scenarioTag(s: string): 'success' | 'warning' | 'danger' | 'info' {
   if (s === 'NORMAL') return 'success'
   if (s === 'REJECTED') return 'danger'
@@ -208,6 +215,9 @@ onMounted(() => {
         <ElTableColumn label="RUN / 时间" width="168">
           <template #default="{ row }">
             <div class="cell-run">{{ row.run_id }}</div>
+            <div class="cell-sub">
+              <ElTag size="small" effect="plain" :type="sourceTag(row.source).type">{{ sourceTag(row.source).text }}</ElTag>
+            </div>
             <div class="cell-sub">{{ fmtTime(row.executed_at_ms) }}</div>
           </template>
         </ElTableColumn>
@@ -275,7 +285,10 @@ onMounted(() => {
           <div class="drawer-head">
             <div>
               <h3 class="mono">{{ detail.run.run_id }}</h3>
-              <div class="cell-sub">{{ fmtTime(detail.run.executed_at_ms) }} · {{ detail.run.symbol }} · {{ SCENARIO_LABELS[detail.run.scenario] ?? detail.run.scenario }} · {{ dirLabel(detail.run.direction) }}</div>
+              <div class="cell-sub">
+                <ElTag size="small" effect="plain" :type="sourceTag(detail.run.source).type">{{ sourceTag(detail.run.source).text }}</ElTag>
+                {{ fmtTime(detail.run.executed_at_ms) }} · {{ detail.run.symbol }} · {{ SCENARIO_LABELS[detail.run.scenario] ?? detail.run.scenario }} · {{ dirLabel(detail.run.direction) }}
+              </div>
             </div>
             <div class="drawer-net">
               <span class="cell-sub">扫描净盈亏</span>
