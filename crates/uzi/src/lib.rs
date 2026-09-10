@@ -13,6 +13,7 @@ pub mod evaluator;
 pub mod features;
 pub mod panel;
 pub mod panel_data;
+pub mod pipeline;
 pub mod py;
 pub mod rules;
 pub mod score;
