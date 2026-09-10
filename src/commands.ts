@@ -31,6 +31,11 @@ export const COMMANDS = {
   saveAppConfig: 'save_app_config',
   getObserverConfig: 'get_observer_config',
   saveObserverConfig: 'save_observer_config',
+  uziReady: 'uzi_ready',
+  uziStart: 'uzi_start',
+  uziStatus: 'uzi_status',
+  uziCancel: 'uzi_cancel',
+  uziReportUrl: 'uzi_report_url',
 } as const
 
 export const PAPER_KINDS = ['B01', 'B02', 'B03'] as const
@@ -232,6 +237,61 @@ export async function invokeCommand<T>(
     ElMessage.error(`IPC_ERROR: ${String(error)}`)
     return undefined
   }
+}
+
+// ── UZI-Skill 分析（Rust 分析核 + Python 取数/渲染）──────────────────────
+
+export type UziStage =
+  | 'FETCHING'
+  | 'ANALYZING'
+  | 'RENDERING'
+  | 'DONE'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export interface UziStatus {
+  running: boolean
+  ticker: string | null
+  stage: UziStage | null
+  started_at_ms: number | null
+  elapsed_ms: number | null
+  report_path: string | null
+  overall_score: number | null
+  verdict_label: string | null
+  detected_style: string | null
+  investor_count: number | null
+  error: string | null
+}
+
+export interface UziReady {
+  ready: boolean
+  skill_dir: string | null
+  python: string
+  bridge: string | null
+  reason: string | null
+}
+
+/** 是否已配置 UZI-Skill（未配置时界面给出说明，而非点击后失败）。 */
+export async function uziReady(): Promise<UziReady | undefined> {
+  return invokeCommand<UziReady>(COMMANDS.uziReady)
+}
+
+/** 启动一次分析（取数可能耗时数分钟，用 uziStatus 轮询进度）。 */
+export async function uziStart(ticker: string): Promise<UziStatus | undefined> {
+  return invokeCommand<UziStatus>(COMMANDS.uziStart, { ticker })
+}
+
+export async function uziStatus(): Promise<UziStatus | undefined> {
+  return invokeCommand<UziStatus>(COMMANDS.uziStatus)
+}
+
+export async function uziCancel(): Promise<UziStatus | undefined> {
+  return invokeCommand<UziStatus>(COMMANDS.uziCancel)
+}
+
+/** 报告的 taoli-uzi:// URL（后端按需消毒后经自定义协议提供）。 */
+export async function uziReportUrl(): Promise<string | undefined> {
+  return invokeCommand<string>(COMMANDS.uziReportUrl)
 }
 
 /** 获取当前生效的完整观察配置（json 优先，toml 兜底，内置默认兜底）。 */

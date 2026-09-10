@@ -12,6 +12,7 @@ pub enum ErrorCode {
     PaperError,
     AccountingControlError,
     SimulationError,
+    UziError,
 }
 
 #[derive(Debug, Clone, Serialize)]

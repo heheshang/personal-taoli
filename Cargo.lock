@@ -2594,6 +2594,7 @@ dependencies = [
  "anyhow",
  "dotenvy",
  "personal-taoli-core",
+ "personal-taoli-uzi",
  "reqwest 0.12.28",
  "rust_decimal",
  "serde",

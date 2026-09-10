@@ -16,6 +16,7 @@ import RelationshipGraph from './components/RelationshipGraph.vue'
 import DetailPanel from './components/DetailPanel.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import SimulationPage from './components/SimulationPage.vue'
+import UziAnalysisPage from './components/UziAnalysisPage.vue'
 import AppFooter from './components/AppFooter.vue'
 
 const status = ref<Status | null>(null)
@@ -253,6 +254,11 @@ onUnmounted(stopPolling)
           :active="activePage === 'simulation'"
           :database-url="databaseUrl"
         />
+      </div>
+
+      <!-- 个股分析页（UZI-Skill：Rust 分析核 + Python 取数/渲染） -->
+      <div v-show="activePage === 'uzi'" class="page-content">
+        <UziAnalysisPage :active="activePage === 'uzi'" />
       </div>
 
       <!-- 设置页 -->

@@ -15,6 +15,7 @@ pub mod panel;
 pub mod panel_data;
 pub mod pipeline;
 pub mod py;
+pub mod report;
 pub mod rules;
 pub mod score;
 pub mod style;

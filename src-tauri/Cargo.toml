@@ -25,7 +25,8 @@ rust_decimal = { version = "1.39", features = ["serde-str"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = { version = "2", features = [] }
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.47", features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 personal-taoli-core = { path = "../crates/core" }
+personal-taoli-uzi = { path = "../crates/uzi" }
