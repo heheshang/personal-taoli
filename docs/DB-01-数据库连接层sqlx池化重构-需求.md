@@ -22,7 +22,7 @@
 | DB01-R02 | 入口签名不变：`migrate(&str)`、`DomainConnection::acquire(&str, …)`、`run_*_smoke(&str)`、`get_simulation_*(&str, …)` 全部保持 `database_url: &str`；`src-tauri` 不出现 `sqlx` / `tokio_postgres` 任何直接依赖 | `grep -rn "sqlx\|tokio_postgres" src-tauri/src` 为空；`cargo build --workspace --release` 通过；四个查询/烟测命令行为与重构前一致 |
 | DB01-R03 | 会话锁不泄漏：单写者域 `disconnect()` 必须显式 `pg_advisory_unlock_all()`；池 `after_release` 钩子再兜底一次，覆盖 panic / `?` 提前返回路径 | 域 A `acquire` → `disconnect` 后，另一会话 `pg_try_advisory_lock(同 key)` 返回 `true`；构造「持锁后提前 `?` 返回」路径，锁同样被释放（探针 T3b/T4b 已证明两种机制均有效） |
 | DB01-R04 | 事务状态不泄漏：G-01 只读路径改用 sqlx `Transaction` + `SET TRANSACTION READ ONLY`，**不得**使用裸 `BEGIN READ ONLY`（裸事务被释放后仍挂在后端上，会污染下一个借用者） | 只读事务内 `INSERT` 被 PostgreSQL 拒绝；事务 drop（不 commit）后，同一池的下一次 `INSERT` 成功；探针 T1b 记录裸 `BEGIN` 的污染现象作为反例证据 |
-| DB01-R05 | 迁移行为等价：五个迁移文件（0001–0005）仍按 B-01/B-02/B-03/B-04/G-01 顺序、在同一会话、同一 `pg_advisory_lock(schema-migration)` 下执行；`raw_sql` 单次执行整个文件（含 `$$` plpgsql 与 `CREATE TRIGGER`）；`verify_schema` 仍要求 `MAX(version) == 5`；迁移锁执行完显式释放 | 空库一次 `migrate` 后 `schema_migrations` 含 1..5、全部表与不可变触发器存在；重复 `migrate` 幂等；version ≠ 5 时 `bail!` 文案与重构前一致 |
+| DB01-R05 | 迁移行为等价：五个迁移文件（0001–0005）仍按 B-01/B-02/B-03/B-04/G-01 顺序、在同一会话、同一 `pg_advisory_lock(schema-migration)` 下执行；`raw_sql` 单次执行整个文件（含 `$$` plpgsql 与 `CREATE TRIGGER`）；`verify_schema` 仍要求 `MAX(version) == 5`；迁移锁执行完显式释放（**MIG-01 后本机手写迁移器已由 sqlx `Migrator` 取代**，见该迭代文档） | 空库一次 `migrate` 后 `schema_migrations` 含 1..5、全部表与不可变触发器存在；重复 `migrate` 幂等；version ≠ 5 时 `bail!` 文案与重构前一致 |
 | DB01-R06 | 单写者语义保持：同一 `account_id\0instrument_id` 的第二个域 `acquire` 必须失败，文案保持「`{domain} execution domain already has a writer: account=… instrument=…`」 | F-02 烟测的 S06/S08 等重复获取断言仍为真；手动并发两次 `acquire` 第二次返回该错误 |
 | DB01-R07 | `Decimal` / `JSONB` 保真：金额字段经 sqlx 往返不损失精度（`NUMERIC` ↔ `Decimal`），`JSONB` ↔ `serde_json::Value` 往返保真 | 探针 D1（`12.34560000` 原样往返）/ D2（JSONB 保真）为证据；烟测报告中全部 `Decimal` 字段与重构前一致 |
 | DB01-R08 | 动态参数改写：`simulation_query.rs` 三处 `&[&(dyn tokio_postgres::types::ToSql + Sync)]` 改为 `sqlx::QueryBuilder::<Postgres>`，生成的 SQL 与绑定顺序与重构前一致 | 探针 E1（混合类型 `push`/`push_bind`）为证据；G-01 三个查询命令返回与重构前相同的板块数据；过滤条件（symbol/scenario/limit/offset）仍生效 |
@@ -32,7 +32,7 @@
 
 ## 3. 明确不做
 
-- **不新增任何业务能力**：不加新表、不加新字段、不改 `SCHEMA_VERSION`（仍为 5）、不改任何迁移 SQL 内容。
+- **不新增任何业务能力**：不加新表、不加新字段、不改 `SCHEMA_VERSION`（仍为 5）、不改任何迁移 SQL 内容。（后续 MIG-01 已把这些约束整体替换，本行保留为当时范围的记录。）
 - **不做重试 / 熔断 / 指数退避**：连接失败仍是一次性失败并返回原错误；池化不等于自动重试。
 - **不加遥测 / 指标 / 连接池监控面板**：不引入 `pool.size()` 上报、不加 tracing span、不加健康检查端点。
 - **不做通用数据库抽象层**：不引入 `trait Database`、不引入仓储模式、不做多后端（SQLite/MySQL）支持；`PgPool` 就是具体类型。
@@ -74,7 +74,7 @@
 | U05 锁不泄漏 | 域 `acquire` → `disconnect` → 另一会话 `pg_try_advisory_lock(同 key)` | 返回 `true`（锁已释放） |
 | U06 单写者互斥 | 同 `account_id\0instrument_id` 并发两次 `acquire` | 第二次 `bail!`，文案含 `already has a writer` |
 | U07 失败关闭 | 空白 URL；PostgreSQL 停机 | 空白 URL 立即报错；停机时错误文案为 `failed to connect to the B-01 PostgreSQL database` |
-| U08 幂等迁移 | 空库 `migrate` 两次 | 第二次不报错；`schema_migrations` 仍为 1..5；`verify_schema` 通过 |
+| U08 幂等迁移 | 空库 `migrate` 两次 | 第二次不报错；版本账本仍为 1..5；`verify_schema` 通过。（MIG-01 复验同一性质，改用 `_sqlx_migrations` 断言） |
 | U09 旧路径清零 | `grep -rn "tokio_postgres\|tokio-postgres" crates/core src-tauri` | 源码与两个 `Cargo.toml` 均无命中 |
 | U10 池复用 | 一次完整 F-02 烟测后读 `pool.size()` / `num_idle()` | `size <= 16` 且烟测期间未出现「每操作新建连接」的连接数暴涨（PostgreSQL `pg_stat_activity` 计数稳定） |
 

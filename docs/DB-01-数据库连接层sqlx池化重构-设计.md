@@ -230,6 +230,7 @@ probe2 / probe（早期）：`A1 acquired=true`、`C1 writer_conn_holds_lock=tru
   （已在 `taoli-postgres` 实库验证：版本 6 落库、二次迁移幂等）。
 - **迁移按进程记忆**：`db::ready_pool(url)` 首次调用执行迁移并校验版本，之后按 URL 命中缓存；
   三个只读入口不再逐次迁移（原实现使 10s 轮询每次都重跑全部 DDL）。
+- **迁移器（后续 MIG-01 更新）**：本节描述的迁移器为**当时实现**——自建 advisory 锁、`include_str!` 文件清单、`schema_migrations` 表、`SCHEMA_VERSION` 常量与 `verify_schema` 均已在 `MIG-01` 中移除，改由 sqlx `Migrator` 与 `_sqlx_migrations` 承担；`ready_pool` 的「按 URL 每进程一次」语义不变。
 - **依赖兼容**：`rust_decimal` 无 `sqlx` feature（已核对 1.42.1/1.43.0 的 `[features]`：
   仅 `db-postgres`、`db-tokio-postgres`、`db-diesel*`、`tokio-pg`）。sqlx 自身的
   `rust_decimal` feature 提供 Type/Encode/Decode，D1/L3 证明往返精确。

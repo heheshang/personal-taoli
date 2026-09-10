@@ -19,8 +19,8 @@ DB-01 把连接层换成 sqlx 池之后，实库（`taoli-postgres`，55432）�
 
 | 编号 | 要求 | 验收结果 |
 |---|---|---|
-| PERF01-R01 | 就绪库单点：迁移与 schema 校验每个 `database_url` 在**进程内只执行一次**，之后所有调用命中缓存；迁移语义（单会话 advisory 锁、`raw_sql` 整份执行、幂等）逐字不变 | 同进程内两次 `get_simulation_overview` 的耗时差异可测（就近冷启动 vs 稳态）；`schema_migrations` 行数不因重复调用增长；跨进程重跑仍幂等 |
-| PERF01-R02 | 读路径索引：为 G-01 只读层实际发出的五类查询补索引（`audit_events` 的 `aggregate_id` / `correlation_id` 前缀与 `occurred_at_ms`、`trade_facts(intent_id, occurred_at_ms)`、`balance_snapshots(source, observed_at_ms)`），纯增量、无表结构变更 | `SET enable_seqscan=off` 下对应的 `EXPLAIN` 由 Seq Scan 变为 Index Scan；`SCHEMA_VERSION` 5→6 且旧库自动升级；0001–0005 逐字不动 |
+| PERF01-R01 | 就绪库单点：迁移与 schema 校验每个 `database_url` 在**进程内只执行一次**，之后所有调用命中缓存；迁移语义（单会话 advisory 锁、整份文件执行、幂等）逐字不变（**MIG-01 后改由 sqlx `Migrator` 提供该语义**，见该迭代文档） | 同进程内两次 `get_simulation_overview` 的耗时差异可测（就近冷启动 vs 稳态）；版本账本行数不因重复调用增长；跨进程重跑仍幂等 |
+| PERF01-R02 | 读路径索引：为 G-01 只读层实际发出的五类查询补索引（`audit_events` 的 `aggregate_id` / `correlation_id` 前缀与 `occurred_at_ms`、`trade_facts(intent_id, occurred_at_ms)`、`balance_snapshots(source, observed_at_ms)`），纯增量、无表结构变更 | `SET enable_seqscan=off` 下对应的 `EXPLAIN` 由 Seq Scan 变为 Index Scan；版本账本推进到 6 且旧库自动升级；0001–0005 逐字不动（MIG-01 后仅剥离各文件尾部记账语句） |
 | PERF01-R03 | 累计曲线有界 + 服务端前缀和：曲线数据由服务端用窗口函数一次算出，并限定最近 N 个 run；前端不再做累计加法 | 返回点数 ≤ 上限；`executed_at_ms` 升序且前缀和单调；前端无 `parseFloat` 累加 |
 | PERF01-R04 | 山脊有界：山脊取数限定最近 N 个 run | 返回样本点数 ≤ 上限；桶数与稀疏合并语义不变 |
 | PERF01-R05 | 流转聚合：六个计数由 2 条查询产出（原为 6 条），且 `filled_runs` 必须反映**真实双腿成交**而非 `COMPLETED` 事件数 | `filled_runs` 与 `simulation_runs` 中 `bought_quantity>0 AND sold_quantity>0` 的行数一致；与 `completed_runs` 相互独立（实库上两者不相等） |
@@ -36,7 +36,7 @@ DB-01 把连接层换成 sqlx 池之后，实库（`taoli-postgres`，55432）�
 
 | 场景 | 输入 | 必须观察到 |
 |---|---|---|
-| 正常 | 空库首次启动 | 迁移执行一次、`schema_migrations` 含 1–6、`verify_schema` 通过；随后每 10s 轮询不再触发迁移 |
+| 正常 | 空库首次启动 | 迁移执行一次、版本账本含全部版本且全部 `success`；随后每 10s 轮询不再触发迁移 |
 | 正常 | 已有库（version 5）升级 | 任一读入口触发 0006；版本升至 6；0001–0005 不重复施加 DDL 效果之外的语义 |
 | 边界 | run 数远超曲线/山脊上限 | 返回点数被截断到上限；曲线仍按时间升序、前缀和单调；山脊桶内 `n` 与实际取回样本一致 |
 | 边界 | 桶内样本极多 | 山脊重算不随样本数线性放大；不抛 `RangeError` |
@@ -44,7 +44,7 @@ DB-01 把连接层换成 sqlx 池之后，实库（`taoli-postgres`，55432）�
 | 失败 | 只读查询内试图写 | PostgreSQL 拒绝；事务进入 aborted 态并整体上抛（DB-01 既有语义不变） |
 | 失败 | 详情查询 `run_id` 不存在 | 返回 Err（失败关闭），不返回空结构 |
 | 失败 | 库不可达 / URL 为空 | 失败关闭，不静默降级 |
-| 恢复 | 跨进程重启 | 重新执行一次迁移并命中幂等；`schema_migrations` 行数不变 |
+| 恢复 | 跨进程重启 | 重新执行一次迁移并命中幂等；版本账本行数不变 |
 | 恢复 | 观察循环异常早退 | 模拟引擎 worker 不残留 |
 
 ## 4. 明确不做
@@ -56,6 +56,17 @@ DB-01 把连接层换成 sqlx 池之后，实库（`taoli-postgres`，55432）�
 - 不改动 0001–0005 迁移文件、不改不可变触发器、不改领域单写者锁语义。
 - 不做 A-05 14 天影子窗口相关任何变更。
 - 不引入第三方图表库或性能分析依赖。
+
+## 4bis. 后续迭代 MIG-01 对本轮需求的影响（2026-09-10 追加）
+
+`MIG-01 迁移机制交由 sqlx 接管` 在本迭代之后落地，替换了本轮引入的部分机制。以下两条需求**的实现方式**已被替换，但**可观察结论仍然成立**，故不标为失效：
+
+| 需求 | 本轮实现 | MIG-01 后 | 结论 |
+|---|---|---|---|
+| R01 就绪库单点 | `READY` 守卫 + 手写 `migrate_pool`（自建 advisory key + `raw_sql` 逐文件） | `READY` 守卫保留；`migrate_pool` 改为调用 sqlx `MIGRATOR.run(pool)` | 冷热差仍可测（实测 191ms → 42ms 的量级在 MIG-01 后复验为 194ms → 14ms） |
+| R02 读路径索引 | `0006` 文件末尾自行 `INSERT INTO schema_migrations` | `0006` 尾部记账语句已删除，改由 sqlx 记账 | 索引本身与 `EXPLAIN` 结论不变 |
+
+**同时被替换的**：本轮仍在使用的手写迁移器（`advisory_key("schema-migration", …)` 锁、`include_str!` 文件清单、`schema_migrations` 表、`SCHEMA_VERSION` 常量、`verify_schema` 函数）已在 MIG-01 中整体移除。本文件其余内容按当时实现保留，作为该轮的事实记录。
 
 ## 5. 执行范围确认（会话内）
 
@@ -99,9 +110,9 @@ npm run build
 
 | 编号 | 场景 | 必须观察到 | 对应 |
 |---|---|---|---|
-| S-PERF-1 | 冷热对比 | 同进程内首次与第二次 `get_simulation_overview` 耗时差异可测；`schema_migrations` 恒 6 行 | R01 |
+| S-PERF-1 | 冷热对比 | 同进程内首次与第二次 `get_simulation_overview` 耗时差异可测；版本账本行数恒定 | R01 |
 | S-PERF-2 | 索引可用性 | `SET enable_seqscan=off` 下 `audit_events` 前缀查询与 `trade_facts.intent_id` 查询均走 Index Scan | R02 |
-| S-PERF-3 | 旧库升级 | 任一入口后 `schema_migrations` 至 6；跨进程重跑幂等 | R01/R02 |
+| S-PERF-3 | 旧库升级 | 任一入口后版本账本覆盖全部迁移文件；跨进程重跑幂等 | R01/R02 |
 | S-PERF-4 | 曲线有界且单调 | 点数 ≤ 上限；`executed_at_ms` 升序；末点等于 DB 直查的累计和 | R03 |
 | S-PERF-5 | 山脊有界 | 样本点合计 ≤ 上限 | R04 |
 | S-PERF-6 | 流转语义 | `filled_runs` 等于 `simulation_runs` 双腿有量行数；与 `completed_runs` 不等 | R05 |
