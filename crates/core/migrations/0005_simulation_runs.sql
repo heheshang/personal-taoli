@@ -60,7 +60,3 @@ DROP TRIGGER IF EXISTS simulation_runs_immutable ON simulation_runs;
 CREATE TRIGGER simulation_runs_immutable
 BEFORE UPDATE OR DELETE ON simulation_runs
 FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation();
-
-INSERT INTO schema_migrations(version, applied_at_ms)
-VALUES (5, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
-ON CONFLICT (version) DO NOTHING;

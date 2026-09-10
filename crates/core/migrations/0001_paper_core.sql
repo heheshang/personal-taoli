@@ -1,9 +1,3 @@
-
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version BIGINT PRIMARY KEY,
-    applied_at_ms BIGINT NOT NULL CHECK (applied_at_ms >= 0)
-);
-
 CREATE TABLE IF NOT EXISTS paper_balances (
     account_id TEXT NOT NULL CHECK (account_id <> ''),
     venue TEXT NOT NULL CHECK (venue <> ''),
@@ -94,7 +88,3 @@ DROP TRIGGER IF EXISTS audit_events_immutable ON audit_events;
 CREATE TRIGGER audit_events_immutable
 BEFORE UPDATE OR DELETE ON audit_events
 FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation();
-
-INSERT INTO schema_migrations(version, applied_at_ms)
-VALUES (1, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
-ON CONFLICT (version) DO NOTHING;

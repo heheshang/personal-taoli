@@ -18,22 +18,29 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use sqlx::migrate::Migrator;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgPoolOptions, Postgres};
-use sqlx::{Executor, PgExecutor, PgPool, Row};
+use sqlx::{Executor, PgPool};
 use tokio::sync::Mutex;
 
 use crate::market::unix_timestamp_ms;
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
-const INITIAL_PAPER_MIGRATION: &str = include_str!("../migrations/0001_paper_core.sql");
-const ORDER_FACTS_MIGRATION: &str = include_str!("../migrations/0002_order_facts.sql");
-const DOUBLE_LEG_EXECUTION_MIGRATION: &str =
-    include_str!("../migrations/0003_double_leg_execution.sql");
-const ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION: &str =
-    include_str!("../migrations/0004_accounting_reconciliation_control.sql");
-const SIMULATION_RUNS_MIGRATION: &str = include_str!("../migrations/0005_simulation_runs.sql");
-const READ_PATH_INDEXES_MIGRATION: &str = include_str!("../migrations/0006_read_path_indexes.sql");
+/// Every B-series migration, embedded from `migrations/` at compile time.
+///
+/// sqlx parses `<VERSION>_<DESCRIPTION>.sql`, orders by version, and records a
+/// SHA-384 of each file in `_sqlx_migrations`; editing an already-applied file
+/// is therefore a hard error instead of a silent no-op.  Adding a migration is
+/// one new file — there is no list to keep in sync.
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// Highest embedded migration version.
+///
+/// Derived from the file set rather than hand-maintained, so the reported
+/// `schema_version` cannot drift from the migrations that were applied.
+pub(crate) fn schema_version() -> i64 {
+    MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0)
+}
 
 /// Pool ceiling.  A single-writer domain holds one dedicated lock connection
 /// plus the connections its transactions borrow, and the F-02 smoke holds
@@ -96,77 +103,131 @@ pub(crate) async fn migrate(database_url: &str) -> Result<()> {
     ready_pool(database_url).await.map(|_| ())
 }
 
-/// Pool whose migrations have been applied and whose schema is verified.
+/// Pool whose migrations have been applied.
 ///
-/// The single entry point for callers that need "the schema is usable"; it
-/// removes the per-call migration and `verify_schema` round trips that the
-/// read paths would otherwise pay on every request.
+/// The single entry point for callers that need "the schema is usable".  The
+/// work is memoized per process because the dashboard polls every 10 s and the
+/// migrator would otherwise re-read `_sqlx_migrations` and re-check every
+/// checksum on each poll.
 pub(crate) async fn ready_pool(database_url: &str) -> Result<PgPool> {
     let pool = pool(database_url).await?;
     if READY.lock().await.contains(database_url) {
         return Ok(pool);
     }
-    // Concurrent first callers may both run `migrate_pool`; the advisory lock
-    // inside serializes them and every migration is idempotent.
+    // Two concurrent first callers can both pass the check above.  That is
+    // safe rather than merely tolerated: seeding uses `ON CONFLICT DO NOTHING`
+    // and `MIGRATOR.run` serializes on sqlx's database-wide advisory lock, so
+    // the loser observes every version already applied and does nothing.
     migrate_pool(&pool).await?;
     READY.lock().await.insert(database_url.to_owned());
     Ok(pool)
 }
 
-/// `migrate` against an already-resolved pool.
+/// Applies pending migrations through sqlx's migrator.
+///
+/// Applied state lives in `_sqlx_migrations` (version, description,
+/// `installed_on`, `success`, SHA-384 `checksum`, `execution_time`); sqlx holds
+/// its own database-wide advisory lock, wraps each file plus its bookkeeping in
+/// one transaction, and refuses to proceed from a half-applied (`success =
+/// false`) migration.
 pub(crate) async fn migrate_pool(pool: &PgPool) -> Result<()> {
-    // The whole migration set runs on one borrowed connection so the advisory
-    // lock and every `raw_sql` batch share a single session.
-    let mut connection = pool
-        .acquire()
+    adopt_legacy_bookkeeping(pool).await?;
+    MIGRATOR
+        .run(pool)
         .await
-        .context("failed to acquire the B-01 migration connection")?;
-    let migration_lock = advisory_key("schema-migration", "b01-paper-core");
-    connection
-        .execute(sqlx::query("SELECT pg_advisory_lock($1)").bind(migration_lock))
-        .await
-        .context("failed to acquire B-01 migration lock")?;
-    for (label, migration) in [
-        ("B-01", INITIAL_PAPER_MIGRATION),
-        ("B-02", ORDER_FACTS_MIGRATION),
-        ("B-03", DOUBLE_LEG_EXECUTION_MIGRATION),
-        ("B-04", ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION),
-        ("G-01", SIMULATION_RUNS_MIGRATION),
-        ("read-path", READ_PATH_INDEXES_MIGRATION),
-    ] {
-        connection
-            .execute(sqlx::raw_sql(migration))
-            .await
-            .with_context(|| format!("failed to apply {label} database migration"))?;
-    }
-    let verified = verify_schema(&mut *connection).await;
-    connection
-        .execute(sqlx::query("SELECT pg_advisory_unlock($1)").bind(migration_lock))
-        .await
-        .context("failed to release B-01 migration lock")?;
-    verified?;
+        .context("failed to apply database migrations")?;
     Ok(())
 }
 
-/// Rejects any schema whose applied version is not exactly `SCHEMA_VERSION`.
+/// Seeds `_sqlx_migrations` from the pre-sqlx `schema_migrations` table.
 ///
-/// Generic over the executor so callers can verify through a pool, a borrowed
-/// connection, or an open transaction.
-pub(crate) async fn verify_schema<'e, E>(executor: E) -> Result<()>
-where
-    E: PgExecutor<'e>,
-{
-    let row = executor
-        .fetch_one(sqlx::query("SELECT MAX(version) FROM schema_migrations"))
+/// Databases created before sqlx owned this file set record their applied
+/// versions in `schema_migrations`, which `0007` drops.  Without this one-time
+/// adoption the migrator would see an empty `_sqlx_migrations` and re-run all
+/// files against a live database.  Runs only while `_sqlx_migrations` is empty.
+///
+/// The `CREATE TABLE` mirrors the migrator's own `ensure_migrations_table`, so
+/// the seeded rows land in exactly the table `MIGRATOR.run` reads next.  A
+/// mismatch would surface immediately as a migrator error rather than as
+/// silently re-applied migrations.
+async fn adopt_legacy_bookkeeping(pool: &PgPool) -> Result<()> {
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS _sqlx_migrations (
+             version BIGINT PRIMARY KEY,
+             description TEXT NOT NULL,
+             installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
+             success BOOLEAN NOT NULL,
+             checksum BYTEA NOT NULL,
+             execution_time BIGINT NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await
+    .context("failed to prepare the sqlx migration table")?;
+
+    let applied: i64 = sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM _sqlx_migrations")
+        .fetch_one(pool)
         .await
-        .context("B-01 schema is not initialized")?;
-    let version: Option<i64> = row.try_get(0).context("B-01 schema is not initialized")?;
-    if version != Some(SCHEMA_VERSION) {
-        bail!(
-            "unsupported B-01 schema version: expected {}, found {:?}",
-            SCHEMA_VERSION,
-            version
-        );
+        .context("failed to inspect the sqlx migration table")?;
+    if applied > 0 {
+        return Ok(());
+    }
+
+    let legacy_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.schema_migrations') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .context("failed to inspect the legacy migration table")?;
+    if !legacy_exists {
+        return Ok(());
+    }
+
+    // Refuse a database carrying a migration this binary does not know, the
+    // same protection the removed `verify_schema` gave: an older binary must
+    // not migrate a newer schema.
+    let legacy_versions: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+            .fetch_all(pool)
+            .await
+            .context("failed to read the legacy migration table")?;
+    for version in &legacy_versions {
+        if !MIGRATOR.version_exists(*version) {
+            bail!(
+                "unsupported B-01 schema version: expected at most {}, found {}",
+                schema_version(),
+                version
+            );
+        }
+    }
+
+    for migration in MIGRATOR.iter() {
+        let recorded_at_ms: Option<i64> =
+            sqlx::query_scalar("SELECT applied_at_ms FROM schema_migrations WHERE version = $1")
+                .bind(migration.version)
+                .fetch_optional(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to read legacy migration {}", migration.version)
+                })?;
+        let Some(applied_at_ms) = recorded_at_ms else {
+            continue;
+        };
+        // `installed_on` keeps the original application time so dropping the
+        // legacy table loses no history; `execution_time` is unknown for an
+        // adopted row, which is the value sqlx itself uses before measuring.
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations
+                 (version, description, installed_on, success, checksum, execution_time)
+             VALUES ($1, $2, to_timestamp($3::double precision / 1000.0), TRUE, $4, -1)
+             ON CONFLICT (version) DO NOTHING",
+        )
+        .bind(migration.version)
+        .bind(&*migration.description)
+        .bind(applied_at_ms as f64)
+        .bind(&*migration.checksum)
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to adopt legacy migration {}", migration.version))?;
     }
     Ok(())
 }
@@ -246,8 +307,10 @@ impl DomainConnection {
         let instrument_id = instrument_id.into();
         validate_id("account_id", &account_id)?;
         validate_id("instrument_id", &instrument_id)?;
-        let pool = pool(database_url).await?;
-        verify_schema(&pool).await?;
+        // `ready_pool` rather than `pool`: acquiring a domain also guarantees
+        // the schema is migrated, so a writer can never start against an
+        // unmigrated database.
+        let pool = ready_pool(database_url).await?;
         let lock_key = advisory_key(
             "execution-domain",
             &format!("{account_id}\0{instrument_id}"),

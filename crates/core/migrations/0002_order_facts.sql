@@ -68,7 +68,3 @@ DROP TRIGGER IF EXISTS trade_facts_immutable ON trade_facts;
 CREATE TRIGGER trade_facts_immutable
 BEFORE UPDATE OR DELETE ON trade_facts
 FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation();
-
-INSERT INTO schema_migrations(version, applied_at_ms)
-VALUES (2, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
-ON CONFLICT (version) DO NOTHING;

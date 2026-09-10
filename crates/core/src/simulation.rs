@@ -28,8 +28,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::archive::DecisionEvent;
 use crate::config::SimulationConfig;
-use crate::db::SCHEMA_VERSION;
-use crate::db::{hex_digest, migrate, pool, ready_pool};
+use crate::db::{hex_digest, migrate, pool, ready_pool, schema_version};
 use crate::execution::{CompensationDecision, ExecutionCore, ExecutionState};
 use crate::instrument::InstrumentSpec;
 use crate::market::{BookSide, Level, OrderBookSnapshot, unix_timestamp_ms};
@@ -687,7 +686,7 @@ pub async fn run_simulation_run(
     );
 
     let mut report = SimulationRunReport {
-        schema_version: SCHEMA_VERSION,
+        schema_version: schema_version(),
         seed,
         run_id: run_id.clone(),
         symbol: symbol.clone(),
@@ -1808,7 +1807,7 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
         && snapshot.leg_b_filled == s01.sell.filled;
 
     let report = SimulationSmokeReport {
-        schema_version: SCHEMA_VERSION,
+        schema_version: schema_version(),
         s01_full_fill_at_worst,
         s02_partial_fill_depth_shortfall,
         s03_competed_away,
@@ -2037,7 +2036,7 @@ mod tests {
     /// G-01 测试用最小报告骨架（成交字段可定制）。
     fn g01_report(buy_cost: Decimal, sell_filled: Decimal) -> SimulationRunReport {
         SimulationRunReport {
-            schema_version: SCHEMA_VERSION,
+            schema_version: schema_version(),
             seed: 0,
             run_id: "f02-1-1".into(),
             symbol: "BTCUSDT".into(),

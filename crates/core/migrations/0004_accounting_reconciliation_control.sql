@@ -101,7 +101,3 @@ DROP TRIGGER IF EXISTS reconciliation_differences_immutable ON reconciliation_di
 CREATE TRIGGER reconciliation_differences_immutable
 BEFORE UPDATE OR DELETE ON reconciliation_differences
 FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation();
-
-INSERT INTO schema_migrations(version, applied_at_ms)
-VALUES (4, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
-ON CONFLICT (version) DO NOTHING;

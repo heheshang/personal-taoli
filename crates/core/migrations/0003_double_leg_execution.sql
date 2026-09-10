@@ -45,7 +45,3 @@ DROP TRIGGER IF EXISTS compensation_decisions_immutable ON compensation_decision
 CREATE TRIGGER compensation_decisions_immutable
 BEFORE UPDATE OR DELETE ON compensation_decisions
 FOR EACH ROW EXECUTE FUNCTION reject_audit_event_mutation();
-
-INSERT INTO schema_migrations(version, applied_at_ms)
-VALUES (3, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
-ON CONFLICT (version) DO NOTHING;

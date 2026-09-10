@@ -9,7 +9,7 @@ use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Row, Transaction};
 
 use crate::db::{
-    DomainConnection, SCHEMA_VERSION, advisory_key, hex_digest, migrate, pool, ready_pool, to_i64,
+    DomainConnection, advisory_key, hex_digest, migrate, pool, ready_pool, schema_version, to_i64,
     validate_id,
 };
 use crate::market::unix_timestamp_ms;
@@ -410,7 +410,7 @@ pub async fn run_paper_core_smoke(database_url: &str) -> Result<PaperCoreSmokeRe
     let recovered_intents = recovered.iter().map(|plan| plan.intents.len()).sum();
     let recovered_reservations = recovered.iter().map(|plan| plan.reservations.len()).sum();
     let report = PaperCoreSmokeReport {
-        schema_version: SCHEMA_VERSION,
+        schema_version: schema_version(),
         same_domain_lock_rejected,
         concurrent_attempts: 2,
         concurrent_successes,

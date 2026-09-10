@@ -25,7 +25,3 @@ CREATE INDEX IF NOT EXISTS trade_facts_intent_id
 -- the existing unique key leads with account_id and cannot serve it.
 CREATE INDEX IF NOT EXISTS balance_snapshots_source_observed_at
     ON balance_snapshots (source, observed_at_ms DESC);
-
-INSERT INTO schema_migrations(version, applied_at_ms)
-VALUES (6, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
-ON CONFLICT (version) DO NOTHING;
