@@ -12,10 +12,10 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::Postgres;
+use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Executor, PgPool, Row, Transaction};
 
-use crate::db::{migrate, pool, to_u64, verify_schema};
+use crate::db::{ready_pool, to_u64};
 
 /// PostgreSQL 服务端 JSONB ↔ serde_json::Value（sqlx `json` feature）。
 type JsonValue = serde_json::Value;
@@ -37,7 +37,7 @@ pub struct SimulationOverview {
     pub by_scenario: Vec<ScenarioCount>,
     /// 最近 20 个 run（列表板块）。
     pub recent_runs: Vec<SimulationRunRow>,
-    /// 累计净盈亏曲线（全量按时间升序；前端累计 scanned/simulated 两条线）。
+    /// 累计净盈亏曲线（最近 `CUMULATIVE_LIMIT` 个 run，时间升序）。
     pub cumulative_points: Vec<NetProfitPoint>,
     /// 两账户现值（paper_balances，f02-account-* 前缀）。
     pub account_balances: Vec<AccountSnapshot>,
@@ -257,12 +257,17 @@ pub struct ActivityEvent {
 const DAY_MS: u64 = 86_400_000;
 /// 余额曲线读取上限（每 run 6 行 ≈ 200 run 窗口，曲线板块前端降采样之后仍有信息量）。
 const BALANCE_HISTORY_LIMIT: u64 = 1200;
+/// 累计曲线读取上限。曲线按像素渲染，超过该行数不增加可见信息，却会线性放大
+/// 每 10s 轮询的传输量与前端 SVG 节点数。
+const CUMULATIVE_LIMIT: i64 = 1200;
 
 // ---------------------------------------------------------------------------
 // 连接与事务
 // ---------------------------------------------------------------------------
 
-/// 打开 G-01 只读事务：从池中借连接、置只读、校验 schema 版本。
+/// 打开 G-01 只读事务：从池中借连接、置只读。
+///
+/// schema 版本由 `ready_pool` 在进程内首次访问时校验一次，此处不再逐次往返。
 ///
 /// 不用裸 `BEGIN READ ONLY`：池化连接上的裸事务语句若未 COMMIT 就归还，会污染下一个借用者
 /// （DB-01 探针 T1b/S8 实测 `cannot execute INSERT in a read-only transaction`）。sqlx
@@ -276,7 +281,6 @@ async fn open_readonly(pool: &PgPool) -> Result<Transaction<'_, Postgres>> {
         .execute(sqlx::raw_sql("SET TRANSACTION READ ONLY"))
         .await
         .context("failed to start read-only transaction")?;
-    verify_schema(&mut *txn).await?;
     Ok(txn)
 }
 
@@ -286,8 +290,7 @@ async fn open_readonly(pool: &PgPool) -> Result<Transaction<'_, Postgres>> {
 
 /// 概览：聚合 + 最近列表 + 账户现值 + 余额曲线 + 山脊 + 活动流。
 pub async fn get_simulation_overview(database_url: &str) -> Result<SimulationOverview> {
-    migrate(database_url).await?;
-    let pool = pool(database_url).await?;
+    let pool = ready_pool(database_url).await?;
     let mut txn = open_readonly(&pool).await?;
 
     let agg = sqlx::query(
@@ -325,10 +328,20 @@ pub async fn get_simulation_overview(database_url: &str) -> Result<SimulationOve
 
     let runs = read_run_rows(&mut txn, "ORDER BY executed_at_ms DESC LIMIT 20", &[]).await?;
 
+    // 前缀和由服务端一次算出（`) OVER (ORDER BY …)` 的默认 frame 即整个前缀），
+    // 且只取最近 `CUMULATIVE_LIMIT` 个 run 后再升序返回：前端无需累加，也不再有
+    // 无界传输量。
     let cumulative_rows = sqlx::query(
-        "SELECT executed_at_ms, scanned_net_profit, simulated_net_profit
-             FROM simulation_runs ORDER BY executed_at_ms",
+        "SELECT executed_at_ms, scanned, simulated FROM (
+             SELECT executed_at_ms,
+                    SUM(scanned_net_profit) OVER (ORDER BY executed_at_ms) AS scanned,
+                    SUM(simulated_net_profit) OVER (ORDER BY executed_at_ms) AS simulated
+             FROM simulation_runs
+             ORDER BY executed_at_ms DESC
+             LIMIT $1
+         ) AS recent ORDER BY executed_at_ms",
     )
+    .bind(CUMULATIVE_LIMIT)
     .fetch_all(&mut *txn)
     .await
     .context("failed to load cumulative profit points")?;
@@ -450,7 +463,7 @@ pub async fn get_simulation_runs(
     scenario: Option<String>,
 ) -> Result<SimulationRunsPage> {
     let limit = limit.min(200);
-    let pool = pool(database_url).await?;
+    let pool = ready_pool(database_url).await?;
     let mut txn = open_readonly(&pool).await?;
 
     let (filter, params): (String, Vec<(String, String)>) = build_run_filter(&symbol, &scenario);
@@ -486,39 +499,29 @@ pub async fn get_simulation_run_detail(
     database_url: &str,
     run_id: &str,
 ) -> Result<SimulationRunDetail> {
-    migrate(database_url).await?;
-    let pool = pool(database_url).await?;
+    let pool = ready_pool(database_url).await?;
     let mut txn = open_readonly(&pool).await?;
 
-    let run_rows = read_run_rows(
-        &mut txn,
-        "WHERE run_id = $1",
-        &[("run_id".to_owned(), run_id.to_owned())],
-    )
-    .await?;
-    let Some(run_row) = run_rows.into_iter().next() else {
+    // 单次取回投影列 + report + 三个关联标识（原为 3 次同表往返）。
+    let sql = format!(
+        "SELECT {RUN_PROJECTION}, report, plan_id, buy_intent_id, sell_intent_id, account_id
+         FROM simulation_runs WHERE run_id = $1"
+    );
+    let row = sqlx::query(&sql)
+        .bind(run_id)
+        .fetch_optional(&mut *txn)
+        .await
+        .context("failed to load simulation run")?;
+    let Some(row) = row else {
         let _ = txn.rollback().await;
         bail!("simulation run not found: {run_id}");
     };
-
-    let report: JsonValue = sqlx::query("SELECT report FROM simulation_runs WHERE run_id = $1")
-        .bind(run_id)
-        .fetch_one(&mut *txn)
-        .await
-        .context("failed to load run report")?
-        .try_get(0)?;
-    let ids = sqlx::query(
-        "SELECT plan_id, buy_intent_id, sell_intent_id, account_id
-             FROM simulation_runs WHERE run_id = $1",
-    )
-    .bind(run_id)
-    .fetch_one(&mut *txn)
-    .await
-    .context("failed to load run plan identifiers")?;
-    let plan_id: String = ids.try_get(0)?;
-    let buy_intent_id: String = ids.try_get(1)?;
-    let sell_intent_id: String = ids.try_get(2)?;
-    let account_id: String = ids.try_get(3)?;
+    let run_row = run_row_at(&row, 0)?;
+    let report: JsonValue = row.try_get(22)?;
+    let plan_id: String = row.try_get(23)?;
+    let buy_intent_id: String = row.try_get(24)?;
+    let sell_intent_id: String = row.try_get(25)?;
+    let account_id: String = row.try_get(26)?;
 
     let intents = read_intent_rows(&mut txn, &plan_id).await?;
 
@@ -663,21 +666,50 @@ fn build_run_filter(
     (clauses.join(" AND "), params)
 }
 
+/// `simulation_runs` 投影列清单（列表与详情共用，避免两处列清单漂移）。
+const RUN_PROJECTION: &str =
+    "run_id, executed_at_ms, evaluated_at_ms, symbol, buy_venue, sell_venue,
+                direction, scenario, rejection_reason, quantity,
+                bought_quantity, sold_quantity, buy_avg_price, sell_avg_price,
+                buy_fee, sell_fee, scanned_net_profit, simulated_net_profit,
+                compensation_decision, execution_state, idempotent_replay,
+                external_order_calls";
+
+/// 从 `base` 起读取 `RUN_PROJECTION` 的 22 列；详情查询在其后追加额外列，故带偏移。
+fn run_row_at(row: &PgRow, base: usize) -> Result<SimulationRunRow> {
+    Ok(SimulationRunRow {
+        run_id: row.try_get(base)?,
+        executed_at_ms: to_u64(row.try_get::<i64, _>(base + 1)?).unwrap_or(0),
+        evaluated_at_ms: to_u64(row.try_get::<i64, _>(base + 2)?).unwrap_or(0),
+        symbol: row.try_get(base + 3)?,
+        buy_venue: row.try_get(base + 4)?,
+        sell_venue: row.try_get(base + 5)?,
+        direction: row.try_get(base + 6)?,
+        scenario: row.try_get(base + 7)?,
+        rejection_reason: row.try_get(base + 8)?,
+        quantity: row.try_get(base + 9)?,
+        bought_quantity: row.try_get(base + 10)?,
+        sold_quantity: row.try_get(base + 11)?,
+        buy_avg_price: row.try_get(base + 12)?,
+        sell_avg_price: row.try_get(base + 13)?,
+        buy_fee: row.try_get(base + 14)?,
+        sell_fee: row.try_get(base + 15)?,
+        scanned_net_profit: row.try_get(base + 16)?,
+        simulated_net_profit: row.try_get(base + 17)?,
+        compensation_decision: row.try_get(base + 18)?,
+        execution_state: row.try_get(base + 19)?,
+        idempotent_replay: row.try_get(base + 20)?,
+        external_order_calls: to_u64(row.try_get::<i64, _>(base + 21)?).unwrap_or(0),
+    })
+}
+
 /// 列表行读取（主营列；不读 `report` 列）。`where_sql` 支持 `$1..$n` 参数。
 async fn read_run_rows(
     txn: &mut Transaction<'_, Postgres>,
     where_sql: &str,
     params: &[(String, String)],
 ) -> Result<Vec<SimulationRunRow>> {
-    let sql = format!(
-        "SELECT run_id, executed_at_ms, evaluated_at_ms, symbol, buy_venue, sell_venue,
-                direction, scenario, rejection_reason, quantity,
-                bought_quantity, sold_quantity, buy_avg_price, sell_avg_price,
-                buy_fee, sell_fee, scanned_net_profit, simulated_net_profit,
-                compensation_decision, execution_state, idempotent_replay,
-                external_order_calls
-         FROM simulation_runs {where_sql}"
-    );
+    let sql = format!("SELECT {RUN_PROJECTION} FROM simulation_runs {where_sql}");
     let mut query = sqlx::query(&sql);
     for (_, value) in params {
         query = query.bind(value);
@@ -686,34 +718,7 @@ async fn read_run_rows(
         .fetch_all(&mut **txn)
         .await
         .context("failed to read simulation runs")?;
-    rows.iter()
-        .map(|row| -> Result<SimulationRunRow> {
-            Ok(SimulationRunRow {
-                run_id: row.try_get(0)?,
-                executed_at_ms: to_u64(row.try_get::<i64, _>(1)?).unwrap_or(0),
-                evaluated_at_ms: to_u64(row.try_get::<i64, _>(2)?).unwrap_or(0),
-                symbol: row.try_get(3)?,
-                buy_venue: row.try_get(4)?,
-                sell_venue: row.try_get(5)?,
-                direction: row.try_get(6)?,
-                scenario: row.try_get(7)?,
-                rejection_reason: row.try_get(8)?,
-                quantity: row.try_get(9)?,
-                bought_quantity: row.try_get(10)?,
-                sold_quantity: row.try_get(11)?,
-                buy_avg_price: row.try_get(12)?,
-                sell_avg_price: row.try_get(13)?,
-                buy_fee: row.try_get(14)?,
-                sell_fee: row.try_get(15)?,
-                scanned_net_profit: row.try_get(16)?,
-                simulated_net_profit: row.try_get(17)?,
-                compensation_decision: row.try_get(18)?,
-                execution_state: row.try_get(19)?,
-                idempotent_replay: row.try_get(20)?,
-                external_order_calls: to_u64(row.try_get::<i64, _>(21)?).unwrap_or(0),
-            })
-        })
-        .collect::<Result<Vec<_>>>()
+    rows.iter().map(|row| run_row_at(row, 0)).collect()
 }
 
 /// 双腿意图 + order_facts + order_action_facts（一次意图查询 + 一次动作查询，Rust 端 join）。
@@ -784,13 +789,21 @@ async fn read_intent_rows(
     Ok(intents)
 }
 
+/// 山脊读取上限。每桶 KDE 成本为 O(桶内点数 × 56)，无界增长会同时放大
+/// 每 10s 轮询的传输量与前端重算成本。
+const RIDGE_LIMIT: i64 = 4000;
+
 /// 山脊数据：非 Rejected run 按日桶聚合净盈亏数组（桶内 <8 点自动跨日合并）。
+/// 只取最近 `RIDGE_LIMIT` 个 run——山脊图展示的是近期分布形状，历史桶早已被合并。
 async fn load_ridge(txn: &mut Transaction<'_, Postgres>) -> Result<Vec<RidgeBucket>> {
     let rows = sqlx::query(
-        "SELECT executed_at_ms, simulated_net_profit
+        "SELECT executed_at_ms, simulated_net_profit FROM (
+             SELECT executed_at_ms, simulated_net_profit
              FROM simulation_runs WHERE scenario <> 'REJECTED'
-             ORDER BY executed_at_ms",
+             ORDER BY executed_at_ms DESC LIMIT $1
+         ) AS recent ORDER BY executed_at_ms",
     )
+    .bind(RIDGE_LIMIT)
     .fetch_all(&mut **txn)
     .await
     .context("failed to load ridge data")?;
@@ -838,53 +851,40 @@ impl From<(u64, Vec<Decimal>)> for RidgeBucket {
 /// 执行流转图聚合：EVALUATED（非 Rejected run）/ 预留（PlanReserved 审计去重）/ 双腿成交 /
 /// 补偿评估 / COMPLETED / MANUAL_ESCALATED，全部自不可变事件表计数。
 async fn load_flow_aggregate(txn: &mut Transaction<'_, Postgres>) -> Result<FlowAggregate> {
-    let evaluated: i64 =
-        sqlx::query("SELECT count(*) FROM simulation_runs WHERE scenario <> 'REJECTED'")
-            .fetch_one(&mut **txn)
-            .await
-            .context("failed to count evaluated runs")?
-            .try_get(0)?;
-    let reserved: i64 = sqlx::query(
-        "SELECT count(DISTINCT aggregate_id) FROM audit_events
-             WHERE event_type = 'PlanReserved' AND aggregate_id LIKE 'f02-%'",
+    // 五个计数合并为一条聚合；三个 `event_type` 过滤共用一个顺序扫描。
+    let events = sqlx::query(
+        "SELECT
+             count(DISTINCT plan_id) FILTER (WHERE event_type = 'COMPENSATION_DECIDED')::BIGINT,
+             count(DISTINCT plan_id) FILTER (WHERE event_type = 'COMPLETED')::BIGINT,
+             count(DISTINCT plan_id) FILTER (WHERE event_type = 'MANUAL_ESCALATED')::BIGINT
+         FROM execution_events WHERE plan_id LIKE 'f02-%'",
     )
     .fetch_one(&mut **txn)
     .await
-    .context("failed to count reserved runs")?
-    .try_get(0)?;
-    let filled: i64 = sqlx::query(
-        "SELECT count(DISTINCT plan_id) FROM execution_events
-             WHERE event_type = 'COMPLETED' AND plan_id LIKE 'f02-%'",
+    .context("failed to aggregate execution events")?;
+    let compensated: i64 = events.try_get(0)?;
+    let completed: i64 = events.try_get(1)?;
+    let escalated: i64 = events.try_get(2)?;
+
+    // EVALUATED（非 Rejected run）、预留（PlanReserved 审计去重）与双腿成交。
+    // `filled_runs` 必须反映真实成交：`COMPLETED` 事件只表示两腿数量相等
+    // （execution.rs 的 `mismatch == ZERO` 分支），双腿零成交的 run 也会是
+    // COMPLETED，因此按 `simulation_runs` 的实际成交量为准。
+    let flows = sqlx::query(
+        "SELECT
+             (SELECT count(*) FROM simulation_runs WHERE scenario <> 'REJECTED')::BIGINT,
+             (SELECT count(DISTINCT aggregate_id) FROM audit_events
+                  WHERE event_type = 'PlanReserved' AND aggregate_id LIKE 'f02-%')::BIGINT,
+             (SELECT count(*) FROM simulation_runs
+                  WHERE bought_quantity > 0 AND sold_quantity > 0)::BIGINT",
     )
     .fetch_one(&mut **txn)
     .await
-    .context("failed to count filled runs")?
-    .try_get(0)?;
-    let compensated: i64 = sqlx::query(
-        "SELECT count(DISTINCT plan_id) FROM execution_events
-             WHERE event_type = 'COMPENSATION_DECIDED' AND plan_id LIKE 'f02-%'",
-    )
-    .fetch_one(&mut **txn)
-    .await
-    .context("failed to count compensated runs")?
-    .try_get(0)?;
-    // COMPLETED 去重后既含双腿成交也含单腿成交 run；completed_runs 与 compensated 正交。
-    let completed: i64 = sqlx::query(
-        "SELECT count(DISTINCT plan_id) FROM execution_events
-             WHERE event_type = 'COMPLETED' AND plan_id LIKE 'f02-%'",
-    )
-    .fetch_one(&mut **txn)
-    .await
-    .context("failed to count completed runs")?
-    .try_get(0)?;
-    let escalated: i64 = sqlx::query(
-        "SELECT count(DISTINCT plan_id) FROM execution_events
-             WHERE event_type = 'MANUAL_ESCALATED' AND plan_id LIKE 'f02-%'",
-    )
-    .fetch_one(&mut **txn)
-    .await
-    .context("failed to count escalated runs")?
-    .try_get(0)?;
+    .context("failed to aggregate run flow")?;
+    let evaluated: i64 = flows.try_get(0)?;
+    let reserved: i64 = flows.try_get(1)?;
+    let filled: i64 = flows.try_get(2)?;
+
     Ok(FlowAggregate {
         evaluated_runs: to_u64(evaluated).unwrap_or(0),
         reserved_runs: to_u64(reserved).unwrap_or(0),

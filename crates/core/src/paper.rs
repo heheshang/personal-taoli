@@ -9,8 +9,8 @@ use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Row, Transaction};
 
 use crate::db::{
-    DomainConnection, SCHEMA_VERSION, advisory_key, hex_digest, migrate, pool, to_i64, validate_id,
-    verify_schema,
+    DomainConnection, SCHEMA_VERSION, advisory_key, hex_digest, migrate, pool, ready_pool, to_i64,
+    validate_id,
 };
 use crate::market::unix_timestamp_ms;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,8 +156,7 @@ pub async fn set_paper_balance(
         bail!("PAPER balance observed_at_ms must be positive");
     }
     let observed_at_ms = to_i64(observed_at_ms)?;
-    let pool = pool(database_url).await?;
-    verify_schema(&pool).await?;
+    let pool = ready_pool(database_url).await?;
     let mut transaction = pool
         .begin()
         .await

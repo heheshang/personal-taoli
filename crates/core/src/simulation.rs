@@ -29,7 +29,7 @@ use tokio::sync::{Mutex, Notify};
 use crate::archive::DecisionEvent;
 use crate::config::SimulationConfig;
 use crate::db::SCHEMA_VERSION;
-use crate::db::{hex_digest, migrate, pool};
+use crate::db::{hex_digest, migrate, pool, ready_pool};
 use crate::execution::{CompensationDecision, ExecutionCore, ExecutionState};
 use crate::instrument::InstrumentSpec;
 use crate::market::{BookSide, Level, OrderBookSnapshot, unix_timestamp_ms};
@@ -362,7 +362,7 @@ async fn available_balance(
     venue: &str,
     asset: &str,
 ) -> Result<Decimal> {
-    let pool = pool(database_url).await?;
+    let pool = ready_pool(database_url).await?;
     let row = sqlx::query(
         "SELECT observed_free, local_reserved FROM paper_balances
              WHERE account_id=$1 AND venue=$2 AND asset=$3",
@@ -1184,12 +1184,24 @@ impl SimulationEngine {
         self.notify.notify_one();
     }
 
-    /// 停止 worker（observer 结束路径调用；abort 即可，无需 join 等待）。
+    /// 停止 worker（observer 正常结束路径调用）。
+    ///
+    /// `stopped` + `notify` 只用于唤醒空闲 worker 让它自行退出；如果 worker 正卡在一次
+    /// 撮合里，`abort` 才是真正的终止手段。`Drop` 兜底同一条路径，覆盖 observer 循环
+    /// 用 `?` 提前返回、因而跳过本方法的场景。
     pub async fn shutdown(self: Arc<Self>) {
         self.stopped.store(true, Ordering::Release);
         self.notify.notify_one();
         self.worker.abort();
         tracing::info!("F-02 simulation: engine stopped");
+    }
+}
+
+impl Drop for SimulationEngine {
+    fn drop(&mut self) {
+        // 与 `shutdown` 等价：`Arc<Self>` 的最后一个引用释放时，worker 不能存活。
+        self.stopped.store(true, Ordering::Release);
+        self.worker.abort();
     }
 }
 
@@ -1825,7 +1837,7 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
 
 /// 数据库业务行计数（烟测断言残留用）。
 async fn business_count(database_url: &str, table: &str, column: &str, value: &str) -> Result<i64> {
-    let pool = pool(database_url).await?;
+    let pool = ready_pool(database_url).await?;
     let query = format!("SELECT COUNT(*) FROM {table} WHERE {column}=$1");
     let row = sqlx::query(query.as_str())
         .bind(value)

@@ -12,7 +12,7 @@
 //!    (which sqlx rolls back on release) rather than a raw `BEGIN`, whose
 //!    dangling state would poison the next borrower of that connection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use tokio::sync::Mutex;
 
 use crate::market::unix_timestamp_ms;
 
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 const INITIAL_PAPER_MIGRATION: &str = include_str!("../migrations/0001_paper_core.sql");
 const ORDER_FACTS_MIGRATION: &str = include_str!("../migrations/0002_order_facts.sql");
 const DOUBLE_LEG_EXECUTION_MIGRATION: &str =
@@ -33,6 +33,7 @@ const DOUBLE_LEG_EXECUTION_MIGRATION: &str =
 const ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION: &str =
     include_str!("../migrations/0004_accounting_reconciliation_control.sql");
 const SIMULATION_RUNS_MIGRATION: &str = include_str!("../migrations/0005_simulation_runs.sql");
+const READ_PATH_INDEXES_MIGRATION: &str = include_str!("../migrations/0006_read_path_indexes.sql");
 
 /// Pool ceiling.  A single-writer domain holds one dedicated lock connection
 /// plus the connections its transactions borrow, and the F-02 smoke holds
@@ -46,6 +47,12 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 /// command and may rewrite it during setup, so one global pool would be wrong.
 static POOLS: LazyLock<Mutex<HashMap<String, PgPool>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Database URLs whose migrations and schema check already succeeded in this
+/// process.  Migrations are idempotent but expensive (six DDL batches behind
+/// a session advisory lock) while the dashboard polls every 10 s, so the work
+/// must happen once per process rather than once per call.
+static READY: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Returns the cached pool for `database_url`, creating it on first use.
 ///
@@ -83,10 +90,27 @@ pub(crate) async fn pool(database_url: &str) -> Result<PgPool> {
 }
 
 /// Applies every B-series migration under one advisory lock, then verifies
-/// the resulting schema version.  Idempotent per migration file.
+/// the resulting schema version.  Idempotent per migration file, and memoized
+/// per process: the first call for a URL does the work, later calls are a hit.
 pub(crate) async fn migrate(database_url: &str) -> Result<()> {
+    ready_pool(database_url).await.map(|_| ())
+}
+
+/// Pool whose migrations have been applied and whose schema is verified.
+///
+/// The single entry point for callers that need "the schema is usable"; it
+/// removes the per-call migration and `verify_schema` round trips that the
+/// read paths would otherwise pay on every request.
+pub(crate) async fn ready_pool(database_url: &str) -> Result<PgPool> {
     let pool = pool(database_url).await?;
-    migrate_pool(&pool).await
+    if READY.lock().await.contains(database_url) {
+        return Ok(pool);
+    }
+    // Concurrent first callers may both run `migrate_pool`; the advisory lock
+    // inside serializes them and every migration is idempotent.
+    migrate_pool(&pool).await?;
+    READY.lock().await.insert(database_url.to_owned());
+    Ok(pool)
 }
 
 /// `migrate` against an already-resolved pool.
@@ -108,6 +132,7 @@ pub(crate) async fn migrate_pool(pool: &PgPool) -> Result<()> {
         ("B-03", DOUBLE_LEG_EXECUTION_MIGRATION),
         ("B-04", ACCOUNTING_RECONCILIATION_CONTROL_MIGRATION),
         ("G-01", SIMULATION_RUNS_MIGRATION),
+        ("read-path", READ_PATH_INDEXES_MIGRATION),
     ] {
         connection
             .execute(sqlx::raw_sql(migration))
