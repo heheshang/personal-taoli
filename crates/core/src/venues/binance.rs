@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::{
     instrument::{InstrumentSpec, OrderCapability, TradingStatus},
     local_book::BookFeed,
-    market::{Level, OrderBookSnapshot, unix_timestamp_ms},
+    market::{OrderBookSnapshot, parse_levels, unix_timestamp_ms},
     venues::{MarketDataVenue, binance_stream},
 };
 
@@ -264,17 +264,6 @@ fn optional_decimal(value: Option<&str>, field: &str) -> Result<Option<Decimal>>
                 .with_context(|| format!("Binance instrument returned invalid {field}"))
         })
         .transpose()
-}
-
-fn parse_levels(raw: Vec<[String; 2]>) -> Result<Vec<Level>> {
-    raw.into_iter()
-        .map(|[price, quantity]| {
-            Ok(Level {
-                price: price.parse::<Decimal>()?,
-                quantity: quantity.parse::<Decimal>()?,
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

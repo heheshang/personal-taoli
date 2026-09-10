@@ -5,7 +5,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 
-use crate::market::{Level, OrderBookSnapshot};
+use crate::market::{Level, LevelUpdate, OrderBookSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -128,12 +128,6 @@ impl FeedPublisher {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LevelUpdate {
-    pub price: Decimal,
-    pub quantity: Decimal,
-}
-
 pub(crate) struct LocalOrderBook {
     venue: String,
     symbol: String,
@@ -183,7 +177,29 @@ impl LocalOrderBook {
         self.sequence = sequence;
         self.source_timestamp_ms = source_timestamp_ms;
         self.received_timestamp_ms = received_timestamp_ms;
-        self.snapshot(1)?;
+        self.validate_live()?;
+        Ok(())
+    }
+
+    /// Rejects a book that could not produce a usable snapshot.
+    ///
+    /// Previously this called `snapshot(1)?` and discarded the result, which
+    /// allocated two `String`s and two `Vec<Level>`s on every depth event just
+    /// to run validation.  Only the two conditions `validate()` adds over the
+    /// per-update checks matter here: an empty side and a crossed book.
+    fn validate_live(&self) -> Result<()> {
+        let (Some(best_bid), Some(best_ask)) =
+            (self.bids.last_key_value(), self.asks.first_key_value())
+        else {
+            bail!(
+                "{} {} order book has an empty side",
+                self.venue,
+                self.symbol
+            );
+        };
+        if best_bid.0 >= best_ask.0 {
+            bail!("{} {} local book is crossed", self.venue, self.symbol);
+        }
         Ok(())
     }
 
@@ -295,6 +311,43 @@ mod tests {
             }]
         );
         assert_eq!(updated.sequence, 11);
+    }
+
+    #[test]
+    fn apply_rejects_a_crossed_book() {
+        let mut book = LocalOrderBook::from_snapshot(snapshot()).unwrap();
+        // 买价抬到卖价之上：`apply` 必须在返回前拒绝，而不是把交叉簿发出去。
+        let error = book
+            .apply(
+                &[LevelUpdate {
+                    price: decimal(102),
+                    quantity: decimal(1),
+                }],
+                &[],
+                11,
+                None,
+                3,
+            )
+            .expect_err("crossed book must be rejected");
+        assert!(error.to_string().contains("crossed"), "{error}");
+    }
+
+    #[test]
+    fn apply_rejects_emptying_a_side() {
+        let mut book = LocalOrderBook::from_snapshot(snapshot()).unwrap();
+        let error = book
+            .apply(
+                &[LevelUpdate {
+                    price: decimal(99),
+                    quantity: Decimal::ZERO,
+                }],
+                &[],
+                11,
+                None,
+                3,
+            )
+            .expect_err("book with an empty side must be rejected");
+        assert!(error.to_string().contains("empty side"), "{error}");
     }
 
     #[test]

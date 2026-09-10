@@ -3,15 +3,14 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Url;
-use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{sync::mpsc, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
-    local_book::{BookFeed, FeedCommand, FeedPublisher, LevelUpdate, LocalOrderBook, StaleFeed},
-    market::{Level, OrderBookSnapshot, unix_timestamp_ms},
+    local_book::{BookFeed, FeedCommand, FeedPublisher, LocalOrderBook, StaleFeed},
+    market::{OrderBookSnapshot, parse_levels, parse_updates, unix_timestamp_ms},
 };
 
 #[derive(Debug, Deserialize)]
@@ -196,28 +195,6 @@ fn snapshot_from_event(event: OrderBookEvent) -> Result<(u64, OrderBookSnapshot)
     };
     snapshot.validate()?;
     Ok((event.data.seq, snapshot))
-}
-
-fn parse_levels(raw: Vec<[String; 2]>) -> Result<Vec<Level>> {
-    raw.into_iter()
-        .map(|[price, quantity]| {
-            Ok(Level {
-                price: price.parse::<Decimal>()?,
-                quantity: quantity.parse::<Decimal>()?,
-            })
-        })
-        .collect()
-}
-
-fn parse_updates(raw: Vec<[String; 2]>) -> Result<Vec<LevelUpdate>> {
-    raw.into_iter()
-        .map(|[price, quantity]| {
-            Ok(LevelUpdate {
-                price: price.parse::<Decimal>()?,
-                quantity: quantity.parse::<Decimal>()?,
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

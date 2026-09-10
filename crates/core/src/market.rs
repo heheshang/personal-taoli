@@ -96,8 +96,11 @@ pub fn unix_timestamp_ms() -> Result<u64> {
 }
 
 /// Parses raw price/quantity pairs into typed `Level` values.
-pub fn parse_levels(raw: &[[String; 2]]) -> Result<Vec<Level>> {
-    raw.iter()
+///
+/// Takes the raw payload by value: venue handlers own their deserialized
+/// frames, so this avoids a copy of every price/quantity string.
+pub fn parse_levels(raw: impl IntoIterator<Item = [String; 2]>) -> Result<Vec<Level>> {
+    raw.into_iter()
         .map(|[price, quantity]| {
             Ok(Level {
                 price: price.parse().context("invalid level price")?,
@@ -108,8 +111,8 @@ pub fn parse_levels(raw: &[[String; 2]]) -> Result<Vec<Level>> {
 }
 
 /// Parses raw price/quantity pairs into `LevelUpdate` values.
-pub fn parse_updates(raw: &[[String; 2]]) -> Result<Vec<LevelUpdate>> {
-    raw.iter()
+pub fn parse_updates(raw: impl IntoIterator<Item = [String; 2]>) -> Result<Vec<LevelUpdate>> {
+    raw.into_iter()
         .map(|[price, quantity]| {
             Ok(LevelUpdate {
                 price: price.parse().context("invalid level price")?,
@@ -119,6 +122,7 @@ pub fn parse_updates(raw: &[[String; 2]]) -> Result<Vec<LevelUpdate>> {
         .collect::<Result<Vec<_>>>()
 }
 
+/// One absolute price-level update from a venue depth stream.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LevelUpdate {
     pub price: Decimal,

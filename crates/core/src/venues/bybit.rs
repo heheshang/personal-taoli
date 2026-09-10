@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::{
     instrument::{InstrumentSpec, OrderCapability, TradingStatus},
     local_book::BookFeed,
-    market::{Level, OrderBookSnapshot, unix_timestamp_ms},
+    market::{OrderBookSnapshot, parse_levels, unix_timestamp_ms},
     venues::{MarketDataVenue, bybit_stream},
 };
 
@@ -261,17 +261,6 @@ fn parse_decimal(value: &str, field: &str) -> Result<Decimal> {
     value
         .parse()
         .with_context(|| format!("Bybit instrument returned invalid {field}"))
-}
-
-fn parse_levels(raw: Vec<[String; 2]>) -> Result<Vec<Level>> {
-    raw.into_iter()
-        .map(|[price, quantity]| {
-            Ok(Level {
-                price: price.parse::<Decimal>()?,
-                quantity: quantity.parse::<Decimal>()?,
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

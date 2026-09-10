@@ -3,14 +3,13 @@ use std::{collections::VecDeque, time::Duration};
 use anyhow::{Context, Result, bail};
 use futures_util::{Sink, SinkExt, Stream, StreamExt, pin_mut};
 use reqwest::{Client, Url};
-use rust_decimal::Decimal;
 use serde::Deserialize;
 use tokio::{sync::mpsc, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
-    local_book::{BookFeed, FeedCommand, FeedPublisher, LevelUpdate, LocalOrderBook, StaleFeed},
-    market::{OrderBookSnapshot, unix_timestamp_ms},
+    local_book::{BookFeed, FeedCommand, FeedPublisher, LocalOrderBook, StaleFeed},
+    market::{OrderBookSnapshot, parse_updates, unix_timestamp_ms},
 };
 
 use super::binance::fetch_depth_snapshot;
@@ -271,19 +270,10 @@ where
     }
 }
 
-fn parse_updates(raw: Vec<[String; 2]>) -> Result<Vec<LevelUpdate>> {
-    raw.into_iter()
-        .map(|[price, quantity]| {
-            Ok(LevelUpdate {
-                price: price.parse::<Decimal>()?,
-                quantity: quantity.parse::<Decimal>()?,
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use rust_decimal::Decimal;
+
     use crate::market::Level;
 
     use super::*;
