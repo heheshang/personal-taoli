@@ -301,6 +301,37 @@ AI 职责：完成下列同步并提交候选发布记录。
 
 **明确不做**：不引入 `sqlx migrate` CLI 作为部署路径；不引入 `query!` 编译期校验；不生成 down 迁移；不合并或重写历史迁移。
 
+### 6.8 追踪矩阵追加：G-02 模拟 run 来源判别（2026-09-10）
+
+实现与验证详情见第 10 章发布记录 G-02 行及 `docs/G-02-模拟run来源判别-{需求,设计,任务}.md`。
+
+**触发来源**：所有者观察运行中的桌面应用，看到 `run … symbol=BTCUSDT` 而自己聚焦的是 ETH，判断「日志与选择不符」。排查表明**选择机制并无问题**，真实缺陷是三条独立事实叠加后被一个模糊呈现放大：
+
+1. 该 run 来自**合成簿烟测探针**（`run_simulation_smoke`），不是实时市场模拟——全库 620 条 run 的 `buy_venue` 恒为 `s01-buy`…`s07-sell`；
+2. 探针的 symbol 是夹具常量 `"BTCUSDT"`，与当前观察的币对无关；
+3. 实时模拟从未产生任何 run——8000 条 decision 中 `accepted` 为 **0**，准入按设计失败关闭（凭证未配置、Bybit 资格未确认、实际费率 observation-only、名义金额低于下限）。
+
+缺陷在于**仪表盘把探针产物与市场仿真结果混同呈现**，既无来源列也无界面标注。
+
+| 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
+|---|---|---|---|---|
+| G02-R01 | `simulation_runs.source ∈ {SMOKE, LIVE}`，SQL 层可区分，不再依赖场所命名约定 | `crates/core/migrations/0008_simulation_run_source.sql` | 列存在、`NOT NULL DEFAULT 'LIVE'`、CHECK 生效；`_sqlx_migrations` 含 8 且 `success` | verified |
+| G02-R02 | 探针标 `SMOKE`、实时标 `LIVE`，来源由调用方显式传入 | `crates/core/src/simulation.rs`（`SimulationRunSource` + `run_simulation_run` 形参 + 7 烟测 / 1 实时调用点） | 实跑烟测：`before 613/613/0` → `after 620/620/0`，`newest source=SMOKE` | verified |
+| G02-R03 | 存量行全部回填为探针 | 同上（`ADD COLUMN … DEFAULT 'SMOKE'`） | 迁移前 613 行 → `smoke_runs=620`（含校验期间新增）、`live_runs=0` | verified |
+| G02-R04 | 回填不得削弱不可变保护 | 不 `DROP TRIGGER`（用默认值回填） | `pg_trigger simulation_runs_immutable` 仍存在；对既有行 `UPDATE` 仍报 `audit_events are immutable` | verified |
+| G02-R05 | 概览透出 `smoke_runs` / `live_runs` | `crates/core/src/simulation_query.rs`（`agg` 追加两个 `COUNT(*) FILTER`） | 计数与 SQL 直查一致（620 / 0） | verified |
+| G02-R06 | 界面区分来源：统计卡来源提示 + 列表/详情徽章 | `SimulationStatCards.vue`、`SimulationTrades.vue` | mock IPC 渲染断言：提示文案与徽章文案命中；视觉确认为警示配色 | verified |
+| G02-R07 | 烟测入口与日志自我说明是合成数据 | `SimulationPage.vue`、`run_simulation_smoke` 横幅 | 页面文本含「运行合成簿烟测」+ 合成说明；日志含 `SYNTHETIC FIXTURES … not market data` | verified |
+| G02-R08 | 实时为 0 时解释原因而非留白 | `SimulationStatCards.vue`（`provenance` 三分支） | 页面文本含「实时 run 0 条 —— 准入未通过（凭证/资格未配置，见控制台账户状态）」 | verified |
+| G02-R09 | 模拟页合约过滤保持页内独立，选项值域与库中一致 | `SimulationTrades.vue`（PERF-01 已修值域，本轮不改语义） | 8 个配置币对均可过滤；BTCUSDT 命中 627、其余 0（正确：无 ETH run 存在） | verified |
+| G02-R10 | 撮合/准入/补偿语义不变；无新增订单路径 | 全部 | `cargo test --workspace` 192+8 全绿；烟测 `external_order_calls=0`；五门禁全绿 | verified |
+
+**失败与修正（如实记录）**：0008 首次实现用 `UPDATE` 回填，被 `simulation_runs_immutable` 拒绝，应用报 `SIMULATION_ERROR: failed to apply database migrations`。改为默认值回填后成功。失败**零残留**（无 `Dirty`、`source` 列与 version=8 行均随事务回滚），因 sqlx 使每个迁移文件与其记账同事务——这是 MIG-01 R-3 的首次实测，风险等级下调但仍保留（真正的半应用只可能来自 `-- no-transaction` 文件，本项目无）。教训：**本项目全部事实表均有 `BEFORE UPDATE OR DELETE` 不可变触发器（共 11 个），后续迁移一律不得 `UPDATE` 既有事实行**。
+
+**验证缺口**：`LIVE` 分支（实时 run 落库与「全实时 / 混合」提示）无真实数据可触发，仅有代码层面保证；阻塞于准入前置条件（凭证、资格、费率），属阶段 F。
+
+**明确不做**：不改烟测的 symbol 取值（合成簿不是 ETH 行情，改标签等于伪造来源）；不接管全局「聚焦币种」（所有者选定页内独立过滤）；不让概览聚合随合约筛选变化；不为制造实时 run 降低任何准入阈值。
+
 ## 7. 阶段 A 剩余迭代队列
 
 按顺序执行。除非当前项被正式拒绝或阻塞，不并行开启后项。
@@ -548,6 +579,7 @@ AI 声称与证据（命令输出、测试日志、烟测记录）：
 | DB-01（sqlx 池化重构，已验证） | 2026-09-10 | 数据库连接层由 tokio-postgres 即连即断重构为 sqlx `PgPool` 池化：`db.rs` 全量重写（`pool()` 按 URL 缓存池 + `max_connections=16` + `acquire_timeout=30s` + `after_release` 解锁兜底；`migrate_pool` 单会话 advisory 锁迁移；`verify_schema<E: PgExecutor>` 泛型校验；`DomainConnection` 单写者锁 acquire/disconnect）；八个模块（paper/order/execution/accounting/control/reconciliation/simulation/simulation_query）93 个查询点全量迁移（`pool.begin()` 事务、`try_get` 解码、`rows_affected` 计行）；G-01 只读查询层改事务形态（`SET TRANSACTION READ ONLY` + 全部查询 + 回滚，任一失败即 aborted 上抛，不复用事务）；`tokio-postgres` 全仓移除 | `cargo fmt --all -- --check`、`cargo test --workspace`（190 项 core + 8 项 tauri-lib 通过）、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo build --workspace --release` 通过；真实 PostgreSQL 烟测（55432）七域 smoke + G-01 三只读入口全绿且 `external_order_calls=0`；U01–U10 逐条断言（池上限、迁移幂等、版本校验文案、领域锁释放/拒绝文案、只读拒写不污染池、缺 URL 降级不阻断观察循环） | PAPER/模拟事实层；无真实或测试网订单（`external_order_calls=0`）；遗留风险：`MAX_CONNECTIONS=16` 在 F-02 高并发下不足时操作 30s 后失败关闭、只读事务内语句失败即 aborted、`try_get` 把旧 panic 收敛为 `Err`（均见设计 §8，行为变化为期望变更） |
 | PERF-01（读路径性能与重复代码收敛，已验证） | 2026-09-10 | 承接 DB-01 池化后的读路径收口：`db.rs` 新增 `ready_pool(url)` + `READY` 守卫（迁移与 schema 校验按 URL **每进程一次**，`migrate` 委托之），`simulation_query`/`paper`/`simulation` 六个入口统一走该入口；新增 `migrations/0006_read_path_indexes.sql`（5 个 `CREATE INDEX IF NOT EXISTS`，`text_pattern_ops` 服务 `LIKE 'f02-%'`），`SCHEMA_VERSION` 5→6；`simulation_query.rs` 累计曲线改窗口函数前缀和 + `CUMULATIVE_LIMIT=1200`、山脊加 `RIDGE_LIMIT=4000`、流转聚合 6→2 条查询（`filled_runs` 修正为真实双腿成交）、详情同表 3 次往返→1 次（新增 `RUN_PROJECTION`/`run_row_at` 共用列清单）；`local_book` 的 `snapshot(1)?` → `validate_live()`（每行情事件省 2 String + 2 Vec 分配）、`market` 解析函数按值泛型化并删除 4 个 venue 文件的 6 份副本、`LevelUpdate` 双定义收敛；`SimulationEngine` 补 `Drop`（覆盖观察循环 `?` 早退的任务泄漏）；`config.rs` 旧格式迁移改 `Cow` 分流；前端合约过滤选项改由 `getObserverConfig().pairs` 派生（原硬编码 `BTC/USDT` 与库中 `BTCUSDT` 不匹配，恒返回空）、累计曲线消费后端前缀和、山脊改直方图+核卷积并消除展开运算符求极值 | `cargo fmt --all -- --check` PASS；`cargo test --workspace`（**192** core + 8 tauri-lib 通过，基线 190+8，净增 2 条本地簿不变量用例）；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo build --workspace --release` 成功（2m01s）；`npm run build` 零错误；真实 PostgreSQL（55432）驱动实测：`cold_overview_ms=191` → `warm_overview_ms=42`；`schema_migrations` 二次调用后仍 6 行；`EXPLAIN` 前后由 Seq Scan 变 Index Scan；`cumulative_points=564` 且 `monotonic_prefix_sums=true`；`ridge_points=488`；`flow.filled_runs=403` ≠ `completed_runs=373`；`filter_option_BTCUSDT_total=564` vs `slash_form_total=0` | 只读；**无新增写路径**，`external_order_calls=0` 恒真；A-05 14 天窗口不受影响；GUI 渲染未做像素级验证（无宿主），详见任务文档 §2.3 |
 | MIG-01（迁移机制交由 sqlx 接管，已验证） | 2026-09-10 | 迁移的来源/排序/记账/锁/事务/校验整体交由 sqlx 0.8.6 `Migrator`：`db.rs` 以 `static MIGRATOR = sqlx::migrate!("./migrations")` 编译期嵌入目录，删除 6 个 `include_str!` 常量、逐文件标签数组、自建 `advisory_key("schema-migration",…)` 迁移锁、`SCHEMA_VERSION` 常量与 `verify_schema` 函数；版本号改由文件集最大版本推导（`schema_version()`，`paper.rs`/`simulation.rs` 4 处调用点同改）；记账表由 `schema_migrations(version, applied_at_ms)` 换成 sqlx 的 `_sqlx_migrations(version, description, installed_on, success, checksum, execution_time)`，0001–0006 尾部逐文件 INSERT 剥离（0001 另删旧表 CREATE，否则 0007 删表后重跑会重新建表），新增 `0007_drop_legacy_schema_migrations.sql`；存量库由 `adopt_legacy_bookkeeping` 一次性采纳——在 `MIGRATOR.run` **之前**逐个校验旧表版本是否属于嵌入文件集（保留被删 `verify_schema` 的安全性质，避免旧二进制在新库上先应用自己的 0007），再把 `applied_at_ms` 换算进 `installed_on` 并写入嵌入文件的 SHA-384，`execution_time=-1` 标记采纳行；`DomainConnection::acquire` 改走 `ready_pool` 使连接与 schema 就绪合一；sqlx feature 增 `migrate`+`macros` | `cargo fmt --all -- --check` PASS；`cargo test --workspace`（192 core + 8 tauri-lib 通过，无新增测试——基础设施替换的可观察性质无法在无 DB 纯逻辑测试中验证）；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo build --workspace --release` 2m15s；`npm run build` 零错误；真实 PostgreSQL（55432）六条路径实测：全新库 1..7 全 `success` 且与 v4 升级结果收敛（22 表/47 索引/11 触发器）、冷 338ms→29ms；采纳保真 `1700000000000+v*1000` → `2023-11-14 22:13:2v+00` 逐行精确；v4 库 1–4 采纳 + 5–7 应用；篡改 checksum → `previously applied but has been modified`；旧表含 99 → `expected at most 7, found 99` 且零副作用；存量库 1–7 全 `success`（1–6 采纳、7 真实应用）、业务表行数只增不减 | 只读语义与 `external_order_calls=0` 不变；**无业务表结构变更**（仅迁移记账机制与旧表删除）；A-05 14 天窗口不受影响；**替换了 4 条已发布需求的断言文本**（G01-R10/DB01-R02/DB01-R03/PERF01-R01/R02，已逐条同步，可观察结论不变）；执行顺序偏差与流程教训见 §6.7 |
+| G-02（模拟 run 来源判别，已验证） | 2026-09-10 | 修真实使用缺陷：仪表盘把合成簿烟测探针与实时市场仿真混同呈现。新增迁移 `0008_simulation_run_source.sql`（`source TEXT NOT NULL DEFAULT 'LIVE' CHECK (source IN ('SMOKE','LIVE'))` + `(source, executed_at_ms DESC)` 索引）；回填**不用 `UPDATE`**——`0005` 的 `simulation_runs_immutable` 会拒绝，改用 `ADD COLUMN … DEFAULT 'SMOKE'` 再 `SET DEFAULT 'LIVE'`，从而全程不触碰不可变触发器（实测触发器仍拒绝 UPDATE）。核心层新增 `SimulationRunSource{Smoke,Live}`，作为 `run_simulation_run` 的**显式形参**（7 个烟测调用点传 Smoke、实时路径传 Live，编译器强制不漏），随报告持久化；`SimulationRunRow.source` 与 `SimulationOverview.{smoke_runs,live_runs}` 经查询层透出；`run_simulation_smoke` 首行打印 `SYNTHETIC FIXTURES … not market data` 横幅。前端：统计卡顶部新增来源提示（全探针/全实时/混合三分支，全探针态为警示配色并解释「实时 run 0 条 —— 准入未通过」）、机会历史列表与详情页来源徽章、烟测按钮改名「运行合成簿烟测」并附合成属性说明 | `cargo fmt --all -- --check` PASS；`cargo test --workspace`（192 core + 8 tauri-lib，无新增测试——标注类改动的可观察结果需真实 DB 与真实渲染）；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo build --workspace --release` 2m03s；`npm run build` 零错误；实库实测：迁移落库 `success=t`、触发器完好且仍拒绝 UPDATE、列默认 `LIVE`；实跑烟测 `613/613/0` → `620/620/0` 且 `newest source=SMOKE`；8 个配置币对过滤值域正确；mock IPC 渲染断言命中全部文案，视觉确认警示配色 | 只读语义与 `external_order_calls=0` 不变；无业务表结构变更以外的语义变更；**验证缺口**：`LIVE` 分支无真实数据可触发（实时 run 为 0，阻塞于准入前置条件，属阶段 F）；未改烟测 symbol、未接管全局聚焦币种 |
 
 ## 11. 下一轮唯一入口
 阶段E（监控与运维）已全部完成。下一步是进入阶段F（生产准备），或等待所有者批准进入生产环境。
@@ -560,3 +592,5 @@ DB-01（数据库连接层 sqlx 池化重构）已于 2026-09-10 实现并验证
 PERF-01（读路径性能与重复代码收敛）已于 2026-09-10 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：承接 DB-01 池化后的读路径，就绪库单点（迁移每进程一次）、读路径索引（0006 + `SCHEMA_VERSION` 6）、有界读取（曲线/山脊窗口）、流转聚合修正（`filled_runs` 反映真实双腿成交）与重复代码收敛（解析 6→1 份、`LevelUpdate` 双定义合一）；全程只读、`external_order_calls=0` 恒真，**不解除也不改变 A-05 连续观察门槛**。其完成不改变本入口：下一轮商业迭代仍唯一进入 F 阶段后续迭代（如 F-03 生产部署）或经所有者批准进入生产环境。另需所有者决策的**独立立项项**已记录于设计文档 §7 与任务文档 §4：16 个无生产调用点模块（6304 行）的接线或删除——**接线前必须先为其中 4 个模块的无界容器补淘汰策略**；以及展示层取舍（`DetailPanel` 拆分、概览页静态装饰组件与 `RidgePanel`/`SimulationRidge` 双实现）。
 
 MIG-01（迁移机制交由 sqlx 接管）已于 2026-09-10 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：迁移的来源、排序、记账、锁、事务与校验整体交由 sqlx `Migrator`（`_sqlx_migrations` + SHA-384 校验和 + 半应用检测），删除自建迁移器（文件清单、迁移锁、`SCHEMA_VERSION` 常量、`verify_schema`、`schema_migrations` 表）；存量库经一次性采纳引导，不重跑任何已应用文件。**本迭代改写了 4 条已发布需求的断言文本**（迁移记账表由 `schema_migrations` 变为 `_sqlx_migrations`），已在 §6.7 与各需求文档中逐条登记，可观察结论不变。其完成不改变本入口：下一轮商业迭代仍唯一进入 F 阶段后续迭代（如 F-03 生产部署）或经所有者批准进入生产环境。待所有者决策的独立立项项（16 个无生产调用点模块的接线或删除、展示层取舍）仍见 PERF-01 设计文档 §7 与任务文档 §4；另有 MIG-01 记录的两项运维待补：`Dirty` 后的人工处置动作入 runbook、备份时序规范（停应用→备份→迁移）。
+
+G-02（模拟 run 来源判别）已于 2026-09-10 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：修复「仪表盘把合成簿烟测探针当成实时市场模拟展示」这一真实使用缺陷——新增 `source` 判别列（`SMOKE`/`LIVE`）、概览透出来源构成、界面三处来源标注与烟测自我说明。**同时确认了一条关键事实**：实时模拟 run 数为 0，原因是准入按设计失败关闭（凭证未配置、Bybit 资格未确认、实际费率 observation-only、名义金额低于交易所下限），8000 条 decision 中 `accepted` 为 0——这不是缺陷，而是 AIDLC §2 安全边界的预期表现；在任何模拟套利数据变得有意义之前，必须先完成阶段 F 的凭证与资格前置。其完成不改变本入口：下一轮商业迭代仍唯一进入 F 阶段后续迭代（如 F-03 生产部署）或经所有者批准进入生产环境。
