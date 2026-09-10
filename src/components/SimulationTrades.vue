@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { ElButton, ElDrawer, ElPagination, ElSelect, ElTable, ElTableColumn, ElTag, ElOption } from 'element-plus'
 import type { SimulationOverview, SimulationRunDetail, SimulationRunRow } from '../types'
-import { getSimulationRunDetail, getSimulationRuns } from '../commands'
+import { getObserverConfig, getSimulationRunDetail, getSimulationRuns } from '../commands'
 import { trimDecimal } from '../format'
 
 const props = defineProps<{
@@ -21,6 +21,9 @@ const page = ref(1)
 const PAGE_SIZE = 20
 const symbolFilter = ref<string | null>(null)
 const scenarioFilter = ref<string | null>(null)
+/** 合约过滤选项来自观察配置：列表值的唯一真相源是 `simulation_runs.symbol`
+ *  （即配置里的 `pairs[].symbol`，形如 `BTCUSDT`，无斜杠）。 */
+const symbolOptions = ref<string[]>([])
 const loading = ref(false)
 
 const detail = ref<SimulationRunDetail | null>(null)
@@ -173,7 +176,15 @@ function fmtVal(v: unknown): string {
   return trimDecimal(String(v))
 }
 
-onMounted(loadRuns)
+async function loadSymbolOptions() {
+  const config = await getObserverConfig()
+  symbolOptions.value = config?.pairs?.map(pair => pair.symbol) ?? []
+}
+
+onMounted(() => {
+  loadSymbolOptions()
+  loadRuns()
+})
 </script>
 
 <template>
@@ -182,8 +193,7 @@ onMounted(loadRuns)
       <h2><em class="green-dot" /> 机会历史 · 交易明细与获利</h2>
       <div class="filters">
         <ElSelect v-model="symbolFilter" placeholder="合约" clearable size="small" style="width: 110px" @change="page = 1; loadRuns()">
-          <ElOption label="BTC/USDT" value="BTC/USDT" />
-          <ElOption label="ETH/USDT" value="ETH/USDT" />
+          <ElOption v-for="symbol in symbolOptions" :key="symbol" :label="symbol" :value="symbol" />
         </ElSelect>
         <ElSelect v-model="scenarioFilter" placeholder="场景" clearable size="small" style="width: 130px" @change="page = 1; loadRuns()">
           <ElOption v-for="(lbl, key) in SCENARIO_LABELS" :key="key" :label="lbl" :value="key" />

@@ -27,7 +27,8 @@ const W = 760
 const H = 180
 const PAD = 30
 
-/** 累计净盈亏曲线：scanned 预期（虚线）与 simulated 现实（实线），同一坐标系。 */
+/** 累计净盈亏曲线：scanned 预期（虚线）与 simulated 现实（实线），同一坐标系。
+ *  前缀和由后端窗口函数算出（`NetProfitPoint` 已是累计值），前端不做浮点累加。 */
 const chart = computed<ChartData | null>(() => {
   const pts = props.overview?.cumulative_points
   if (!pts || pts.length < 2) return null
@@ -35,16 +36,14 @@ const chart = computed<ChartData | null>(() => {
   const t0 = pts[0].executed_at_ms
   const tSpan = pts[pts.length - 1].executed_at_ms - t0 || 1
 
-  let scannedSum = 0
-  let simulatedSum = 0
   let lo = 0
   let hi = 0
   const acc = pts.map(p => {
-    scannedSum += parseFloat(p.scanned_net_profit)
-    simulatedSum += parseFloat(p.simulated_net_profit)
-    lo = Math.min(lo, scannedSum, simulatedSum)
-    hi = Math.max(hi, scannedSum, simulatedSum)
-    return { t: p.executed_at_ms, scanned: scannedSum, simulated: simulatedSum }
+    const scanned = parseFloat(p.scanned_net_profit)
+    const simulated = parseFloat(p.simulated_net_profit)
+    lo = Math.min(lo, scanned, simulated)
+    hi = Math.max(hi, scanned, simulated)
+    return { t: p.executed_at_ms, scanned, simulated }
   })
   const span = hi - lo || 1
 

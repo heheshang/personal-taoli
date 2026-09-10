@@ -54,49 +54,103 @@ interface Row {
   curveH: number
 }
 
-const rows = computed<Row[]>(() => {
-  const n = buckets.value.length
-  if (!n) return []
-  const rowH = box.value.h / n
-  const curveH = Math.max(20, rowH - LABEL_H - AXIS_H)
-  return buckets.value.map((b, index) => computeRow(b, index, box.value.w, rowH, curveH))
-})
+/** 每桶预解析一次：解析与排序都不随渲染重算。 */
+interface BucketStats {
+  bucket: RidgeBucket
+  values: number[]
+  sorted: number[]
+  lo: number
+  hi: number
+}
 
-/** KDE：对桶内净盈亏点叠加高斯核，得归一化密度曲线 path（0 基线在行底）。 */
-function computeRow(b: RidgeBucket, index: number, width: number, rowH: number, curveH: number): Row {
-  const values = b.nets.map(v => parseFloat(v)).filter(n2 => !isNaN(n2))
-  const lo = Math.min(...values)
-  const hi = Math.max(...values)
-  const span = hi - lo || 1
-  const bins = 56
-  const dent = (span / 24) ** 2 // 核宽 ~ span/24
+const stats = computed<BucketStats[]>(() =>
+  buckets.value.map(b => {
+    const values = b.nets.map(v => parseFloat(v)).filter(n => !isNaN(n))
+    // 单遍求极值：`Math.min(...values)` 在数万样本时会抛 RangeError（超出调用栈参数上限）。
+    let lo = Infinity
+    let hi = -Infinity
+    for (const v of values) {
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+    return {
+      bucket: b,
+      values,
+      sorted: [...values].sort((a, b2) => a - b2),
+      lo: values.length ? lo : 0,
+      hi: values.length ? hi : 0,
+    }
+  }),
+)
 
-  const top = index * rowH + LABEL_H
-  const xs: number[] = []
-  const ys: number[] = []
-  for (let i = 0; i <= bins; i++) {
-    const x = lo + (span * i) / bins
-    let d = 0
-    for (const v of values) d += Math.exp(-(((v - x) ** 2) / dent) / 2)
-    if (!isFinite(d) || d === 0) d = 1e-9
-    xs.push((i / bins) * width)
-    ys.push(d)
+const BINS = 56
+/** 核宽 sigma = span/24，落在 BINS 个桶上即 BINS/24 ≈ 2.33 桶；取 3 sigma 截断。 */
+const KERNEL_RADIUS = 7
+const KERNEL: number[] = (() => {
+  const sigma = BINS / 24
+  const weights: number[] = []
+  for (let j = -KERNEL_RADIUS; j <= KERNEL_RADIUS; j++) {
+    weights.push(Math.exp(-(j * j) / (2 * sigma * sigma)))
   }
-  const maxD = Math.max(...ys)
-  const path = xs
-    .map((x, i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${(top + curveH - (ys[i] / maxD) * curveH).toFixed(1)}`)
+  return weights
+})()
+
+/// 直方图 + 高斯核卷积：与逐点 KDE 同形状，但成本只与 BINS 有关，与样本数无关
+/// （原实现是 O(BINS × n) 的 `Math.exp` 调用）。
+function density(values: number[], lo: number, hi: number): number[] {
+  const hist = new Array<number>(BINS + 1).fill(0)
+  const span = hi - lo
+  if (span > 0) {
+    const scale = BINS / span
+    for (const v of values) {
+      const index = Math.min(BINS, Math.max(0, Math.round((v - lo) * scale)))
+      hist[index] += 1
+    }
+  } else {
+    hist[Math.floor(BINS / 2)] = values.length
+  }
+  const smoothed = new Array<number>(BINS + 1).fill(0)
+  for (let i = 0; i <= BINS; i++) {
+    let sum = 0
+    for (let j = -KERNEL_RADIUS; j <= KERNEL_RADIUS; j++) {
+      const index = i + j
+      if (index < 0 || index > BINS) continue
+      sum += hist[index] * KERNEL[j + KERNEL_RADIUS]
+    }
+    smoothed[i] = isFinite(sum) && sum > 0 ? sum : 1e-9
+  }
+  return smoothed
+}
+
+function median(sorted: number[]): number {
+  const mid = Math.floor(sorted.length / 2)
+  if (!sorted.length) return 0
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+/** 分布曲线：0 基线在行底，按峰值归一化。 */
+function computeRow(s: BucketStats, index: number, width: number, rowH: number, curveH: number): Row {
+  const { values, sorted, lo, hi } = s
+  const span = hi - lo || 1
+  const top = index * rowH + LABEL_H
+
+  const ys = density(values, lo, hi)
+  const maxD = ys.reduce((a, b) => Math.max(a, b), 1e-9)
+  const path = ys
+    .map((d, i) => {
+      const x = (i / BINS) * width
+      const y = top + curveH - (d / maxD) * curveH
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+    })
     .join(' ')
 
-  const sorted = [...values].sort((a, b2) => a - b2)
-  const mid = Math.floor(sorted.length / 2)
-  const med = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-
-  const d = new Date(b.bucket_start_ms)
+  const med = median(sorted)
+  const d = new Date(s.bucket.bucket_start_ms)
   return {
     path,
     medianX: lo === hi ? width / 2 : ((med - lo) / span) * width,
     label: `${d.getMonth() + 1}/${d.getDate()}`,
-    sample: `n=${b.nets.length}`,
+    sample: `n=${s.bucket.nets.length}`,
     medianVal: trimDecimal(med.toFixed(6)),
     min: lo,
     max: hi,
@@ -105,15 +159,20 @@ function computeRow(b: RidgeBucket, index: number, width: number, rowH: number, 
   }
 }
 
+const rows = computed<Row[]>(() => {
+  const list = stats.value
+  const n = list.length
+  if (!n) return []
+  const rowH = box.value.h / n
+  const curveH = Math.max(20, rowH - LABEL_H - AXIS_H)
+  return list.map((s, index) => computeRow(s, index, box.value.w, rowH, curveH))
+})
+
 const overallMedian = computed(() => {
-  const all = buckets.value
-    .flatMap(x => x.nets.map(n => parseFloat(n)))
-    .filter(n => !isNaN(n))
-    .sort((a, b) => a - b)
+  const all = stats.value.flatMap(s => s.values)
   if (!all.length) return '—'
-  const m = Math.floor(all.length / 2)
-  const med = all.length % 2 ? all[m] : (all[m - 1] + all[m]) / 2
-  return trimDecimal(med.toFixed(6))
+  all.sort((a, b) => a - b)
+  return trimDecimal(median(all).toFixed(6))
 })
 
 function fmtVal(v: number): string {
