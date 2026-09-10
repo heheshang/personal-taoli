@@ -57,7 +57,7 @@ impl DomainConnection {
 
 // 纯函数：签名与实现逐字不变（零 DB 依赖）
 pub(crate) fn advisory_key / validate_id / hex_digest / db_time / to_i64 / to_u64;
-pub(crate) const SCHEMA_VERSION: i64 = 5;        // 不变
+pub(crate) const SCHEMA_VERSION: i64 = 6;        // DB-01 时为 5；后续读路径索引迁移 0006 提升为 6
 ```
 
 **唯一数据契约**：`PgPool` 是 crate 内唯一的连接真相源。旧的 `(Client, JoinHandle<()>)`
@@ -131,7 +131,7 @@ pub(crate) const SCHEMA_VERSION: i64 = 5;        // 不变
 | 行内类型不匹配 | `row.get` **panic** | `try_get` 返回 `Err` → **收敛为 Result** | DB01-R08；L3 |
 | 领域锁被占 | `bail!("{domain} execution domain already has a writer: …")` | **文案逐字不变** | db.rs:238 |
 | 迁移失败 | `Err` + context | 同（`raw_sql` 全量执行，含 plpgsql 触发器） | FACT1 |
-| schema 版本不符 | `bail!("unsupported B-01 schema version: expected 5, found …")` | **逐字不变** | db.rs:131 |
+| schema 版本不符 | `bail!("unsupported B-01 schema version: expected 5, found …")` | **文案逐字不变**（序号取自 `SCHEMA_VERSION`，现为 6） | db.rs:141 |
 | 连接池耗尽 | 旧代码无上限（每次新建） | **失败关闭**：`ACQUIRE_TIMEOUT=30s` 后 Err | L8（400ms 超时 → is_err=true，elapsed=403ms） |
 | 只读会话内写 | PostgreSQL 拒绝 | 同，且**事务进入 aborted 态**，后续读全部失败 | M4=true、**N2b** |
 
@@ -157,7 +157,7 @@ pub(crate) const SCHEMA_VERSION: i64 = 5;        // 不变
 | D5 | 池按 **`database_url` 缓存**（`LazyLock<Mutex<HashMap<String, PgPool>>>`），而非单一全局池 | `src-tauri` 每条命令重读 `TAOLI_DATABASE_URL`，且 `load_saved_env_config()` 可在 `setup` 期间改写它——单一全局池会拿到过期 URL。符合项目规则 `rs-lazylock`（initializer 在声明处已知） |
 | D6 | `MAX_CONNECTIONS=16`、`ACQUIRE_TIMEOUT=30s` | 每个持有中的领域占 1 条锁连接 + 事务借用；`simulation.rs:1778-1790` 同时持有三个核。旧代码**无上限**新建连接。L8 证明耗尽时失败关闭而非挂死 |
 | D7 | `dyn ToSql` 切片改为**逐个 `.bind()`**，不引入 `QueryBuilder` | `build_run_filter` 返回同构 `Vec<(String,String)>`，SQL 已用 `$N` 占位（simulation_query.rs:649/653），逐个 bind 即可保持 SQL 文本逐字不变；`QueryBuilder` 属过度设计。M1/M2/M3 验证单位、双位过滤与 COUNT 全部正确 |
-| D8 | 迁移用 `sqlx::raw_sql(&str).execute(&mut *connection)`，五份迁移跑在**同一条**借用连接上 | FACT1 证明 `raw_sql` 能整份执行含 `$$` plpgsql（`reject_audit_event_mutation()`，0001:84-92）与 `CREATE TRIGGER audit_events_immutable`（0001:94）的 `0001_paper_core.sql`，**不得手工拆句**；同一连接保证 advisory 锁与各批次共享会话 |
+| D8 | 迁移用 `sqlx::raw_sql(&str).execute(&mut *connection)`，全部迁移跑在**同一条**借用连接上 | FACT1 证明 `raw_sql` 能整份执行含 `$$` plpgsql（`reject_audit_event_mutation()`，0001:84-92）与 `CREATE TRIGGER audit_events_immutable`（0001:94）的 `0001_paper_core.sql`，**不得手工拆句**；同一连接保证 advisory 锁与各批次共享会话 |
 
 ### 探针原始输出（证据基线）
 
@@ -220,10 +220,16 @@ probe2 / probe（早期）：`A1 acquired=true`、`C1 writer_conn_holds_lock=tru
 
 ## 5. 数据迁移与兼容策略
 
-- **无 schema 变更**：五份迁移文件（0001–0005）逐字不动，`SCHEMA_VERSION=5` 不变，
-  `schema_migrations` 表语义不变，`INSERT … ON CONFLICT DO NOTHING` 幂等性不变（U08）。
-- **老库兼容**：`migrate` 仍按原顺序施加 0001→0005；已有库因 `IF NOT EXISTS` 与
-  `ON CONFLICT` 直接跳过，`verify_schema` 校验版本。G-01 已验证的老库升级路径不受影响。
+- **DB-01 自身无 schema 变更**：0001–0005 五份迁移逐字不动；`schema_migrations` 表语义与
+  `INSERT … ON CONFLICT DO NOTHING` 幂等性不变（U08）。
+- **后续增补 0006**：`0006_read_path_indexes.sql` 为 G-01 只读路径补索引
+  （`audit_events` 前缀/时间、`trade_facts(intent_id)`、`balance_snapshots(source, observed_at_ms)`），
+  纯 `CREATE INDEX IF NOT EXISTS`，无表结构变更；`SCHEMA_VERSION` 随之由 5 提升为 6。
+- **老库兼容**：`migrate` 按顺序施加 0001→0006；已有库因 `IF NOT EXISTS` 与
+  `ON CONFLICT` 直接跳过，`verify_schema` 校验版本。G-01 已验证的老库升级路径不受影响
+  （已在 `taoli-postgres` 实库验证：版本 6 落库、二次迁移幂等）。
+- **迁移按进程记忆**：`db::ready_pool(url)` 首次调用执行迁移并校验版本，之后按 URL 命中缓存；
+  三个只读入口不再逐次迁移（原实现使 10s 轮询每次都重跑全部 DDL）。
 - **依赖兼容**：`rust_decimal` 无 `sqlx` feature（已核对 1.42.1/1.43.0 的 `[features]`：
   仅 `db-postgres`、`db-tokio-postgres`、`db-diesel*`、`tokio-pg`）。sqlx 自身的
   `rust_decimal` feature 提供 Type/Encode/Decode，D1/L3 证明往返精确。
@@ -290,24 +296,20 @@ simulation_query.rs:268/280（经由 open/close）。
 - `src-tauri/Cargo.toml`：删 `tokio-postgres`，`rust_decimal` 去 `db-postgres`（源码零改动，
   `grep -rn tokio_postgres src-tauri/src/` 已为空）
 
-**待迁移**（8 模块，查询点合计 93 处）：
+**已迁移**（8 模块，DB-01 单次切换完成；`grep -rn tokio_postgres` 全仓为空）：
 
-| 模块 | 行数 | 查询点 | 必改项 |
-| --- | --- | --- | --- |
-| paper.rs | 864 | 21 | `Row`→`PgRow`(689-691)；`&Transaction`→`&mut Transaction<'_,Postgres>`(583/625)；`set_paper_balance`(158-191)；`business_row_count`(744-753)；`recover_active_plans(&self)`(260) |
-| order.rs | 852 | 16 | `Row`→`PgRow`(564)；`lock_fact`/`append_action`(543/551)；`load`/`recover_nonterminal(&self)`(526/532) |
-| execution.rs | 486 | 7 | `Row`→`PgRow`(281)；`load(&self)`(263) |
-| accounting.rs | 271 | 6 | `Row`→`PgRow`(261)；`load_event(&self)`(147) |
-| control.rs | 274 | 8 | `load(&self)`(180) |
-| reconciliation.rs | 265 | 4 | `record_snapshot`(86) 单行 10 bind |
-| simulation.rs | 2126 | 6 | 4 对 connect/close；**保留 :1122-1134 降级语义**；三核并发 :1778-1790 |
-| simulation_query.rs | 1008 | 25 | **删 open/close**；三个公开入口自持只读事务；3 处 `dyn ToSql`(462/479/662) |
+| 模块 | 迁移结果 |
+| --- | --- |
+| paper.rs / order.rs / execution.rs / accounting.rs / control.rs / reconciliation.rs | `Row`→`PgRow`、`&mut Transaction<'_, Postgres>`、`.inner.pool.begin()`；`.inner.client` 29 处全部改写 |
+| simulation.rs | 4 对 connect/close 删除；保留 `SimulationEngine::spawn` 降级语义（`TAOLI_DATABASE_URL` 缺失 → 告警 + `None`） |
+| simulation_query.rs | `open`/`close` 与裸 `BEGIN READ ONLY` 删除；三个公开入口自持只读事务；3 处 `dyn ToSql` 改为逐个 `.bind()` |
 
-`.inner.client` → `.inner.pool` 共 **29** 处，以 `.client` 所在行为准：
-paper.rs 213/262/283/291/299/386/396/406（8）、order.rs 163/183/220/281/349/394/440/528/533（9）、
-execution.rs 119/171/266（3）、accounting.rs 94/134/149/205（4）、control.rs 101/144/182（3）、
-reconciliation.rs 86/106（2）。其中 20 处是跨行链式（`.inner` 与 `.client` 分处相邻两行），
-单行 `grep "\.inner\.client"` 只命中 10 处——迁移与复核一律按上表 29 行为准。
+**本轮后的读路径增补**（与 DB-01 同一条连接层）：
+- `db.rs`：新增 `ready_pool(url)`（迁移 + schema 校验按进程记忆）、`READY` 守卫；`migrate` 委托之。
+- `migrations/0006_read_path_indexes.sql`：G-01 读路径索引；`SCHEMA_VERSION` → 6。
+- `simulation_query.rs`：累计曲线改用窗口函数前缀和并 `LIMIT`；山脊加 `RIDGE_LIMIT`；
+  详情三次同表往返合并为一次（新增 `RUN_PROJECTION` / `run_row_at` 共用列清单）；
+  流转聚合 6 条查询合并为 2 条，`filled_runs` 改由 `simulation_runs` 真实成交量聚合。
 
 ## 10. 设计评审记录
 
