@@ -2,7 +2,8 @@ use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio_postgres::Row;
+use sqlx::Row;
+use sqlx::postgres::PgRow;
 
 use crate::db::{DomainConnection, db_time, migrate, validate_id};
 use crate::market::unix_timestamp_ms;
@@ -114,27 +115,34 @@ impl ExecutionCore {
         {
             bail!("B-03 execution limits have invalid values");
         }
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin B-03 plan initialization")?;
-        let plan_exists: bool = tx
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM execution_plans WHERE plan_id=$1 AND account_id=$2 AND instrument_id=$3)",
-                &[&plan_id, &self.inner.account_id, &self.inner.instrument_id],
-            )
-            .await
-            .context("failed to verify B-03 execution plan")?
-            .get(0);
+        let plan_exists: bool = sqlx::query(
+            "SELECT EXISTS(SELECT 1 FROM execution_plans WHERE plan_id=$1 AND account_id=$2 AND instrument_id=$3)",
+        )
+        .bind(plan_id)
+        .bind(&self.inner.account_id)
+        .bind(&self.inner.instrument_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to verify B-03 execution plan")?
+        .try_get::<bool, _>(0)?;
         if !plan_exists {
             bail!("B-03 execution plan is missing or outside the held domain");
         }
-        tx.execute(
+        sqlx::query(
             "INSERT INTO execution_facts(plan_id,target_quantity,max_unmatched_exposure,compensation_budget,state,leg_a_filled,leg_b_filled,unmatched_quantity,unmatched_exposure,compensation_spent,last_version,updated_at_ms) VALUES($1,$2,$3,$4,'PLANNED',0,0,0,0,0,0,$5) ON CONFLICT(plan_id) DO NOTHING",
-            &[&plan_id, &target_quantity, &max_unmatched_exposure, &compensation_budget, &db_time()?],
         )
+        .bind(plan_id)
+        .bind(target_quantity)
+        .bind(max_unmatched_exposure)
+        .bind(compensation_budget)
+        .bind(db_time()?)
+        .execute(&mut *tx)
         .await
         .context("failed to initialize B-03 execution fact")?;
         tx.commit()
@@ -166,19 +174,19 @@ impl ExecutionCore {
         {
             bail!("B-03 fill and compensation values must be non-negative");
         }
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin B-03 execution evaluation")?;
-        let row = tx
-            .query_one(
-                "SELECT plan_id,target_quantity,max_unmatched_exposure,compensation_budget,state,leg_a_filled,leg_b_filled,unmatched_quantity,unmatched_exposure,compensation_spent,last_version,updated_at_ms FROM execution_facts WHERE plan_id=$1 FOR UPDATE",
-                &[&plan_id],
-            )
-            .await
-            .context("B-03 execution fact is missing")?;
+        let row = sqlx::query(
+            "SELECT plan_id,target_quantity,max_unmatched_exposure,compensation_budget,state,leg_a_filled,leg_b_filled,unmatched_quantity,unmatched_exposure,compensation_spent,last_version,updated_at_ms FROM execution_facts WHERE plan_id=$1 FOR UPDATE",
+        )
+        .bind(plan_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("B-03 execution fact is missing")?;
         let current = execution_snapshot(row)?;
         if matches!(
             current.state,
@@ -229,23 +237,46 @@ impl ExecutionCore {
             CompensationDecision::ManualRequired => "MANUAL_ESCALATED",
         };
         let event_id = format!("{plan_id}:{version}");
-        tx.execute(
+        sqlx::query(
             "INSERT INTO execution_events(event_id,plan_id,event_version,event_type,occurred_at_ms,payload) VALUES($1,$2,$3,$4,$5,$6)",
-            &[&event_id, &plan_id, &version, &event_type, &now, &json!({"leg_a_filled": leg_a_filled, "leg_b_filled": leg_b_filled, "unmatched_quantity": mismatch, "unmatched_exposure": exposure, "estimated_cost": estimated_cost, "decision": decision.as_str()})],
         )
+        .bind(&event_id)
+        .bind(plan_id)
+        .bind(version)
+        .bind(event_type)
+        .bind(now)
+        .bind(json!({"leg_a_filled": leg_a_filled, "leg_b_filled": leg_b_filled, "unmatched_quantity": mismatch, "unmatched_exposure": exposure, "estimated_cost": estimated_cost, "decision": decision.as_str()}))
+        .execute(&mut *tx)
         .await
         .context("failed to append B-03 execution event")?;
         let decision_id = format!("{plan_id}:decision:{version}");
-        tx.execute(
+        sqlx::query(
             "INSERT INTO compensation_decisions(decision_id,plan_id,event_version,decision,quantity,estimated_cost,reason,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-            &[&decision_id, &plan_id, &version, &decision.as_str(), &mismatch, &estimated_cost, &reason, &now],
         )
+        .bind(&decision_id)
+        .bind(plan_id)
+        .bind(version)
+        .bind(decision.as_str())
+        .bind(mismatch)
+        .bind(estimated_cost)
+        .bind(&reason)
+        .bind(now)
+        .execute(&mut *tx)
         .await
         .context("failed to persist B-03 compensation decision")?;
-        tx.execute(
+        sqlx::query(
             "UPDATE execution_facts SET state=$2,leg_a_filled=$3,leg_b_filled=$4,unmatched_quantity=$5,unmatched_exposure=$6,compensation_spent=compensation_spent+$7,last_version=$8,updated_at_ms=$9 WHERE plan_id=$1",
-            &[&plan_id, &state.as_str(), &leg_a_filled, &leg_b_filled, &mismatch, &exposure, &estimated_cost, &version, &now],
         )
+        .bind(plan_id)
+        .bind(state.as_str())
+        .bind(leg_a_filled)
+        .bind(leg_b_filled)
+        .bind(mismatch)
+        .bind(exposure)
+        .bind(estimated_cost)
+        .bind(version)
+        .bind(now)
+        .execute(&mut *tx)
         .await
         .context("failed to update B-03 execution fact")?;
         tx.commit()
@@ -261,15 +292,13 @@ impl ExecutionCore {
     }
 
     pub async fn load(&self, plan_id: &str) -> Result<ExecutionSnapshot> {
-        let row = self
-            .inner
-            .client
-            .query_one(
-                "SELECT plan_id,target_quantity,max_unmatched_exposure,compensation_budget,state,leg_a_filled,leg_b_filled,unmatched_quantity,unmatched_exposure,compensation_spent,last_version,updated_at_ms FROM execution_facts WHERE plan_id=$1", 
-                &[&plan_id],
-            )
-            .await
-            .context("failed to load B-03 execution fact")?;
+        let row = sqlx::query(
+            "SELECT plan_id,target_quantity,max_unmatched_exposure,compensation_budget,state,leg_a_filled,leg_b_filled,unmatched_quantity,unmatched_exposure,compensation_spent,last_version,updated_at_ms FROM execution_facts WHERE plan_id=$1",
+        )
+        .bind(plan_id)
+        .fetch_one(&self.inner.pool)
+        .await
+        .context("failed to load B-03 execution fact")?;
         execution_snapshot(row)
     }
 
@@ -278,19 +307,20 @@ impl ExecutionCore {
     }
 }
 
-fn execution_snapshot(row: Row) -> Result<ExecutionSnapshot> {
+fn execution_snapshot(row: PgRow) -> Result<ExecutionSnapshot> {
+    let state = parse_execution_state(&row.try_get::<String, _>(4)?)?;
     Ok(ExecutionSnapshot {
-        plan_id: row.get(0),
-        target_quantity: row.get(1),
-        max_unmatched_exposure: row.get(2),
-        compensation_budget: row.get(3),
-        state: parse_execution_state(row.get(4))?,
-        leg_a_filled: row.get(5),
-        leg_b_filled: row.get(6),
-        unmatched_quantity: row.get(7),
-        unmatched_exposure: row.get(8),
-        compensation_spent: row.get(9),
-        last_version: row.get(10),
+        plan_id: row.try_get::<String, _>(0)?,
+        target_quantity: row.try_get::<Decimal, _>(1)?,
+        max_unmatched_exposure: row.try_get::<Decimal, _>(2)?,
+        compensation_budget: row.try_get::<Decimal, _>(3)?,
+        state,
+        leg_a_filled: row.try_get::<Decimal, _>(5)?,
+        leg_b_filled: row.try_get::<Decimal, _>(6)?,
+        unmatched_quantity: row.try_get::<Decimal, _>(7)?,
+        unmatched_exposure: row.try_get::<Decimal, _>(8)?,
+        compensation_spent: row.try_get::<Decimal, _>(9)?,
+        last_version: row.try_get::<i64, _>(10)?,
     })
 }
 

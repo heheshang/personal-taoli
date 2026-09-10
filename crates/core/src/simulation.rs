@@ -23,12 +23,13 @@ use rust_decimal::RoundingStrategy;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::Row;
 use tokio::sync::{Mutex, Notify};
 
 use crate::archive::DecisionEvent;
 use crate::config::SimulationConfig;
 use crate::db::SCHEMA_VERSION;
-use crate::db::{close_connection, connect, hex_digest, migrate};
+use crate::db::{hex_digest, migrate, pool};
 use crate::execution::{CompensationDecision, ExecutionCore, ExecutionState};
 use crate::instrument::InstrumentSpec;
 use crate::market::{BookSide, Level, OrderBookSnapshot, unix_timestamp_ms};
@@ -361,18 +362,19 @@ async fn available_balance(
     venue: &str,
     asset: &str,
 ) -> Result<Decimal> {
-    let (client, connection) = connect(database_url).await?;
-    let row = client
-        .query_opt(
-            "SELECT observed_free, local_reserved FROM paper_balances
+    let pool = pool(database_url).await?;
+    let row = sqlx::query(
+        "SELECT observed_free, local_reserved FROM paper_balances
              WHERE account_id=$1 AND venue=$2 AND asset=$3",
-            &[&account, &venue, &asset],
-        )
-        .await
-        .context("failed to read PAPER balance")?;
-    close_connection(client, connection).await;
+    )
+    .bind(account)
+    .bind(venue)
+    .bind(asset)
+    .fetch_optional(&pool)
+    .await
+    .context("failed to read PAPER balance")?;
     Ok(match row {
-        Some(r) => r.get::<_, Decimal>(0) - r.get::<_, Decimal>(1),
+        Some(r) => r.try_get::<Decimal, _>(0)? - r.try_get::<Decimal, _>(1)?,
         None => Decimal::ZERO,
     })
 }
@@ -426,7 +428,7 @@ async fn persist_simulation_run(
 ) -> Result<()> {
     use crate::db::to_i64;
 
-    let (client, connection) = connect(database_url).await?;
+    let pool = pool(database_url).await?;
     let report_json =
         serde_json::to_value(report).context("failed to serialize simulation run report")?;
     let warnings_json =
@@ -435,9 +437,8 @@ async fn persist_simulation_run(
     let rejection_reason = report.rejection_reason.as_deref();
     // 安全边界：模拟层无真实外呼路径，投影恒 0（既有无烟测断言把关）。
     debug_assert_eq!(report.external_order_calls, 0);
-    client
-        .execute(
-            "INSERT INTO simulation_runs(
+    sqlx::query(
+        "INSERT INTO simulation_runs(
                  run_id, executed_at_ms, evaluated_at_ms, symbol, buy_venue, sell_venue,
                  direction, quantity, scenario, rejection_reason, planning_warnings,
                  plan_id, account_id, instrument_id, buy_intent_id, sell_intent_id,
@@ -454,51 +455,50 @@ async fn persist_simulation_run(
                  $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
                  $31,$32,$33,$34,$35,$36,$37,$38,$39,$40
              ) ON CONFLICT (run_id) DO NOTHING",
-            &[
-                &report.run_id,
-                &to_i64(fund_observed_at_ms)?,
-                &to_i64(report.evaluated_at_ms)?,
-                &report.symbol,
-                &report.buy_venue,
-                &report.sell_venue,
-                &direction,
-                &report.quantity,
-                &scenario,
-                &rejection_reason,
-                &warnings_json,
-                &report.plan_id,
-                &report.account_id,
-                &report.instrument_id,
-                &report.buy_intent_id,
-                &report.sell_intent_id,
-                &to_i64(report.seed)?,
-                &to_i64(report.decision_to_submit_ms)?,
-                &to_i64(report.fill_latency_ms)?,
-                &report.buy.filled,
-                &report.sell.filled,
-                &report.buy.avg_price,
-                &report.sell.avg_price,
-                &report.buy_fee,
-                &report.sell_fee,
-                &report.scanned_net_profit,
-                &report.simulated_net_profit,
-                &report.adverse_move_bps,
-                &report.competitor_take_bps,
-                &report.compensation_decision,
-                &report.execution_state,
-                &report.unmatched_quantity,
-                &report.unmatched_exposure,
-                &report.estimated_compensation_cost,
-                &report.unknown_submit_tried,
-                &report.query_found,
-                &report.idempotent_replay,
-                &to_i64(report.skipped_frames)?,
-                &0_i64,
-                &report_json,
-            ],
-        )
-        .await
-        .context("failed to persist simulation run projection")?;
+    )
+    .bind(&report.run_id)
+    .bind(to_i64(fund_observed_at_ms)?)
+    .bind(to_i64(report.evaluated_at_ms)?)
+    .bind(&report.symbol)
+    .bind(&report.buy_venue)
+    .bind(&report.sell_venue)
+    .bind(direction)
+    .bind(report.quantity)
+    .bind(scenario)
+    .bind(rejection_reason)
+    .bind(&warnings_json)
+    .bind(&report.plan_id)
+    .bind(&report.account_id)
+    .bind(&report.instrument_id)
+    .bind(&report.buy_intent_id)
+    .bind(&report.sell_intent_id)
+    .bind(to_i64(report.seed)?)
+    .bind(to_i64(report.decision_to_submit_ms)?)
+    .bind(to_i64(report.fill_latency_ms)?)
+    .bind(report.buy.filled)
+    .bind(report.sell.filled)
+    .bind(report.buy.avg_price)
+    .bind(report.sell.avg_price)
+    .bind(report.buy_fee)
+    .bind(report.sell_fee)
+    .bind(report.scanned_net_profit)
+    .bind(report.simulated_net_profit)
+    .bind(report.adverse_move_bps)
+    .bind(report.competitor_take_bps)
+    .bind(&report.compensation_decision)
+    .bind(&report.execution_state)
+    .bind(report.unmatched_quantity)
+    .bind(report.unmatched_exposure)
+    .bind(report.estimated_compensation_cost)
+    .bind(report.unknown_submit_tried)
+    .bind(report.query_found)
+    .bind(report.idempotent_replay)
+    .bind(to_i64(report.skipped_frames)?)
+    .bind(0_i64)
+    .bind(&report_json)
+    .execute(&pool)
+    .await
+    .context("failed to persist simulation run projection")?;
 
     // 三节点结算后视图（设计 D5）。fund=注入额；filled=注入 − 买腿成本/卖腿交割；
     // evaluated=同 filled（补偿为现金评估、不落地）。推演值 clamp>=0 见 settlement_points。
@@ -535,52 +535,48 @@ async fn persist_simulation_run(
     for (node, at_ms, quote_total, base_total) in nodes {
         let quote_snapshot_id = format!("sim-snap-{}-{direction}-{node}-quote", report.run_id);
         let base_snapshot_id = format!("sim-snap-{}-{direction}-{node}-base", report.run_id);
-        let quote_insert = client
-            .execute(
-                "INSERT INTO balance_snapshots(
+        let quote_insert = sqlx::query(
+            "INSERT INTO balance_snapshots(
                          snapshot_id, account_id, venue, asset, total, free, locked,
                          observed_at_ms, source, completeness
                      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-                &[
-                    &quote_snapshot_id,
-                    &report.account_id,
-                    &report.buy_venue,
-                    &quote_asset,
-                    &quote_total,
-                    &quote_total,
-                    &Decimal::ZERO,
-                    &at_ms,
-                    &"SIMULATION",
-                    &"COMPLETE",
-                ],
-            )
-            .await;
+        )
+        .bind(&quote_snapshot_id)
+        .bind(&report.account_id)
+        .bind(&report.buy_venue)
+        .bind(quote_asset)
+        .bind(quote_total)
+        .bind(quote_total)
+        .bind(Decimal::ZERO)
+        .bind(at_ms)
+        .bind("SIMULATION")
+        .bind("COMPLETE")
+        .execute(&pool)
+        .await;
         if let Err(error) = quote_insert {
             tracing::warn!(
                 "G-01: balance snapshot failed for run {} node {node} quote: {error:#}",
                 report.run_id
             );
         }
-        let base_insert = client
-            .execute(
-                "INSERT INTO balance_snapshots(
+        let base_insert = sqlx::query(
+            "INSERT INTO balance_snapshots(
                          snapshot_id, account_id, venue, asset, total, free, locked,
                          observed_at_ms, source, completeness
                      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-                &[
-                    &base_snapshot_id,
-                    &report.account_id,
-                    &report.sell_venue,
-                    &base_asset,
-                    &base_total,
-                    &base_total,
-                    &Decimal::ZERO,
-                    &at_ms,
-                    &"SIMULATION",
-                    &"COMPLETE",
-                ],
-            )
-            .await;
+        )
+        .bind(&base_snapshot_id)
+        .bind(&report.account_id)
+        .bind(&report.sell_venue)
+        .bind(base_asset)
+        .bind(base_total)
+        .bind(base_total)
+        .bind(Decimal::ZERO)
+        .bind(at_ms)
+        .bind("SIMULATION")
+        .bind("COMPLETE")
+        .execute(&pool)
+        .await;
         if let Err(error) = base_insert {
             tracing::warn!(
                 "G-01: balance snapshot failed for run {} node {node} base: {error:#}",
@@ -588,7 +584,6 @@ async fn persist_simulation_run(
             );
         }
     }
-    close_connection(client, connection).await;
     Ok(())
 }
 
@@ -1600,19 +1595,18 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
     let plan_count =
         business_count(database_url, "execution_plans", "plan_id", &s05.plan_id).await?;
     // 投影行必须成功落库且占位枚举合法（0005 CHECK 不再被空串触发）。
-    let (s05_project_client, s05_project_conn) = connect(database_url).await?;
-    let s05_projection = s05_project_client
-        .query_one(
-            "SELECT compensation_decision, execution_state, rejection_reason
+    let s05_project_pool = pool(database_url).await?;
+    let s05_projection = sqlx::query(
+        "SELECT compensation_decision, execution_state, rejection_reason
              FROM simulation_runs WHERE run_id = $1",
-            &[&s05.run_id],
-        )
-        .await?;
-    close_connection(s05_project_client, s05_project_conn).await;
-    let s05_projection_legal = s05_projection.get::<_, String>(0) == "NO_ACTION"
-        && s05_projection.get::<_, String>(1) == "PLANNED"
+    )
+    .bind(&s05.run_id)
+    .fetch_one(&s05_project_pool)
+    .await?;
+    let s05_projection_legal = s05_projection.try_get::<String, _>(0)? == "NO_ACTION"
+        && s05_projection.try_get::<String, _>(1)? == "PLANNED"
         && s05_projection
-            .get::<_, Option<String>>(2)
+            .try_get::<Option<String>, _>(2)?
             .is_some_and(|r| r.starts_with("insufficient PAPER funds"));
     let s05_insufficient_funds_rejected = s05.scenario == SimulationScenario::Rejected
         && s05.rejection_reason.is_some()
@@ -1831,14 +1825,14 @@ pub async fn run_simulation_smoke(database_url: &str) -> Result<SimulationSmokeR
 
 /// 数据库业务行计数（烟测断言残留用）。
 async fn business_count(database_url: &str, table: &str, column: &str, value: &str) -> Result<i64> {
-    let (client, connection) = connect(database_url).await?;
+    let pool = pool(database_url).await?;
     let query = format!("SELECT COUNT(*) FROM {table} WHERE {column}=$1");
-    let row = client
-        .query_one(query.as_str(), &[&value])
+    let row = sqlx::query(query.as_str())
+        .bind(value)
+        .fetch_one(&pool)
         .await
         .with_context(|| format!("failed to count {table}.{column}"))?;
-    close_connection(client, connection).await;
-    Ok(row.get(0))
+    Ok(row.try_get::<i64, _>(0)?)
 }
 
 // ---------------------------------------------------------------------------

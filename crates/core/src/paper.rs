@@ -5,11 +5,12 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio_postgres::{Row, Transaction};
+use sqlx::postgres::{PgRow, Postgres};
+use sqlx::{Row, Transaction};
 
 use crate::db::{
-    DomainConnection, SCHEMA_VERSION, advisory_key, close_connection, connect, hex_digest, migrate,
-    to_i64, validate_id, verify_schema,
+    DomainConnection, SCHEMA_VERSION, advisory_key, hex_digest, migrate, pool, to_i64, validate_id,
+    verify_schema,
 };
 use crate::market::unix_timestamp_ms;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,40 +156,47 @@ pub async fn set_paper_balance(
         bail!("PAPER balance observed_at_ms must be positive");
     }
     let observed_at_ms = to_i64(observed_at_ms)?;
-    let (mut client, connection) = connect(database_url).await?;
-    verify_schema(&client).await?;
-    let transaction = client
-        .transaction()
+    let pool = pool(database_url).await?;
+    verify_schema(&pool).await?;
+    let mut transaction = pool
+        .begin()
         .await
         .context("failed to begin PAPER balance transaction")?;
     let balance_lock = balance_advisory_key(account_id, venue, asset);
-    transaction
-        .query_one("SELECT pg_advisory_xact_lock($1)", &[&balance_lock])
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(balance_lock)
+        .execute(&mut *transaction)
         .await
         .context("failed to serialize PAPER balance initialization")?;
-    let active: bool = transaction
-        .query_one(
-            "SELECT EXISTS(SELECT 1 FROM fund_reservations WHERE account_id=$1 AND venue=$2 AND asset=$3 AND state='LOCAL_RESERVED')",
-            &[&account_id, &venue, &asset],
-        )
-        .await
-        .context("failed to inspect active PAPER reservations")?
-        .get(0);
+    let active: bool = sqlx::query(
+        "SELECT EXISTS(SELECT 1 FROM fund_reservations WHERE account_id=$1 AND venue=$2 AND asset=$3 AND state='LOCAL_RESERVED')",
+    )
+    .bind(account_id)
+    .bind(venue)
+    .bind(asset)
+    .fetch_one(&mut *transaction)
+    .await
+    .context("failed to inspect active PAPER reservations")?
+    .try_get::<bool, _>(0)?;
     if active {
         bail!("cannot replace a PAPER balance with active local reservations");
     }
-    transaction
-        .execute(
-            "INSERT INTO paper_balances(account_id,venue,asset,observed_total,observed_free,local_reserved,observed_at_ms) VALUES($1,$2,$3,$4,$5,0,$6) ON CONFLICT(account_id,venue,asset) DO UPDATE SET observed_total=EXCLUDED.observed_total, observed_free=EXCLUDED.observed_free, local_reserved=0, observed_at_ms=EXCLUDED.observed_at_ms",
-            &[&account_id, &venue, &asset, &observed_total, &observed_free, &observed_at_ms],
-        )
-        .await
-        .context("failed to store PAPER balance")?;
+    sqlx::query(
+        "INSERT INTO paper_balances(account_id,venue,asset,observed_total,observed_free,local_reserved,observed_at_ms) VALUES($1,$2,$3,$4,$5,0,$6) ON CONFLICT(account_id,venue,asset) DO UPDATE SET observed_total=EXCLUDED.observed_total, observed_free=EXCLUDED.observed_free, local_reserved=0, observed_at_ms=EXCLUDED.observed_at_ms",
+    )
+    .bind(account_id)
+    .bind(venue)
+    .bind(asset)
+    .bind(observed_total)
+    .bind(observed_free)
+    .bind(observed_at_ms)
+    .execute(&mut *transaction)
+    .await
+    .context("failed to store PAPER balance")?;
     transaction
         .commit()
         .await
         .context("failed to commit PAPER balance")?;
-    close_connection(client, connection).await;
     Ok(())
 }
 
@@ -208,28 +216,28 @@ impl PaperCore {
         let digest = request_digest(&request)?;
         let created_at_ms = unix_timestamp_ms()?;
         let created_at_db = to_i64(created_at_ms)?;
-        let transaction = self
+        let mut transaction = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin plan reservation transaction")?;
         let request_lock = advisory_key("reserve-request", &request.request_id);
-        transaction
-            .query_one("SELECT pg_advisory_xact_lock($1)", &[&request_lock])
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(request_lock)
+            .execute(&mut *transaction)
             .await
             .context("failed to serialize PAPER request")?;
 
-        if let Some(row) = transaction
-            .query_opt(
-                "SELECT plan_id, request_digest FROM execution_plans WHERE request_id=$1",
-                &[&request.request_id],
-            )
-            .await
-            .context("failed to inspect idempotent PAPER request")?
+        if let Some(row) =
+            sqlx::query("SELECT plan_id, request_digest FROM execution_plans WHERE request_id=$1")
+                .bind(&request.request_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .context("failed to inspect idempotent PAPER request")?
         {
-            let existing_plan_id: String = row.get(0);
-            let existing_digest: String = row.get(1);
+            let existing_plan_id: String = row.try_get(0)?;
+            let existing_digest: String = row.try_get(1)?;
             if existing_digest != digest {
                 bail!("request_id is already bound to different plan content");
             }
@@ -244,8 +252,8 @@ impl PaperCore {
             });
         }
 
-        lock_and_check_balances(&transaction, &request).await?;
-        insert_plan(&transaction, &request, &digest, created_at_db).await?;
+        lock_and_check_balances(&mut transaction, &request).await?;
+        insert_plan(&mut transaction, &request, &digest, created_at_db).await?;
         transaction
             .commit()
             .await
@@ -258,17 +266,17 @@ impl PaperCore {
     }
 
     pub async fn recover_active_plans(&self) -> Result<Vec<RecoveredPlan>> {
-        let rows = self
-            .inner.client
-            .query(
-                "SELECT plan_id FROM execution_plans WHERE account_id=$1 AND instrument_id=$2 AND state='RESERVED' ORDER BY created_at_ms, plan_id",
-                &[&self.inner.account_id, &self.inner.instrument_id],
-            )
-            .await
-            .context("failed to list active PAPER plans")?;
+        let rows = sqlx::query(
+            "SELECT plan_id FROM execution_plans WHERE account_id=$1 AND instrument_id=$2 AND state='RESERVED' ORDER BY created_at_ms, plan_id",
+        )
+        .bind(&self.inner.account_id)
+        .bind(&self.inner.instrument_id)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("failed to list active PAPER plans")?;
         let mut plans = Vec::with_capacity(rows.len());
         for row in rows {
-            let plan_id: String = row.get(0);
+            let plan_id: String = row.try_get(0)?;
             plans.push(self.load_plan(&plan_id).await?);
         }
         Ok(plans)
@@ -279,30 +287,27 @@ impl PaperCore {
     }
 
     async fn load_plan(&self, plan_id: &str) -> Result<RecoveredPlan> {
-        let row = self
-            .inner.client
-            .query_one(
-                "SELECT plan_id,request_id,request_digest,account_id,instrument_id,opportunity_id,strategy_config_version,target_quantity,max_unmatched_exposure,state,created_at_ms FROM execution_plans WHERE plan_id=$1",
-                &[&plan_id],
-            )
-            .await
-            .context("failed to load PAPER execution plan")?;
-        let intent_rows = self
-            .inner.client
-            .query(
-                "SELECT intent_id,leg_id,attempt_id,client_order_id,venue,side,quantity,limit_price,submission_status FROM order_intents WHERE plan_id=$1 ORDER BY leg_id",
-                &[&plan_id],
-            )
-            .await
-            .context("failed to load PAPER order intents")?;
-        let reservation_rows = self
-            .inner.client
-            .query(
-                "SELECT reservation_id,venue,asset,amount,state FROM fund_reservations WHERE plan_id=$1 ORDER BY venue,asset",
-                &[&plan_id],
-            )
-            .await
-            .context("failed to load PAPER fund reservations")?;
+        let row = sqlx::query(
+            "SELECT plan_id,request_id,request_digest,account_id,instrument_id,opportunity_id,strategy_config_version,target_quantity,max_unmatched_exposure,state,created_at_ms FROM execution_plans WHERE plan_id=$1",
+        )
+        .bind(plan_id)
+        .fetch_one(&self.inner.pool)
+        .await
+        .context("failed to load PAPER execution plan")?;
+        let intent_rows = sqlx::query(
+            "SELECT intent_id,leg_id,attempt_id,client_order_id,venue,side,quantity,limit_price,submission_status FROM order_intents WHERE plan_id=$1 ORDER BY leg_id",
+        )
+        .bind(plan_id)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("failed to load PAPER order intents")?;
+        let reservation_rows = sqlx::query(
+            "SELECT reservation_id,venue,asset,amount,state FROM fund_reservations WHERE plan_id=$1 ORDER BY venue,asset",
+        )
+        .bind(plan_id)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("failed to load PAPER fund reservations")?;
         recovered_plan(row, intent_rows, reservation_rows)
     }
 }
@@ -381,35 +386,27 @@ pub async fn run_paper_core_smoke(database_url: &str) -> Result<PaperCoreSmokeRe
     if recovered.len() != 1 || recovered[0].plan_id != winning_request.plan_id {
         bail!("PAPER recovery did not return the committed active plan");
     }
-    let recovered_risk_decisions: i64 = recovered_core
-        .inner
-        .client
-        .query_one(
-            "SELECT count(*) FROM risk_decisions WHERE plan_id=$1 AND approved",
-            &[&winning_request.plan_id],
-        )
-        .await
-        .context("failed to verify recovered PAPER risk decision")?
-        .get(0);
-    let recovered_audit_events: i64 = recovered_core
-        .inner
-        .client
-        .query_one(
-            "SELECT count(*) FROM audit_events WHERE aggregate_id=$1 AND event_type='PlanReserved'",
-            &[&winning_request.plan_id],
-        )
-        .await
-        .context("failed to verify recovered PAPER audit event")?
-        .get(0);
-    let audit_events_immutable = recovered_core
-        .inner
-        .client
-        .execute(
-            "UPDATE audit_events SET payload=payload WHERE aggregate_id=$1",
-            &[&winning_request.plan_id],
-        )
-        .await
-        .is_err();
+    let recovered_risk_decisions: i64 =
+        sqlx::query("SELECT count(*) FROM risk_decisions WHERE plan_id=$1 AND approved")
+            .bind(&winning_request.plan_id)
+            .fetch_one(&recovered_core.inner.pool)
+            .await
+            .context("failed to verify recovered PAPER risk decision")?
+            .try_get::<i64, _>(0)?;
+    let recovered_audit_events: i64 = sqlx::query(
+        "SELECT count(*) FROM audit_events WHERE aggregate_id=$1 AND event_type='PlanReserved'",
+    )
+    .bind(&winning_request.plan_id)
+    .fetch_one(&recovered_core.inner.pool)
+    .await
+    .context("failed to verify recovered PAPER audit event")?
+    .try_get::<i64, _>(0)?;
+    let audit_events_immutable =
+        sqlx::query("UPDATE audit_events SET payload=payload WHERE aggregate_id=$1")
+            .bind(&winning_request.plan_id)
+            .execute(&recovered_core.inner.pool)
+            .await
+            .is_err();
     recovered_core.disconnect().await;
     let recovered_intents = recovered.iter().map(|plan| plan.intents.len()).sum();
     let recovered_reservations = recovered.iter().map(|plan| plan.reservations.len()).sum();
@@ -580,7 +577,7 @@ fn balance_advisory_key(account_id: &str, venue: &str, asset: &str) -> i64 {
 }
 
 async fn lock_and_check_balances(
-    transaction: &Transaction<'_>,
+    transaction: &mut Transaction<'_, Postgres>,
     request: &ReservePlanRequest,
 ) -> Result<()> {
     let mut reservations = request.reservations.iter().collect::<Vec<_>>();
@@ -588,25 +585,28 @@ async fn lock_and_check_balances(
     for reservation in reservations {
         let balance_lock =
             balance_advisory_key(&request.account_id, &reservation.venue, &reservation.asset);
-        transaction
-            .query_one("SELECT pg_advisory_xact_lock($1)", &[&balance_lock])
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(balance_lock)
+            .execute(&mut **transaction)
             .await
             .context("failed to serialize PAPER balance reservation")?;
-        let row = transaction
-            .query_opt(
-                "SELECT observed_free,local_reserved FROM paper_balances WHERE account_id=$1 AND venue=$2 AND asset=$3 FOR UPDATE",
-                &[&request.account_id, &reservation.venue, &reservation.asset],
+        let row = sqlx::query(
+            "SELECT observed_free,local_reserved FROM paper_balances WHERE account_id=$1 AND venue=$2 AND asset=$3 FOR UPDATE",
+        )
+        .bind(&request.account_id)
+        .bind(&reservation.venue)
+        .bind(&reservation.asset)
+        .fetch_optional(&mut **transaction)
+        .await
+        .context("failed to lock PAPER balance")?
+        .with_context(|| {
+            format!(
+                "PAPER balance is missing for venue={} asset={}",
+                reservation.venue, reservation.asset
             )
-            .await
-            .context("failed to lock PAPER balance")?
-            .with_context(|| {
-                format!(
-                    "PAPER balance is missing for venue={} asset={}",
-                    reservation.venue, reservation.asset
-                )
-            })?;
-        let observed_free: Decimal = row.get(0);
-        let local_reserved: Decimal = row.get(1);
+        })?;
+        let observed_free: Decimal = row.try_get(0)?;
+        let local_reserved: Decimal = row.try_get(1)?;
         let available = observed_free - local_reserved;
         if available < reservation.amount {
             bail!(
@@ -622,49 +622,76 @@ async fn lock_and_check_balances(
 }
 
 async fn insert_plan(
-    transaction: &Transaction<'_>,
+    transaction: &mut Transaction<'_, Postgres>,
     request: &ReservePlanRequest,
     digest: &str,
     created_at_ms: i64,
 ) -> Result<()> {
-    transaction
-        .execute(
-            "INSERT INTO execution_plans(plan_id,request_id,request_digest,account_id,instrument_id,opportunity_id,strategy_config_version,target_quantity,max_unmatched_exposure,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10)",
-            &[&request.plan_id, &request.request_id, &digest, &request.account_id, &request.instrument_id, &request.opportunity_id, &request.strategy_config_version, &request.target_quantity, &request.max_unmatched_exposure, &created_at_ms],
-        )
-        .await
-        .context("failed to insert PAPER execution plan")?;
-    transaction
-        .execute(
-            "INSERT INTO risk_decisions(plan_id,approved,input_digest,decided_at_ms) VALUES($1,TRUE,$2,$3)",
-            &[&request.plan_id, &digest, &created_at_ms],
-        )
+    sqlx::query(
+        "INSERT INTO execution_plans(plan_id,request_id,request_digest,account_id,instrument_id,opportunity_id,strategy_config_version,target_quantity,max_unmatched_exposure,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10)",
+    )
+    .bind(&request.plan_id)
+    .bind(&request.request_id)
+    .bind(digest)
+    .bind(&request.account_id)
+    .bind(&request.instrument_id)
+    .bind(&request.opportunity_id)
+    .bind(&request.strategy_config_version)
+    .bind(request.target_quantity)
+    .bind(request.max_unmatched_exposure)
+    .bind(created_at_ms)
+    .execute(&mut **transaction)
+    .await
+    .context("failed to insert PAPER execution plan")?;
+    sqlx::query("INSERT INTO risk_decisions(plan_id,approved,input_digest,decided_at_ms) VALUES($1,TRUE,$2,$3)")
+        .bind(&request.plan_id)
+        .bind(digest)
+        .bind(created_at_ms)
+        .execute(&mut **transaction)
         .await
         .context("failed to insert PAPER risk decision")?;
     for reservation in &request.reservations {
-        transaction
-            .execute(
-                "UPDATE paper_balances SET local_reserved=local_reserved+$1 WHERE account_id=$2 AND venue=$3 AND asset=$4",
-                &[&reservation.amount, &request.account_id, &reservation.venue, &reservation.asset],
-            )
-            .await
-            .context("failed to reserve PAPER balance")?;
-        transaction
-            .execute(
-                "INSERT INTO fund_reservations(reservation_id,plan_id,account_id,venue,asset,amount,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,'LOCAL_RESERVED',$7)",
-                &[&reservation.reservation_id, &request.plan_id, &request.account_id, &reservation.venue, &reservation.asset, &reservation.amount, &created_at_ms],
-            )
-            .await
-            .context("failed to insert PAPER fund reservation")?;
+        sqlx::query(
+            "UPDATE paper_balances SET local_reserved=local_reserved+$1 WHERE account_id=$2 AND venue=$3 AND asset=$4",
+        )
+        .bind(reservation.amount)
+        .bind(&request.account_id)
+        .bind(&reservation.venue)
+        .bind(&reservation.asset)
+        .execute(&mut **transaction)
+        .await
+        .context("failed to reserve PAPER balance")?;
+        sqlx::query(
+            "INSERT INTO fund_reservations(reservation_id,plan_id,account_id,venue,asset,amount,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,'LOCAL_RESERVED',$7)",
+        )
+        .bind(&reservation.reservation_id)
+        .bind(&request.plan_id)
+        .bind(&request.account_id)
+        .bind(&reservation.venue)
+        .bind(&reservation.asset)
+        .bind(reservation.amount)
+        .bind(created_at_ms)
+        .execute(&mut **transaction)
+        .await
+        .context("failed to insert PAPER fund reservation")?;
     }
     for intent in &request.intents {
-        transaction
-            .execute(
-                "INSERT INTO order_intents(intent_id,plan_id,leg_id,attempt_id,client_order_id,venue,side,quantity,limit_price,submission_status,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'NOT_SENT',$10)",
-                &[&intent.intent_id, &request.plan_id, &intent.leg_id, &intent.attempt_id, &intent.client_order_id, &intent.venue, &intent.side.as_str(), &intent.quantity, &intent.limit_price, &created_at_ms],
-            )
-            .await
-            .context("failed to insert durable PAPER order intent")?;
+        sqlx::query(
+            "INSERT INTO order_intents(intent_id,plan_id,leg_id,attempt_id,client_order_id,venue,side,quantity,limit_price,submission_status,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'NOT_SENT',$10)",
+        )
+        .bind(&intent.intent_id)
+        .bind(&request.plan_id)
+        .bind(&intent.leg_id)
+        .bind(&intent.attempt_id)
+        .bind(&intent.client_order_id)
+        .bind(&intent.venue)
+        .bind(intent.side.as_str())
+        .bind(intent.quantity)
+        .bind(intent.limit_price)
+        .bind(created_at_ms)
+        .execute(&mut **transaction)
+        .await
+        .context("failed to insert durable PAPER order intent")?;
     }
     let payload = json!({
         "account_id": request.account_id,
@@ -675,82 +702,88 @@ async fn insert_plan(
         "intent_count": request.intents.len(),
         "submission_status": "NOT_SENT"
     });
-    transaction
-        .execute(
-            "INSERT INTO audit_events(event_id,aggregate_id,aggregate_version,event_type,correlation_id,causation_id,occurred_at_ms,payload) VALUES($1,$2,1,'PlanReserved',$2,$3,$4,$5)",
-            &[&format!("{}:reserved", request.plan_id), &request.plan_id, &request.request_id, &created_at_ms, &payload],
-        )
-        .await
-        .context("failed to insert immutable PAPER audit event")?;
+    sqlx::query(
+        "INSERT INTO audit_events(event_id,aggregate_id,aggregate_version,event_type,correlation_id,causation_id,occurred_at_ms,payload) VALUES($1,$2,1,'PlanReserved',$2,$3,$4,$5)",
+    )
+    .bind(format!("{}:reserved", request.plan_id))
+    .bind(&request.plan_id)
+    .bind(&request.request_id)
+    .bind(created_at_ms)
+    .bind(&payload)
+    .execute(&mut **transaction)
+    .await
+    .context("failed to insert immutable PAPER audit event")?;
     Ok(())
 }
 
 fn recovered_plan(
-    row: Row,
-    intent_rows: Vec<Row>,
-    reservation_rows: Vec<Row>,
+    row: PgRow,
+    intent_rows: Vec<PgRow>,
+    reservation_rows: Vec<PgRow>,
 ) -> Result<RecoveredPlan> {
-    let created_at_ms: i64 = row.get(10);
+    let created_at_ms: i64 = row.try_get(10)?;
     Ok(RecoveredPlan {
-        plan_id: row.get(0),
-        request_id: row.get(1),
-        request_digest: row.get(2),
-        account_id: row.get(3),
-        instrument_id: row.get(4),
-        opportunity_id: row.get(5),
-        strategy_config_version: row.get(6),
-        target_quantity: row.get(7),
-        max_unmatched_exposure: row.get(8),
-        state: row.get(9),
+        plan_id: row.try_get::<String, _>(0)?,
+        request_id: row.try_get::<String, _>(1)?,
+        request_digest: row.try_get::<String, _>(2)?,
+        account_id: row.try_get::<String, _>(3)?,
+        instrument_id: row.try_get::<String, _>(4)?,
+        opportunity_id: row.try_get::<String, _>(5)?,
+        strategy_config_version: row.try_get::<String, _>(6)?,
+        target_quantity: row.try_get::<Decimal, _>(7)?,
+        max_unmatched_exposure: row.try_get::<Decimal, _>(8)?,
+        state: row.try_get::<String, _>(9)?,
         created_at_ms: created_at_ms
             .try_into()
             .context("database returned a negative plan timestamp")?,
         intents: intent_rows
-            .into_iter()
-            .map(|intent| {
-                let side_str: String = intent.get(5);
+            .iter()
+            .map(|intent| -> Result<RecoveredIntent> {
+                let side_str: String = intent.try_get(5)?;
                 let side = match side_str.as_str() {
                     "BUY" => OrderSide::Buy,
                     "SELL" => OrderSide::Sell,
                     _ => panic!("unknown order side: {side_str}"),
                 };
-                RecoveredIntent {
-                    intent_id: intent.get(0),
-                    leg_id: intent.get(1),
-                    attempt_id: intent.get(2),
-                    client_order_id: intent.get(3),
-                    venue: intent.get(4),
+                Ok(RecoveredIntent {
+                    intent_id: intent.try_get::<String, _>(0)?,
+                    leg_id: intent.try_get::<String, _>(1)?,
+                    attempt_id: intent.try_get::<String, _>(2)?,
+                    client_order_id: intent.try_get::<String, _>(3)?,
+                    venue: intent.try_get::<String, _>(4)?,
                     side,
-                    quantity: intent.get(6),
-                    limit_price: intent.get(7),
-                    submission_status: intent.get(8),
-                }
+                    quantity: intent.try_get::<Decimal, _>(6)?,
+                    limit_price: intent.try_get::<Decimal, _>(7)?,
+                    submission_status: intent.try_get::<String, _>(8)?,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>()?,
         reservations: reservation_rows
-            .into_iter()
-            .map(|reservation| RecoveredReservation {
-                reservation_id: reservation.get(0),
-                venue: reservation.get(1),
-                asset: reservation.get(2),
-                amount: reservation.get(3),
-                state: reservation.get(4),
+            .iter()
+            .map(|reservation| -> Result<RecoveredReservation> {
+                Ok(RecoveredReservation {
+                    reservation_id: reservation.try_get::<String, _>(0)?,
+                    venue: reservation.try_get::<String, _>(1)?,
+                    asset: reservation.try_get::<String, _>(2)?,
+                    amount: reservation.try_get::<Decimal, _>(3)?,
+                    state: reservation.try_get::<String, _>(4)?,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>()?,
     })
 }
 
 async fn business_row_count(database_url: &str, plan_id: &str, request_id: &str) -> Result<i64> {
-    let (client, connection) = connect(database_url).await?;
-    let count: i64 = client
-        .query_one(
-            "SELECT (SELECT count(*) FROM execution_plans WHERE plan_id=$1 OR request_id=$2) + (SELECT count(*) FROM risk_decisions WHERE plan_id=$1) + (SELECT count(*) FROM order_intents WHERE plan_id=$1) + (SELECT count(*) FROM fund_reservations WHERE plan_id=$1) + (SELECT count(*) FROM audit_events WHERE aggregate_id=$1 OR causation_id=$2)",
-            &[&plan_id, &request_id],
-        )
-        .await
-        .context("failed to verify rejected PAPER request rollback")?
-        .get(0);
-    close_connection(client, connection).await;
+    let pool = pool(database_url).await?;
+    let count: i64 = sqlx::query(
+        "SELECT (SELECT count(*) FROM execution_plans WHERE plan_id=$1 OR request_id=$2) + (SELECT count(*) FROM risk_decisions WHERE plan_id=$1) + (SELECT count(*) FROM order_intents WHERE plan_id=$1) + (SELECT count(*) FROM fund_reservations WHERE plan_id=$1) + (SELECT count(*) FROM audit_events WHERE aggregate_id=$1 OR causation_id=$2)",
+    )
+    .bind(plan_id)
+    .bind(request_id)
+    .fetch_one(&pool)
+    .await
+    .context("failed to verify rejected PAPER request rollback")?
+    .try_get::<i64, _>(0)?;
     Ok(count)
 }
 

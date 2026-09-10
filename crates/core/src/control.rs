@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::Row;
 
 use crate::{
     db::{DomainConnection, to_i64, to_u64, validate_id},
@@ -96,21 +97,20 @@ impl ControlCore {
         now_ms: u64,
     ) -> Result<ControlCommand> {
         validate_request(&request, now_ms)?;
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin control command")?;
-        if let Some(row) = tx
-            .query_opt(
-                "SELECT command_id FROM control_commands WHERE request_id=$1",
-                &[&request.request_id],
-            )
-            .await
-            .context("failed to inspect control idempotency key")?
+        if let Some(row) =
+            sqlx::query("SELECT command_id FROM control_commands WHERE request_id=$1")
+                .bind(&request.request_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("failed to inspect control idempotency key")?
         {
-            let command_id: String = row.get(0);
+            let command_id: String = row.try_get(0)?;
             if command_id != request.command_id {
                 bail!("control request_id was reused with another command_id");
             }
@@ -124,8 +124,29 @@ impl ControlCore {
         } else {
             ControlStatus::Received
         };
-        tx.execute("INSERT INTO control_commands(command_id,request_id,actor,action,scope,status,expires_at_ms,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", &[&request.command_id, &request.request_id, &request.actor, &request.action.as_str(), &request.scope, &status.as_str(), &to_i64(request.expires_at_ms)?, &to_i64(now_ms)?]).await.context("failed to persist control command")?;
-        tx.execute("INSERT INTO control_audit_logs(command_id,actor,action,before_state,after_state,result,occurred_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7)", &[&request.command_id, &request.actor, &request.action.as_str(), &Value::Null, &json!({"status":status.as_str()}), &Value::Null, &to_i64(now_ms)?]).await.context("failed to persist control audit")?;
+        sqlx::query("INSERT INTO control_commands(command_id,request_id,actor,action,scope,status,expires_at_ms,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(&request.command_id)
+            .bind(&request.request_id)
+            .bind(&request.actor)
+            .bind(request.action.as_str())
+            .bind(&request.scope)
+            .bind(status.as_str())
+            .bind(to_i64(request.expires_at_ms)?)
+            .bind(to_i64(now_ms)?)
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist control command")?;
+        sqlx::query("INSERT INTO control_audit_logs(command_id,actor,action,before_state,after_state,result,occurred_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7)")
+            .bind(&request.command_id)
+            .bind(&request.actor)
+            .bind(request.action.as_str())
+            .bind(&Value::Null)
+            .bind(json!({"status":status.as_str()}))
+            .bind(&Value::Null)
+            .bind(to_i64(now_ms)?)
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist control audit")?;
         tx.commit()
             .await
             .context("failed to commit control command")?;
@@ -139,21 +160,27 @@ impl ControlCore {
         now_ms: u64,
     ) -> Result<ControlCommand> {
         validate_id("command_id", command_id)?;
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin control completion")?;
-        let row = tx.query_one("SELECT action,expires_at_ms,status FROM control_commands WHERE command_id=$1 FOR UPDATE", &[&command_id]).await.context("control command not found")?;
-        let action: String = row.get(0);
-        let expires: i64 = row.get(1);
-        let current: String = row.get(2);
+        let row = sqlx::query("SELECT action,expires_at_ms,status FROM control_commands WHERE command_id=$1 FOR UPDATE")
+            .bind(command_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("control command not found")?;
+        let action: String = row.try_get(0)?;
+        let expires: i64 = row.try_get(1)?;
+        let current: String = row.try_get(2)?;
         if current == "EXPIRED" || expires <= to_i64(now_ms)? {
-            tx.execute(
+            sqlx::query(
                 "UPDATE control_commands SET status='EXPIRED',result=$2 WHERE command_id=$1",
-                &[&command_id, &json!({"reason":"expired before execution"})],
             )
+            .bind(command_id)
+            .bind(json!({"reason":"expired before execution"}))
+            .execute(&mut *tx)
             .await?;
             tx.commit().await?;
             return self.load(command_id).await;
@@ -164,13 +191,20 @@ impl ControlCore {
         ) {
             bail!("control completion requires a terminal result");
         }
-        tx.execute(
-            "UPDATE control_commands SET status=$2,result=$3 WHERE command_id=$1",
-            &[&command_id, &status.as_str(), &result],
-        )
-        .await
-        .context("failed to complete control command")?;
-        tx.execute("INSERT INTO control_audit_logs(command_id,actor,action,result,occurred_at_ms) SELECT command_id,actor,action,$2,$3 FROM control_commands WHERE command_id=$1", &[&command_id, &result, &to_i64(now_ms)?]).await.context("failed to append control result audit")?;
+        sqlx::query("UPDATE control_commands SET status=$2,result=$3 WHERE command_id=$1")
+            .bind(command_id)
+            .bind(status.as_str())
+            .bind(&result)
+            .execute(&mut *tx)
+            .await
+            .context("failed to complete control command")?;
+        sqlx::query("INSERT INTO control_audit_logs(command_id,actor,action,result,occurred_at_ms) SELECT command_id,actor,action,$2,$3 FROM control_commands WHERE command_id=$1")
+            .bind(command_id)
+            .bind(&result)
+            .bind(to_i64(now_ms)?)
+            .execute(&mut *tx)
+            .await
+            .context("failed to append control result audit")?;
         let _ = action;
         tx.commit()
             .await
@@ -179,15 +213,19 @@ impl ControlCore {
     }
     pub async fn load(&self, command_id: &str) -> Result<ControlCommand> {
         validate_id("command_id", command_id)?;
-        let row = self.inner.client.query_one("SELECT command_id,request_id,actor,action,status,expires_at_ms,result FROM control_commands WHERE command_id=$1", &[&command_id]).await.context("failed to load control command")?;
+        let row = sqlx::query("SELECT command_id,request_id,actor,action,status,expires_at_ms,result FROM control_commands WHERE command_id=$1")
+            .bind(command_id)
+            .fetch_one(&self.inner.pool)
+            .await
+            .context("failed to load control command")?;
         Ok(ControlCommand {
-            command_id: row.get(0),
-            request_id: row.get(1),
-            actor: row.get(2),
-            action: parse_action(row.get::<_, String>(3).as_str())?,
-            status: parse_status(row.get::<_, String>(4).as_str())?,
-            expires_at_ms: to_u64(row.get(5))?,
-            result: row.get(6),
+            command_id: row.try_get(0)?,
+            request_id: row.try_get(1)?,
+            actor: row.try_get(2)?,
+            action: parse_action(row.try_get::<String, _>(3)?.as_str())?,
+            status: parse_status(row.try_get::<String, _>(4)?.as_str())?,
+            expires_at_ms: to_u64(row.try_get::<i64, _>(5)?)?,
+            result: row.try_get(6)?,
         })
     }
     pub async fn disconnect(self) {

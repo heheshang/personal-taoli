@@ -83,7 +83,7 @@ impl ReconciliationCore {
     }
     pub async fn record_snapshot(&mut self, snapshot: BalanceInput) -> Result<()> {
         validate_snapshot(&snapshot)?;
-        self.inner.client.execute("INSERT INTO balance_snapshots(snapshot_id,account_id,venue,asset,total,free,locked,observed_at_ms,source,completeness) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(snapshot_id) DO NOTHING", &[&snapshot.snapshot_id, &snapshot.account_id, &snapshot.venue, &snapshot.asset, &snapshot.total, &snapshot.free, &snapshot.locked, &to_i64(snapshot.observed_at_ms)?, &snapshot.source, &snapshot.completeness]).await.context("failed to persist balance snapshot")?;
+        sqlx::query("INSERT INTO balance_snapshots(snapshot_id,account_id,venue,asset,total,free,locked,observed_at_ms,source,completeness) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(snapshot_id) DO NOTHING").bind(&snapshot.snapshot_id).bind(&snapshot.account_id).bind(&snapshot.venue).bind(&snapshot.asset).bind(snapshot.total).bind(snapshot.free).bind(snapshot.locked).bind(to_i64(snapshot.observed_at_ms)?).bind(&snapshot.source).bind(&snapshot.completeness).execute(&self.inner.pool).await.context("failed to persist balance snapshot")?;
         Ok(())
     }
     pub async fn reconcile(
@@ -101,13 +101,13 @@ impl ReconciliationCore {
         if now_ms == 0 {
             bail!("reconciliation timestamp must be positive");
         }
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin reconciliation")?;
-        tx.execute("INSERT INTO reconciliation_runs(run_id,account_id,venue,status,started_at_ms) VALUES($1,$2,$3,'RUNNING',$4)", &[&run_id, &account_id, &venue, &to_i64(now_ms)?]).await.context("failed to create reconciliation run")?;
+        sqlx::query("INSERT INTO reconciliation_runs(run_id,account_id,venue,status,started_at_ms) VALUES($1,$2,$3,'RUNNING',$4)").bind(run_id).bind(account_id).bind(venue).bind(to_i64(now_ms)?).execute(&mut *tx).await.context("failed to create reconciliation run")?;
         let mut assets = local
             .keys()
             .chain(external.keys())
@@ -132,7 +132,7 @@ impl ReconciliationCore {
                 DifferenceCategory::Conflict
             };
             let difference_id = format!("{run_id}:{asset}");
-            tx.execute("INSERT INTO reconciliation_differences(difference_id,run_id,asset,category,local_amount,external_amount,explanation,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", &[&difference_id, &run_id, &asset, &category.as_str(), &local_amount, &external_amount, &Option::<String>::None, &to_i64(now_ms)?]).await.context("failed to persist reconciliation difference")?;
+            sqlx::query("INSERT INTO reconciliation_differences(difference_id,run_id,asset,category,local_amount,external_amount,explanation,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8)").bind(&difference_id).bind(run_id).bind(&asset).bind(category.as_str()).bind(local_amount).bind(external_amount).bind(Option::<String>::None).bind(to_i64(now_ms)?).execute(&mut *tx).await.context("failed to persist reconciliation difference")?;
             differences.push(ReconciliationDifference {
                 difference_id,
                 asset,
@@ -147,12 +147,13 @@ impl ReconciliationCore {
         } else {
             "ATTENTION_REQUIRED"
         };
-        tx.execute(
-            "UPDATE reconciliation_runs SET status=$2,finished_at_ms=$3 WHERE run_id=$1",
-            &[&run_id, &status, &to_i64(now_ms)?],
-        )
-        .await
-        .context("failed to finish reconciliation")?;
+        sqlx::query("UPDATE reconciliation_runs SET status=$2,finished_at_ms=$3 WHERE run_id=$1")
+            .bind(run_id)
+            .bind(status)
+            .bind(to_i64(now_ms)?)
+            .execute(&mut *tx)
+            .await
+            .context("failed to finish reconciliation")?;
         tx.commit()
             .await
             .context("failed to commit reconciliation")?;

@@ -3,7 +3,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio_postgres::Row;
+use sqlx::postgres::{PgRow, Postgres};
+use sqlx::{Row, Transaction};
 
 use crate::db::{DomainConnection, db_time, hex_digest, migrate, to_i64, validate_id};
 use crate::market::unix_timestamp_ms;
@@ -159,14 +160,16 @@ impl OrderCore {
         let intent_id = intent_id.to_owned();
         validate_id("intent_id", &intent_id)?;
         let now = db_time()?;
-        self.inner
-            .client
-            .execute(
-                "INSERT INTO order_facts(intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,updated_at_ms) SELECT oi.intent_id,ep.account_id,ep.instrument_id,oi.venue,oi.quantity,'NOT_SENT','NONE','PENDING',$2 FROM order_intents oi JOIN execution_plans ep ON ep.plan_id=oi.plan_id WHERE oi.intent_id=$1 AND ep.account_id=$3 AND ep.instrument_id=$4 ON CONFLICT(intent_id) DO NOTHING",
-                &[&intent_id, &now, &self.inner.account_id, &self.inner.instrument_id],
-            )
-            .await
-            .context("failed to materialize B-02 order fact")?;
+        sqlx::query(
+            "INSERT INTO order_facts(intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,updated_at_ms) SELECT oi.intent_id,ep.account_id,ep.instrument_id,oi.venue,oi.quantity,'NOT_SENT','NONE','PENDING',$2 FROM order_intents oi JOIN execution_plans ep ON ep.plan_id=oi.plan_id WHERE oi.intent_id=$1 AND ep.account_id=$3 AND ep.instrument_id=$4 ON CONFLICT(intent_id) DO NOTHING",
+        )
+        .bind(&intent_id)
+        .bind(now)
+        .bind(&self.inner.account_id)
+        .bind(&self.inner.instrument_id)
+        .execute(&self.inner.pool)
+        .await
+        .context("failed to materialize B-02 order fact")?;
         self.load(&intent_id).await
     }
 
@@ -178,24 +181,29 @@ impl OrderCore {
         let intent_id = intent_id.to_owned();
         validate_id("intent_id", &intent_id)?;
         validate_digest(request_digest)?;
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin submit-start transaction")?;
-        let current = lock_fact(&tx, &intent_id).await?;
+        let current = lock_fact(&mut tx, &intent_id).await?;
         if current.submission_status != SubmissionStatus::NotSent {
             bail!("submit can only start from NOT_SENT");
         }
         let version = current.last_fact_version + 1;
         let now = db_time()?;
-        tx.execute(
+        sqlx::query(
             "UPDATE order_facts SET submission_status='IN_FLIGHT',last_fact_version=$2,updated_at_ms=$3 WHERE intent_id=$1",
-            &[&intent_id, &version, &now],
-        ).await.context("failed to mark order IN_FLIGHT")?;
+        )
+        .bind(&intent_id)
+        .bind(version)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .context("failed to mark order IN_FLIGHT")?;
         append_action(
-            &tx,
+            &mut tx,
             &intent_id,
             version,
             "SUBMIT_STARTED",
@@ -215,13 +223,13 @@ impl OrderCore {
         result: SubmitResult,
     ) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin submit-result transaction")?;
-        let current = lock_fact(&tx, &intent_id).await?;
+        let current = lock_fact(&mut tx, &intent_id).await?;
         if current.submission_status != SubmissionStatus::InFlight {
             bail!("submit result requires IN_FLIGHT");
         }
@@ -259,11 +267,19 @@ impl OrderCore {
         };
         let version = current.last_fact_version + 1;
         let now = db_time()?;
-        tx.execute(
+        sqlx::query(
             "UPDATE order_facts SET submission_status=$2,exchange_order_id=COALESCE($3,exchange_order_id),last_error=$4,last_fact_version=$5,updated_at_ms=$6 WHERE intent_id=$1",
-            &[&intent_id, &status.as_str(), &order_id, &error, &version, &now],
-        ).await.context("failed to persist submit result")?;
-        append_action(&tx, &intent_id, version, action, None, now, payload).await?;
+        )
+        .bind(&intent_id)
+        .bind(status.as_str())
+        .bind(&order_id)
+        .bind(&error)
+        .bind(version)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .context("failed to persist submit result")?;
+        append_action(&mut tx, &intent_id, version, action, None, now, payload).await?;
         tx.commit()
             .await
             .context("failed to commit submit result")?;
@@ -276,13 +292,13 @@ impl OrderCore {
         result: QueryResult,
     ) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin order investigation")?;
-        let current = lock_fact(&tx, &intent_id).await?;
+        let current = lock_fact(&mut tx, &intent_id).await?;
         if current.submission_status != SubmissionStatus::Unknown {
             bail!("order query requires UNKNOWN");
         }
@@ -307,17 +323,18 @@ impl OrderCore {
         };
         validate_id("query_id", &query_id)?;
         let now = db_time()?;
-        tx.execute(
+        sqlx::query(
             "INSERT INTO order_investigations(query_id,intent_id,outcome,visibility_deadline_ms,occurred_at_ms,payload) VALUES($1,$2,$3,$4,$5,$6)",
-            &[
-                &query_id,
-                &intent_id,
-                &outcome,
-                &to_i64(deadline)?,
-                &now,
-                &json!({"outcome": outcome}),
-            ],
-        ).await.context("failed to persist order investigation")?;
+        )
+        .bind(&query_id)
+        .bind(&intent_id)
+        .bind(outcome)
+        .bind(to_i64(deadline)?)
+        .bind(now)
+        .bind(json!({"outcome": outcome}))
+        .execute(&mut *tx)
+        .await
+        .context("failed to persist order investigation")?;
         let version = current.last_fact_version + 1;
         let (status, payload) = if let Some(exchange_order_id) = &order_id {
             (
@@ -330,11 +347,18 @@ impl OrderCore {
                 json!({"query_id": query_id, "visibility_deadline_ms": deadline}),
             )
         };
-        tx.execute(
+        sqlx::query(
             "UPDATE order_facts SET submission_status=$2,exchange_order_id=COALESCE($3,exchange_order_id),last_fact_version=$4,updated_at_ms=$5 WHERE intent_id=$1",
-            &[&intent_id, &status.as_str(), &order_id, &version, &now],
-        ).await.context("failed to persist query result")?;
-        append_action(&tx, &intent_id, version, action, None, now, payload).await?;
+        )
+        .bind(&intent_id)
+        .bind(status.as_str())
+        .bind(&order_id)
+        .bind(version)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .context("failed to persist query result")?;
+        append_action(&mut tx, &intent_id, version, action, None, now, payload).await?;
         tx.commit()
             .await
             .context("failed to commit order investigation")?;
@@ -344,13 +368,13 @@ impl OrderCore {
     pub async fn cancel_requested(&mut self, intent_id: &str) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
         validate_id("intent_id", &intent_id)?;
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin cancel-request transaction")?;
-        let current = lock_fact(&tx, &intent_id).await?;
+        let current = lock_fact(&mut tx, &intent_id).await?;
         if current.submission_status != SubmissionStatus::Accepted
             || !matches!(
                 current.cancel_status,
@@ -361,14 +385,17 @@ impl OrderCore {
         }
         let version = current.last_fact_version + 1;
         let now = db_time()?;
-        tx.execute(
+        sqlx::query(
             "UPDATE order_facts SET cancel_status='REQUESTED',last_fact_version=$2,updated_at_ms=$3 WHERE intent_id=$1",
-            &[&intent_id, &version, &now],
         )
+        .bind(&intent_id)
+        .bind(version)
+        .bind(now)
+        .execute(&mut *tx)
         .await
         .context("failed to persist cancel request")?;
         append_action(
-            &tx,
+            &mut tx,
             &intent_id,
             version,
             "CANCEL_REQUESTED",
@@ -389,13 +416,13 @@ impl OrderCore {
         result: CancelResult,
     ) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin cancel fact")?;
-        let current = lock_fact(&tx, &intent_id).await?;
+        let current = lock_fact(&mut tx, &intent_id).await?;
         if current.submission_status != SubmissionStatus::Accepted
             || !matches!(
                 current.cancel_status,
@@ -410,12 +437,18 @@ impl OrderCore {
         };
         let version = current.last_fact_version + 1;
         let now = db_time()?;
-        tx.execute(
+        sqlx::query(
             "UPDATE order_facts SET cancel_status=$2,last_fact_version=$3,updated_at_ms=$4 WHERE intent_id=$1",
-            &[&intent_id, &status.as_str(), &version, &now],
-        ).await.context("failed to persist cancel fact")?;
+        )
+        .bind(&intent_id)
+        .bind(status.as_str())
+        .bind(version)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .context("failed to persist cancel fact")?;
         append_action(
-            &tx,
+            &mut tx,
             &intent_id,
             version,
             action,
@@ -435,27 +468,32 @@ impl OrderCore {
     ) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
         validate_trade(&trade)?;
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin trade fact")?;
-        let current = lock_fact(&tx, &intent_id).await?;
+        let current = lock_fact(&mut tx, &intent_id).await?;
         if current.exchange_order_id.as_deref() != Some(trade.exchange_order_id.as_str())
             || current.venue != trade.venue
         {
             bail!("trade does not match the durable order identity");
         }
         let digest = trade_digest(&trade)?;
-        let existing = tx.query_opt(
+        let existing = sqlx::query(
             "SELECT trade_digest FROM trade_facts WHERE venue=$1 AND exchange_order_id=$2 AND trade_id=$3",
-            &[&trade.venue, &trade.exchange_order_id, &trade.trade_id],
-        ).await.context("failed to inspect duplicate trade")?;
+        )
+        .bind(&trade.venue)
+        .bind(&trade.exchange_order_id)
+        .bind(&trade.trade_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to inspect duplicate trade")?;
         let version = current.last_fact_version + 1;
         let now = db_time()?;
         if let Some(row) = existing {
-            let old_digest: String = row.get(0);
+            let old_digest: String = row.try_get(0)?;
             let same_content = old_digest == digest;
             let action = if same_content {
                 "TRADE_DUPLICATE"
@@ -463,7 +501,7 @@ impl OrderCore {
                 "TRADE_CONFLICT"
             };
             append_action(
-                &tx,
+                &mut tx,
                 &intent_id,
                 version,
                 action,
@@ -473,17 +511,23 @@ impl OrderCore {
             )
             .await?;
             if same_content {
-                tx.execute(
+                sqlx::query(
                     "UPDATE order_facts SET last_fact_version=$2,updated_at_ms=$3 WHERE intent_id=$1",
-                    &[&intent_id, &version, &now],
                 )
+                .bind(&intent_id)
+                .bind(version)
+                .bind(now)
+                .execute(&mut *tx)
                 .await
                 .context("failed to persist duplicate trade fact")?;
             } else {
-                tx.execute(
+                sqlx::query(
                     "UPDATE order_facts SET reconciliation_status='CONFLICT',last_fact_version=$2,updated_at_ms=$3 WHERE intent_id=$1",
-                    &[&intent_id, &version, &now],
                 )
+                .bind(&intent_id)
+                .bind(version)
+                .bind(now)
+                .execute(&mut *tx)
                 .await
                 .context("failed to persist trade conflict")?;
             }
@@ -495,22 +539,42 @@ impl OrderCore {
             }
             return self.load(&intent_id).await;
         }
-        tx.execute(
+        sqlx::query(
             "INSERT INTO trade_facts(venue,exchange_order_id,trade_id,intent_id,trade_digest,quantity,price,fee_asset,fee_amount,source_sequence,occurred_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-            &[&trade.venue, &trade.exchange_order_id, &trade.trade_id, &intent_id, &digest, &trade.quantity, &trade.price, &trade.fee_asset, &trade.fee_amount, &(trade.source_sequence as i64), &to_i64(trade.occurred_at_ms)?],
-        ).await.context("failed to insert trade fact")?;
+        )
+        .bind(&trade.venue)
+        .bind(&trade.exchange_order_id)
+        .bind(&trade.trade_id)
+        .bind(&intent_id)
+        .bind(&digest)
+        .bind(trade.quantity)
+        .bind(trade.price)
+        .bind(&trade.fee_asset)
+        .bind(trade.fee_amount)
+        .bind(trade.source_sequence as i64)
+        .bind(to_i64(trade.occurred_at_ms)?)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert trade fact")?;
         let filled = current.filled_quantity + trade.quantity;
         let reconciliation = if filled <= current.ordered_quantity {
             ReconciliationStatus::Matched
         } else {
             ReconciliationStatus::Conflict
         };
-        tx.execute(
+        sqlx::query(
             "UPDATE order_facts SET filled_quantity=$2,reconciliation_status=$3,last_fact_version=$4,updated_at_ms=$5 WHERE intent_id=$1",
-            &[&intent_id, &filled, &reconciliation.as_str(), &version, &now],
-        ).await.context("failed to update filled quantity")?;
+        )
+        .bind(&intent_id)
+        .bind(filled)
+        .bind(reconciliation.as_str())
+        .bind(version)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .context("failed to update filled quantity")?;
         append_action(
-            &tx,
+            &mut tx,
             &intent_id,
             version,
             "TRADE_RECORDED",
@@ -525,12 +589,12 @@ impl OrderCore {
 
     pub async fn load(&self, intent_id: &str) -> Result<OrderFactSnapshot> {
         let intent_id = intent_id.to_owned();
-        let row = self.inner.client.query_one("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE intent_id=$1 AND account_id=$2 AND instrument_id=$3", &[&intent_id, &self.inner.account_id, &self.inner.instrument_id]).await.context("failed to load B-02 order fact")?;
+        let row = sqlx::query("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE intent_id=$1 AND account_id=$2 AND instrument_id=$3").bind(&intent_id).bind(&self.inner.account_id).bind(&self.inner.instrument_id).fetch_one(&self.inner.pool).await.context("failed to load B-02 order fact")?;
         snapshot(row)
     }
 
     pub async fn recover_nonterminal(&self) -> Result<Vec<OrderFactSnapshot>> {
-        let rows = self.inner.client.query("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE account_id=$1 AND instrument_id=$2 AND submission_status NOT IN ('DEFINITELY_REJECTED') ORDER BY intent_id", &[&self.inner.account_id, &self.inner.instrument_id]).await.context("failed to recover B-02 order facts")?;
+        let rows = sqlx::query("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE account_id=$1 AND instrument_id=$2 AND submission_status NOT IN ('DEFINITELY_REJECTED') ORDER BY intent_id").bind(&self.inner.account_id).bind(&self.inner.instrument_id).fetch_all(&self.inner.pool).await.context("failed to recover B-02 order facts")?;
         rows.into_iter().map(snapshot).collect()
     }
 
@@ -540,15 +604,15 @@ impl OrderCore {
 }
 
 async fn lock_fact(
-    tx: &tokio_postgres::Transaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     intent_id: &str,
 ) -> Result<OrderFactSnapshot> {
-    let row = tx.query_one("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE intent_id=$1 FOR UPDATE", &[&intent_id]).await.context("B-02 order intent fact is missing")?;
+    let row = sqlx::query("SELECT intent_id,account_id,instrument_id,venue,ordered_quantity,submission_status,cancel_status,reconciliation_status,exchange_order_id,filled_quantity,last_fact_version,last_error FROM order_facts WHERE intent_id=$1 FOR UPDATE").bind(intent_id).fetch_one(&mut **tx).await.context("B-02 order intent fact is missing")?;
     snapshot(row)
 }
 
 async fn append_action(
-    tx: &tokio_postgres::Transaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     intent_id: &str,
     version: i64,
     action: &str,
@@ -557,27 +621,27 @@ async fn append_action(
     payload: serde_json::Value,
 ) -> Result<()> {
     let fact_id = format!("{intent_id}:{version}");
-    tx.execute("INSERT INTO order_action_facts(fact_id,intent_id,fact_version,action,request_digest,occurred_at_ms,payload) VALUES($1,$2,$3,$4,$5,$6,$7)", &[&fact_id, &intent_id, &version, &action, &request_digest, &now, &payload]).await.context("failed to append immutable B-02 action fact")?;
+    sqlx::query("INSERT INTO order_action_facts(fact_id,intent_id,fact_version,action,request_digest,occurred_at_ms,payload) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(&fact_id).bind(intent_id).bind(version).bind(action).bind(request_digest).bind(now).bind(&payload).execute(&mut **tx).await.context("failed to append immutable B-02 action fact")?;
     Ok(())
 }
 
-fn snapshot(row: Row) -> Result<OrderFactSnapshot> {
-    let submission = parse_submission(row.get(5))?;
-    let cancel = parse_cancel(row.get(6))?;
-    let reconciliation = parse_reconciliation(row.get(7))?;
+fn snapshot(row: PgRow) -> Result<OrderFactSnapshot> {
+    let submission = parse_submission(&row.try_get::<String, _>(5)?)?;
+    let cancel = parse_cancel(&row.try_get::<String, _>(6)?)?;
+    let reconciliation = parse_reconciliation(&row.try_get::<String, _>(7)?)?;
     Ok(OrderFactSnapshot {
-        intent_id: row.get(0),
-        account_id: row.get(1),
-        instrument_id: row.get(2),
-        venue: row.get(3),
-        ordered_quantity: row.get(4),
+        intent_id: row.try_get::<String, _>(0)?,
+        account_id: row.try_get::<String, _>(1)?,
+        instrument_id: row.try_get::<String, _>(2)?,
+        venue: row.try_get::<String, _>(3)?,
+        ordered_quantity: row.try_get::<Decimal, _>(4)?,
         submission_status: submission,
         cancel_status: cancel,
         reconciliation_status: reconciliation,
-        exchange_order_id: row.get(8),
-        filled_quantity: row.get(9),
-        last_fact_version: row.get(10),
-        last_error: row.get(11),
+        exchange_order_id: row.try_get::<Option<String>, _>(8)?,
+        filled_quantity: row.try_get::<Decimal, _>(9)?,
+        last_fact_version: row.try_get::<i64, _>(10)?,
+        last_error: row.try_get::<Option<String>, _>(11)?,
     })
 }
 

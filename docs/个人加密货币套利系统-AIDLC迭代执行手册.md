@@ -233,6 +233,24 @@ AI 职责：完成下列同步并提交候选发布记录。
 | G01-R10 | `SCHEMA_VERSION` 4→5、migration 0005 幂等；旧库任一命令自动升级；0001–0004 零改动 | `crates/core/src/db.rs`、`crates/core/migrations/0005_simulation_runs.sql` | `schema_migrations` 含 1–5；`cargo test --workspace`（190 core + 8 tauri-lib） | verified |
 | G01-R11 | 五门禁全绿；纯逻辑测试（投影行/桶分组/前缀解析）净增 | `crates/core/src/simulation_query.rs`、`crates/core/src/simulation.rs`（`#[cfg(test)]`） | fmt/test/clippy/build/npm 全绿；`cargo test -p personal-taoli-core simulation::tests` 9 绿 | verified |
 
+### 6.5 追踪矩阵追加：DB-01 数据库连接层 sqlx 池化重构（2026-09-10）
+
+实现与验证详情见第 10 章发布记录 DB-01 行及 `docs/DB-01-数据库连接层sqlx池化重构-{需求,设计,任务}.md`。
+
+| 需求 | 可观察结果 | 实现位置 | 验证证据 | 状态 |
+|---|---|---|---|---|
+| DB01-R01 | 池化连接复用：`pool.size() <= 16`，`pg_stat_activity` 连接数稳定 | `crates/core/src/db.rs`（`pool()`/`POOLS` 缓存 + `PgPoolOptions::max_connections(16)` + `acquire_timeout(30s)`） | 驱动 U10：空闲连接数 7 ≤ 16；烟测前后 `pg_stat_activity` 稳定（6→6） | verified |
+| DB01-R02 | 迁移幂等 + advisory 锁：连续两次 `migrate` 均 Ok，`schema_migrations` 行数不变 | `crates/core/src/db.rs`（`migrate_pool` 全程单会话 + `pg_advisory_lock(advisory_key("schema-migration","b01-paper-core"))` + 各迁移文件 `CREATE TABLE IF NOT EXISTS`） | 驱动 U08：两次 migrate 后 `schema_migrations` 仍 5 行（1–5）；`cargo test --workspace` 190+8 通过 | verified |
+| DB01-R03 | schema 版本校验：版本不符 → 原文案 `bail!` | `crates/core/src/db.rs`（`verify_schema<E: PgExecutor>`） | 驱动 U09：`taoli_probe` 库注入 version 6 后 `unsupported B-01 schema version: expected 5, found Some(6)` 逐字命中 | verified |
+| DB01-R04 | 领域单写者锁：`disconnect()` 后他人可取锁；同域第二写者被拒且文案逐字一致 | `crates/core/src/db.rs`（`DomainConnection::acquire/disconnect`：专享 `lock_connection` + `pg_try_advisory_lock` + `pg_advisory_unlock_all`；`after_release` 兜底防 panic 泄漏） | 驱动 U05/U06：释放后 `pg_try_advisory_lock` 重取为 true；持锁期间第二连接为 false；`PAPER execution domain already has a writer: account=… instrument=…` 逐字命中；paper smoke `same_domain_lock_rejected=true, concurrent_rejections=1` | verified |
+| DB01-R05 | 只读层零写 + 不抢领域锁：只读事务内写被 PostgreSQL 拒绝；`external_order_calls=0` 恒真 | `crates/core/src/simulation_query.rs`（三公开入口各自 `pool.begin()` + `SET TRANSACTION READ ONLY` + `verify_schema(&mut *txn)` + `txn.rollback()`，不经 `DomainConnection::acquire`） | 驱动 U04：READ ONLY 事务内 INSERT 被拒、回滚后同一池 INSERT 成功（池未污染）；七个域 smoke `external_order_calls=0`；G-01 三只读入口返回真实数据且不阻塞并发 smoke | verified |
+| DB01-R06 | 六个单写者域行为等价（PAPER/订单事实/双腿执行/账务/控制/对账） | paper/order/execution/accounting/control/reconciliation.rs 全量迁移至 `self.inner.pool`（`.begin()` 事务 + `try_get` 解码 + `rows_affected` 计行） | 六域 smoke 全绿：全部行为标志 true、`external_order_calls=0`（paper 0.405s / order 0.107s / execution 0.088s / accounting 0.026s / control 0.030s / reconciliation 0.023s） | verified |
+| DB01-R07 | F-02/G-01 编排与降级不变：`TAOLI_DATABASE_URL` 缺失 → 告警 + `None`，观察循环不中断 | `crates/core/src/simulation.rs`（`SimulationEngine::spawn` `std::env::var` 失败分支） + `crates/core/src/observer.rs`（`if let Some(engine) = simulation.as_ref()` 守卫） | 驱动 U07：URL 缺失 → `engine None` + warn；观察循环以 None 引擎继续 3 tick | verified |
+| DB01-R08 | `try_get` 收敛 panic 为 Result（行为变化：错误路径由 panic 变 Err，期望变更） | 全部行读取点 `row.get` → `row.try_get::<_,T>(i)?` | `cargo clippy --workspace --all-targets` 零警告（`-D warnings` 兜底）+ 七域 smoke 全绿覆盖真实行读取 | verified |
+| DB01-R09 | Decimal/JSONB 精确往返 | 全部金额/快照字段经 `try_get::<Decimal,_>` / serde JSON 解码 | 七域 smoke 断言金额字段（如 order `recovered_filled_quantity=0.01`）；G-01 总净盈亏 Decimal 精确显示 | verified |
+| DB01-R10 | `verify_schema` 泛型 executor：编译通过即证 | `crates/core/src/db.rs` `verify_schema<'e, E: PgExecutor<'e>>`；调用点 paper.rs:159 / simulation_query.rs:273（pool、`&mut *txn`、`&mut *connection` 三种执行器） | `cargo build --workspace` 通过 | verified |
+| DB01-R11 | 依赖清理干净：`tokio_postgres` 全仓移除、无死 feature | 两个 Cargo.toml（`sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio","postgres","rust_decimal","json"] }`；`rust_decimal` 去 `db-postgres`；`src-tauri` 删 `tokio-postgres`） | `grep -rn "tokio_postgres\|tokio-postgres" crates src-tauri Cargo.toml` 全仓为空；`cargo tree -p personal-taoli-core` 无 tokio-postgres（含传递依赖） | verified |
+
 ## 7. 阶段 A 剩余迭代队列
 
 按顺序执行。除非当前项被正式拒绝或阻塞，不并行开启后项。
@@ -477,9 +495,12 @@ AI 声称与证据（命令输出、测试日志、烟测记录）：
 
 | G-01（模拟套利仪表盘，已验证） | 2026-09-09 | F-02 之上的独立「模拟套利」页面与只读查询层：核心层 `simulation_query.rs`（独立连接 `BEGIN READ ONLY` 只读事务经 `open()`，不经领域单写者锁；`get_simulation_overview`/`get_simulation_runs`/`get_simulation_run_detail` 三命令；概览聚合、20 条最近、分页过滤（limit≤200）、单 run 详情（report 全文+意图/成交/执行事件/审计/余额）、按日山脊桶+稀疏合并、`f02-` 前缀活动流、两账户现值）；迁移 0005 `simulation_runs` 投影表（`SCHEMA_VERSION` 4→5、关键列索引、不可变触发器、`external_order_calls=0` CHECK）；引擎两处无害钩子（run 报告落库 bail 关闭 + 三节点余额快照 `source='SIMULATION'` 降级告警）；前端 `SimulationPage.vue` 容器与八板块（StatCards/ProfitChart/BalanceChart/Flow/Ridge/Trades/Activity）+ App.vue 挂载与 10s 轮询 | `cargo fmt --all -- --check`、`cargo test --workspace`（190 项 core + 8 项 tauri-lib 通过）、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo build --workspace --release` 通过、`npm run build` 零错误；PostgreSQL 真数据断言（16→20 run、96→120 SIMULATION 余额快照、snapshot_id 8 段、overview/flow/ridge/activity 与 DB 直查一致、detail 审计事件经 LIKE 通配符修复后返回非零） | PAPER/模拟事实层只读展示：查询无写路径、无新增真实/测试网订单路径、`external_order_calls=0` 恒真；仅在 `ObserverConfig.simulation.enabled=true` 时连续观测接入，默认关闭；A-05 14 天窗口继续运行至 2026-09-22T09:52:14Z 评审；released 待所有者签收；剩余风险：PAPER 预留释放缺失（运维另立项）、投影表行增长（索引+分页缓解）、山脊稀疏合并近似 |
 
+| DB-01（sqlx 池化重构，已验证） | 2026-09-10 | 数据库连接层由 tokio-postgres 即连即断重构为 sqlx `PgPool` 池化：`db.rs` 全量重写（`pool()` 按 URL 缓存池 + `max_connections=16` + `acquire_timeout=30s` + `after_release` 解锁兜底；`migrate_pool` 单会话 advisory 锁迁移；`verify_schema<E: PgExecutor>` 泛型校验；`DomainConnection` 单写者锁 acquire/disconnect）；八个模块（paper/order/execution/accounting/control/reconciliation/simulation/simulation_query）93 个查询点全量迁移（`pool.begin()` 事务、`try_get` 解码、`rows_affected` 计行）；G-01 只读查询层改事务形态（`SET TRANSACTION READ ONLY` + 全部查询 + 回滚，任一失败即 aborted 上抛，不复用事务）；`tokio-postgres` 全仓移除 | `cargo fmt --all -- --check`、`cargo test --workspace`（190 项 core + 8 项 tauri-lib 通过）、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo build --workspace --release` 通过；真实 PostgreSQL 烟测（55432）七域 smoke + G-01 三只读入口全绿且 `external_order_calls=0`；U01–U10 逐条断言（池上限、迁移幂等、版本校验文案、领域锁释放/拒绝文案、只读拒写不污染池、缺 URL 降级不阻断观察循环） | PAPER/模拟事实层；无真实或测试网订单（`external_order_calls=0`）；遗留风险：`MAX_CONNECTIONS=16` 在 F-02 高并发下不足时操作 30s 后失败关闭、只读事务内语句失败即 aborted、`try_get` 把旧 panic 收敛为 `Err`（均见设计 §8，行为变化为期望变更） |
+
 ## 11. 下一轮唯一入口
 阶段E（监控与运维）已全部完成。下一步是进入阶段F（生产准备），或等待所有者批准进入生产环境。
 UI-01（前端视觉优化）为段外特批迭代，已于 2026-09-09 发布（所有者签收，见第 10 章发布记录）；其完成不改变本入口：下一轮商业迭代仍唯一进入阶段F（生产准备）或经所有者批准进入生产环境。
 F-01（多币种观察支持）已于 2026-09-09 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收；其完成不改变本入口：阶段 F 首个迭代落地后，下一轮唯一入口为 F 阶段后续迭代（如 F-02 真实接入评估 / F-03 生产部署，按本手册 §11 立项）或经所有者批准进入生产环境。
 F-02（模拟套利）已于 2026-09-09 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：真实行情 → 决策 → 模拟撮合 → PAPER 事实落库 → 仿真报告闭环，全程无真实或测试网订单（`external_order_calls=0`）；其完成不改变本入口：下一轮唯一进入 F 阶段后续迭代（如 F-03 生产部署）或经所有者批准进入生产环境。
 G-01（模拟套利仪表盘）已于 2026-09-09 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：F-02 之上的只读可视化页面（八板块 + 每 run 两账户详情/变化图），查询层零写路径、`external_order_calls=0` 恒真；其完成不改变本入口：F-03 生产部署仍为保留编号，G 阶段后续唯一入口为「G-02 后续可视化/运维」（按本手册 §11 立项），或经所有者批准进入生产环境。
+DB-01（数据库连接层 sqlx 池化重构）已于 2026-09-10 实现并验证完成（`verified`，见第 10 章发布记录），released 待所有者签收：连接层由 tokio-postgres 即连即断改为 sqlx `PgPool` 池化（16 连接上限、迁移幂等、领域单写者锁、只读查询层零写路径不变），`external_order_calls=0` 恒真；其完成不改变本入口：下一轮唯一进入 F 阶段后续迭代（如 F-02 真实接入评估 / F-03 生产部署）或经所有者批准进入生产环境。

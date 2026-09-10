@@ -2,7 +2,8 @@ use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio_postgres::Row;
+use sqlx::Row;
+use sqlx::postgres::PgRow;
 
 use crate::db::{DomainConnection, to_i64, to_u64, validate_id};
 use crate::market::unix_timestamp_ms;
@@ -89,21 +90,19 @@ impl LedgerCore {
     pub async fn record_event(&mut self, input: LedgerEventInput) -> Result<LedgerEvent> {
         validate_event(&input)?;
         let now = unix_timestamp_ms()?;
-        let tx = self
+        let mut tx = self
             .inner
-            .client
-            .transaction()
+            .pool
+            .begin()
             .await
             .context("failed to begin ledger transaction")?;
-        let existing = tx
-            .query_opt(
-                "SELECT event_id FROM ledger_events WHERE business_key=$1",
-                &[&input.business_key],
-            )
+        let existing = sqlx::query("SELECT event_id FROM ledger_events WHERE business_key=$1")
+            .bind(&input.business_key)
+            .fetch_optional(&mut *tx)
             .await
             .context("failed to inspect ledger idempotency key")?;
         if let Some(row) = existing {
-            let existing_id: String = row.get(0);
+            let existing_id: String = row.try_get(0)?;
             if existing_id != input.event_id {
                 bail!("ledger business key was reused with another event_id");
             }
@@ -114,9 +113,30 @@ impl LedgerCore {
         }
         let occurred_at_ms = to_i64(input.occurred_at_ms)?;
         let created_at_ms = to_i64(now)?;
-        tx.execute("INSERT INTO ledger_events(event_id,business_key,event_type,account_id,venue,occurred_at_ms,created_at_ms,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", &[&input.event_id, &input.business_key, &input.event_type, &input.account_id, &input.venue, &occurred_at_ms, &created_at_ms, &input.payload]).await.context("failed to append ledger event")?;
+        sqlx::query("INSERT INTO ledger_events(event_id,business_key,event_type,account_id,venue,occurred_at_ms,created_at_ms,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(&input.event_id)
+            .bind(&input.business_key)
+            .bind(&input.event_type)
+            .bind(&input.account_id)
+            .bind(&input.venue)
+            .bind(occurred_at_ms)
+            .bind(created_at_ms)
+            .bind(&input.payload)
+            .execute(&mut *tx)
+            .await
+            .context("failed to append ledger event")?;
         for line in &input.lines {
-            tx.execute("INSERT INTO ledger_lines(event_id,account_id,venue,asset,direction,amount,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7)", &[&input.event_id, &line.account_id, &line.venue, &line.asset, &line.direction.as_str(), &line.amount, &created_at_ms]).await.context("failed to append ledger line")?;
+            sqlx::query("INSERT INTO ledger_lines(event_id,account_id,venue,asset,direction,amount,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7)")
+                .bind(&input.event_id)
+                .bind(&line.account_id)
+                .bind(&line.venue)
+                .bind(&line.asset)
+                .bind(line.direction.as_str())
+                .bind(line.amount)
+                .bind(created_at_ms)
+                .execute(&mut *tx)
+                .await
+                .context("failed to append ledger line")?;
         }
         tx.commit().await.context("failed to commit ledger event")?;
         self.load_event(&input.event_id).await
@@ -131,9 +151,15 @@ impl LedgerCore {
         validate_id("account_id", account_id)?;
         validate_id("venue", venue)?;
         validate_id("asset", asset)?;
-        let row = self.inner.client.query_one("SELECT COALESCE(SUM(amount) FILTER (WHERE direction='DEBIT'),0), COALESCE(SUM(amount) FILTER (WHERE direction='CREDIT'),0) FROM ledger_lines WHERE account_id=$1 AND venue=$2 AND asset=$3", &[&account_id, &venue, &asset]).await.context("failed to load ledger balance")?;
-        let debit: Decimal = row.get(0);
-        let credit: Decimal = row.get(1);
+        let row = sqlx::query("SELECT COALESCE(SUM(amount) FILTER (WHERE direction='DEBIT'),0), COALESCE(SUM(amount) FILTER (WHERE direction='CREDIT'),0) FROM ledger_lines WHERE account_id=$1 AND venue=$2 AND asset=$3")
+            .bind(account_id)
+            .bind(venue)
+            .bind(asset)
+            .fetch_one(&self.inner.pool)
+            .await
+            .context("failed to load ledger balance")?;
+        let debit: Decimal = row.try_get(0)?;
+        let credit: Decimal = row.try_get(1)?;
         Ok(LedgerBalance {
             account_id: account_id.to_owned(),
             venue: venue.to_owned(),
@@ -146,7 +172,11 @@ impl LedgerCore {
 
     pub async fn load_event(&self, event_id: &str) -> Result<LedgerEvent> {
         validate_id("event_id", event_id)?;
-        let row = self.inner.client.query_one("SELECT event_id,business_key,event_type,account_id,venue,occurred_at_ms,(SELECT COUNT(*) FROM ledger_lines WHERE event_id=ledger_events.event_id) FROM ledger_events WHERE event_id=$1", &[&event_id]).await.context("failed to load ledger event")?;
+        let row = sqlx::query("SELECT event_id,business_key,event_type,account_id,venue,occurred_at_ms,(SELECT COUNT(*) FROM ledger_lines WHERE event_id=ledger_events.event_id) FROM ledger_events WHERE event_id=$1")
+            .bind(event_id)
+            .fetch_one(&self.inner.pool)
+            .await
+            .context("failed to load ledger event")?;
         event(row)
     }
 
@@ -200,15 +230,12 @@ pub async fn run_accounting_smoke(database_url: &str) -> Result<AccountingSmokeR
     };
     let unbalanced_event_rejected = core.record_event(unbalanced).await.is_err();
     let balance = core.balance(&event.account_id, &event.venue, "BTC").await?;
-    let immutable_history = core
-        .inner
-        .client
-        .execute(
-            "UPDATE ledger_events SET event_type='MUTATED' WHERE event_id=$1",
-            &[&first.event_id],
-        )
-        .await
-        .is_err();
+    let immutable_history =
+        sqlx::query("UPDATE ledger_events SET event_type='MUTATED' WHERE event_id=$1")
+            .bind(&first.event_id)
+            .execute(&core.inner.pool)
+            .await
+            .is_err();
     core.disconnect().await;
     Ok(AccountingSmokeReport {
         schema_version: 4,
@@ -258,14 +285,14 @@ fn validate_event(input: &LedgerEventInput) -> Result<()> {
     Ok(())
 }
 
-fn event(row: Row) -> Result<LedgerEvent> {
+fn event(row: PgRow) -> Result<LedgerEvent> {
     Ok(LedgerEvent {
-        event_id: row.get(0),
-        business_key: row.get(1),
-        event_type: row.get(2),
-        account_id: row.get(3),
-        venue: row.get(4),
-        occurred_at_ms: to_u64(row.get::<_, i64>(5))?,
-        line_count: row.get::<_, i64>(6) as usize,
+        event_id: row.try_get(0)?,
+        business_key: row.try_get(1)?,
+        event_type: row.try_get(2)?,
+        account_id: row.try_get(3)?,
+        venue: row.try_get(4)?,
+        occurred_at_ms: to_u64(row.try_get::<i64, _>(5)?)?,
+        line_count: row.try_get::<i64, _>(6)? as usize,
     })
 }

@@ -1,6 +1,6 @@
 //! G-01 模拟套利仪表盘只读查询模块（设计 D3）。
 //!
-//! - 独立只读连接（`BEGIN READ ONLY`），**不经 `DomainConnection::acquire`**（不抢领域单写者锁）；
+//! - 独立只读事务（池化连接 + `SET TRANSACTION READ ONLY`），**不经 `DomainConnection::acquire`**（不抢领域单写者锁）；
 //! - 全部金额 `Decimal`（serde-str 全局生效 → DTO 直接透传 core 结构）；
 //! - 页面查询层零写路径；`external_order_calls=0` 恒真由引擎 INSERT 契约保证。
 //!
@@ -12,12 +12,12 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinHandle;
-use tokio_postgres::Client;
+use sqlx::postgres::Postgres;
+use sqlx::{Executor, PgPool, Row, Transaction};
 
-use crate::db::{close_connection, connect, migrate, to_u64, verify_schema};
+use crate::db::{migrate, pool, to_u64, verify_schema};
 
-/// PostgreSQL 服务端 JSONB ↔ serde_json::Value（tokio-postgres `with-serde_json-1`）。
+/// PostgreSQL 服务端 JSONB ↔ serde_json::Value（sqlx `json` feature）。
 type JsonValue = serde_json::Value;
 
 /// 概览聚合（`get_simulation_overview` 返回）。
@@ -262,22 +262,22 @@ const BALANCE_HISTORY_LIMIT: u64 = 1200;
 // 连接与事务
 // ---------------------------------------------------------------------------
 
-/// 打开 G-01 只读查询连接：老库先迁移到当前 schema（幂等），再验证版本。
-pub async fn open(database_url: &str) -> Result<(Client, JoinHandle<()>)> {
-    migrate(database_url).await?;
-    let (client, connection) = connect(database_url).await?;
-    client
-        .batch_execute("BEGIN READ ONLY")
+/// 打开 G-01 只读事务：从池中借连接、置只读、校验 schema 版本。
+///
+/// 不用裸 `BEGIN READ ONLY`：池化连接上的裸事务语句若未 COMMIT 就归还，会污染下一个借用者
+/// （DB-01 探针 T1b/S8 实测 `cannot execute INSERT in a read-only transaction`）。sqlx
+/// `Transaction` 在 rollback/drop 时保证连接干净归还（T5b/L7b 实测池仍可写）。
+async fn open_readonly(pool: &PgPool) -> Result<Transaction<'_, Postgres>> {
+    let mut txn = pool
+        .begin()
         .await
         .context("failed to start read-only transaction")?;
-    verify_schema(&client).await?;
-    Ok((client, connection))
-}
-
-/// 关闭 G-01 只读连接（READ ONLY 事务无需显式 COMMIT，断开即回滚）。
-async fn close(client: Client, connection: JoinHandle<()>) {
-    let _ = client.batch_execute("COMMIT").await;
-    close_connection(client, connection).await;
+    (&mut *txn)
+        .execute(sqlx::raw_sql("SET TRANSACTION READ ONLY"))
+        .await
+        .context("failed to start read-only transaction")?;
+    verify_schema(&mut *txn).await?;
+    Ok(txn)
 }
 
 // ---------------------------------------------------------------------------
@@ -286,139 +286,144 @@ async fn close(client: Client, connection: JoinHandle<()>) {
 
 /// 概览：聚合 + 最近列表 + 账户现值 + 余额曲线 + 山脊 + 活动流。
 pub async fn get_simulation_overview(database_url: &str) -> Result<SimulationOverview> {
-    let (client, connection) = open(database_url).await?;
+    migrate(database_url).await?;
+    let pool = pool(database_url).await?;
+    let mut txn = open_readonly(&pool).await?;
 
-    let agg = client
-        .query_one(
-            "SELECT
+    let agg = sqlx::query(
+        "SELECT
                  COUNT(*)::BIGINT,
                  COUNT(*) FILTER (WHERE scenario <> 'REJECTED')::BIGINT,
                  COALESCE(SUM(simulated_net_profit) FILTER (WHERE scenario <> 'REJECTED'), 0),
                  COALESCE(SUM(scanned_net_profit) FILTER (WHERE scenario <> 'REJECTED'), 0),
                  COUNT(*) FILTER (WHERE simulated_net_profit > 0)::BIGINT
              FROM simulation_runs",
-            &[],
-        )
-        .await
-        .context("failed to aggregate simulation runs")?;
-    let total_runs = to_u64(agg.get::<_, i64>(0))?;
-    let total_success = to_u64(agg.get::<_, i64>(1))?;
-    let total_net_profit = agg.get::<_, Decimal>(2);
-    let scanned_net_profit = agg.get::<_, Decimal>(3);
-    let profit_runs = to_u64(agg.get::<_, i64>(4))?;
+    )
+    .fetch_one(&mut *txn)
+    .await
+    .context("failed to aggregate simulation runs")?;
+    let total_runs = to_u64(agg.try_get::<i64, _>(0)?)?;
+    let total_success = to_u64(agg.try_get::<i64, _>(1)?)?;
+    let total_net_profit = agg.try_get::<Decimal, _>(2)?;
+    let scanned_net_profit = agg.try_get::<Decimal, _>(3)?;
+    let profit_runs = to_u64(agg.try_get::<i64, _>(4)?)?;
 
-    let scenario_rows = client
-        .query(
-            "SELECT scenario, COUNT(*)::BIGINT FROM simulation_runs GROUP BY scenario",
-            &[],
-        )
-        .await
-        .context("failed to load scenario distribution")?;
+    let scenario_rows =
+        sqlx::query("SELECT scenario, COUNT(*)::BIGINT FROM simulation_runs GROUP BY scenario")
+            .fetch_all(&mut *txn)
+            .await
+            .context("failed to load scenario distribution")?;
     let by_scenario = scenario_rows
         .iter()
-        .map(|row| ScenarioCount {
-            scenario: row.get(0),
-            count: to_u64(row.get::<_, i64>(1)).unwrap_or(0),
+        .map(|row| -> Result<ScenarioCount> {
+            Ok(ScenarioCount {
+                scenario: row.try_get(0)?,
+                count: to_u64(row.try_get::<i64, _>(1)?).unwrap_or(0),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    let runs = read_run_rows(&client, "ORDER BY executed_at_ms DESC LIMIT 20", &[]).await?;
+    let runs = read_run_rows(&mut txn, "ORDER BY executed_at_ms DESC LIMIT 20", &[]).await?;
 
-    let cumulative_rows = client
-        .query(
-            "SELECT executed_at_ms, scanned_net_profit, simulated_net_profit
+    let cumulative_rows = sqlx::query(
+        "SELECT executed_at_ms, scanned_net_profit, simulated_net_profit
              FROM simulation_runs ORDER BY executed_at_ms",
-            &[],
-        )
-        .await
-        .context("failed to load cumulative profit points")?;
+    )
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load cumulative profit points")?;
     let cumulative_points = cumulative_rows
         .iter()
-        .map(|row| NetProfitPoint {
-            executed_at_ms: to_u64(row.get::<_, i64>(0)).unwrap_or(0),
-            scanned_net_profit: row.get(1),
-            simulated_net_profit: row.get(2),
+        .map(|row| -> Result<NetProfitPoint> {
+            Ok(NetProfitPoint {
+                executed_at_ms: to_u64(row.try_get::<i64, _>(0)?).unwrap_or(0),
+                scanned_net_profit: row.try_get(1)?,
+                simulated_net_profit: row.try_get(2)?,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    let balance_rows = client
-        .query(
-            "SELECT account_id, venue, asset, observed_total, observed_free, local_reserved,
+    let balance_rows = sqlx::query(
+        "SELECT account_id, venue, asset, observed_total, observed_free, local_reserved,
                     observed_at_ms
              FROM paper_balances WHERE account_id LIKE 'f02-account-%'
              ORDER BY account_id, venue, asset",
-            &[],
-        )
-        .await
-        .context("failed to load simulation account balances")?;
+    )
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load simulation account balances")?;
     let account_balances = balance_rows
         .iter()
-        .map(|row| AccountSnapshot {
-            account_id: row.get(0),
-            venue: row.get(1),
-            asset: row.get(2),
-            observed_total: row.get(3),
-            observed_free: row.get(4),
-            local_reserved: row.get(5),
-            observed_at_ms: to_u64(row.get::<_, i64>(6)).unwrap_or(0),
+        .map(|row| -> Result<AccountSnapshot> {
+            Ok(AccountSnapshot {
+                account_id: row.try_get(0)?,
+                venue: row.try_get(1)?,
+                asset: row.try_get(2)?,
+                observed_total: row.try_get(3)?,
+                observed_free: row.try_get(4)?,
+                local_reserved: row.try_get(5)?,
+                observed_at_ms: to_u64(row.try_get::<i64, _>(6)?).unwrap_or(0),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    let history_rows = client
-        .query(
-            "SELECT snapshot_id, account_id, venue, asset, total, free, observed_at_ms
+    let history_rows = sqlx::query(
+        "SELECT snapshot_id, account_id, venue, asset, total, free, observed_at_ms
              FROM balance_snapshots WHERE source = 'SIMULATION'
              ORDER BY observed_at_ms DESC LIMIT $1",
-            &[&(BALANCE_HISTORY_LIMIT as i64)],
-        )
-        .await
-        .context("failed to load simulation balance history")?;
+    )
+    .bind(BALANCE_HISTORY_LIMIT as i64)
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load simulation balance history")?;
     let mut balance_history: Vec<BalancePoint> = history_rows
         .iter()
-        .map(|row| {
-            let snapshot_id: String = row.get(0);
+        .map(|row| -> Result<BalancePoint> {
+            let snapshot_id: String = row.try_get(0)?;
             let (run_id, node) = parse_sim_snapshot_id(&snapshot_id)
                 .unwrap_or_else(|| ("".to_owned(), "unknown".to_owned()));
-            BalancePoint {
+            Ok(BalancePoint {
                 run_id,
-                account_id: row.get(1),
-                venue: row.get(2),
-                asset: row.get(3),
-                total: row.get(4),
-                free: row.get(5),
+                account_id: row.try_get(1)?,
+                venue: row.try_get(2)?,
+                asset: row.try_get(3)?,
+                total: row.try_get(4)?,
+                free: row.try_get(5)?,
                 node,
-                observed_at_ms: to_u64(row.get::<_, i64>(6)).unwrap_or(0),
-            }
+                observed_at_ms: to_u64(row.try_get::<i64, _>(6)?).unwrap_or(0),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     balance_history.reverse();
 
-    let ridge = load_ridge(&client).await?;
+    let ridge = load_ridge(&mut txn).await?;
 
-    let activity_rows = client
-        .query(
-            "SELECT occurred_at_ms, event_type, aggregate_id, correlation_id, payload
+    let activity_rows = sqlx::query(
+        "SELECT occurred_at_ms, event_type, aggregate_id, correlation_id, payload
              FROM audit_events WHERE aggregate_id LIKE 'f02-%'
              ORDER BY occurred_at_ms DESC LIMIT 50",
-            &[],
-        )
-        .await
-        .context("failed to load simulation activity")?;
+    )
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load simulation activity")?;
     let activity = activity_rows
         .iter()
-        .map(|row| ActivityEvent {
-            occurred_at_ms: to_u64(row.get::<_, i64>(0)).unwrap_or(0),
-            event_type: row.get(1),
-            aggregate_id: row.get(2),
-            correlation_id: row.get(3),
-            payload: row.get(4),
-            run_id: parse_f02_run_id(&row.get::<_, String>(2)),
+        .map(|row| -> Result<ActivityEvent> {
+            let aggregate_id: String = row.try_get(2)?;
+            Ok(ActivityEvent {
+                occurred_at_ms: to_u64(row.try_get::<i64, _>(0)?).unwrap_or(0),
+                event_type: row.try_get(1)?,
+                aggregate_id: aggregate_id.clone(),
+                correlation_id: row.try_get(3)?,
+                payload: row.try_get(4)?,
+                run_id: parse_f02_run_id(&aggregate_id),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    let flow = load_flow_aggregate(&client).await?;
+    let flow = load_flow_aggregate(&mut txn).await?;
 
-    close(client, connection).await;
+    let _ = txn.rollback().await;
     Ok(SimulationOverview {
         total_runs,
         total_success,
@@ -445,7 +450,8 @@ pub async fn get_simulation_runs(
     scenario: Option<String>,
 ) -> Result<SimulationRunsPage> {
     let limit = limit.min(200);
-    let (client, connection) = open(database_url).await?;
+    let pool = pool(database_url).await?;
+    let mut txn = open_readonly(&pool).await?;
 
     let (filter, params): (String, Vec<(String, String)>) = build_run_filter(&symbol, &scenario);
     let filter_sql = if filter.is_empty() {
@@ -454,34 +460,24 @@ pub async fn get_simulation_runs(
         format!("WHERE {filter}")
     };
     let count_sql = format!("SELECT COUNT(*)::BIGINT FROM simulation_runs {filter_sql}");
-    let count_row = client
-        .query_one(
-            &count_sql,
-            &params
-                .iter()
-                .map(|(_, v)| v as &(dyn tokio_postgres::types::ToSql + Sync))
-                .collect::<Vec<_>>(),
-        )
+    let mut count_query = sqlx::query(&count_sql);
+    for (_, value) in &params {
+        count_query = count_query.bind(value);
+    }
+    let count_row = count_query
+        .fetch_one(&mut *txn)
         .await
         .context("failed to count simulation runs")?;
-    let total = to_u64(count_row.get::<_, i64>(0))?;
+    let total = to_u64(count_row.try_get::<i64, _>(0)?)?;
 
     let order_sql = format!(
         "ORDER BY executed_at_ms DESC LIMIT {} OFFSET {}",
         limit,
         offset.min(1_000_000)
     );
-    let runs = read_run_rows(
-        &client,
-        &format!("{filter_sql} {order_sql}"),
-        &params
-            .iter()
-            .map(|(_, v)| v as &(dyn tokio_postgres::types::ToSql + Sync))
-            .collect::<Vec<_>>(),
-    )
-    .await?;
+    let runs = read_run_rows(&mut txn, &format!("{filter_sql} {order_sql}"), &params).await?;
 
-    close(client, connection).await;
+    let _ = txn.rollback().await;
     Ok(SimulationRunsPage { total, runs })
 }
 
@@ -490,138 +486,150 @@ pub async fn get_simulation_run_detail(
     database_url: &str,
     run_id: &str,
 ) -> Result<SimulationRunDetail> {
-    let (client, connection) = open(database_url).await?;
+    migrate(database_url).await?;
+    let pool = pool(database_url).await?;
+    let mut txn = open_readonly(&pool).await?;
 
-    let run_rows = read_run_rows(&client, "WHERE run_id = $1", &[&run_id]).await?;
+    let run_rows = read_run_rows(
+        &mut txn,
+        "WHERE run_id = $1",
+        &[("run_id".to_owned(), run_id.to_owned())],
+    )
+    .await?;
     let Some(run_row) = run_rows.into_iter().next() else {
-        close(client, connection).await;
+        let _ = txn.rollback().await;
         bail!("simulation run not found: {run_id}");
     };
 
-    let report: JsonValue = client
-        .query_one(
-            "SELECT report FROM simulation_runs WHERE run_id = $1",
-            &[&run_id],
-        )
+    let report: JsonValue = sqlx::query("SELECT report FROM simulation_runs WHERE run_id = $1")
+        .bind(run_id)
+        .fetch_one(&mut *txn)
         .await
         .context("failed to load run report")?
-        .get(0);
-    let ids = client
-        .query_one(
-            "SELECT plan_id, buy_intent_id, sell_intent_id, account_id
+        .try_get(0)?;
+    let ids = sqlx::query(
+        "SELECT plan_id, buy_intent_id, sell_intent_id, account_id
              FROM simulation_runs WHERE run_id = $1",
-            &[&run_id],
-        )
-        .await
-        .context("failed to load run plan identifiers")?;
-    let plan_id: String = ids.get(0);
-    let buy_intent_id: String = ids.get(1);
-    let sell_intent_id: String = ids.get(2);
-    let account_id: String = ids.get(3);
+    )
+    .bind(run_id)
+    .fetch_one(&mut *txn)
+    .await
+    .context("failed to load run plan identifiers")?;
+    let plan_id: String = ids.try_get(0)?;
+    let buy_intent_id: String = ids.try_get(1)?;
+    let sell_intent_id: String = ids.try_get(2)?;
+    let account_id: String = ids.try_get(3)?;
 
-    let intents = read_intent_rows(&client, &plan_id).await?;
+    let intents = read_intent_rows(&mut txn, &plan_id).await?;
 
-    let trade_rows = client
-        .query(
-            "SELECT venue, exchange_order_id, trade_id, intent_id, quantity, price,
-                    fee_asset, fee_amount, occurred_at_ms
+    let trade_rows = sqlx::query(
+        "SELECT venue, exchange_order_id, trade_id, intent_id, quantity, price,
+                fee_asset, fee_amount, occurred_at_ms
              FROM trade_facts
              WHERE intent_id IN ($1, $2)
              ORDER BY occurred_at_ms",
-            &[&buy_intent_id, &sell_intent_id],
-        )
-        .await
-        .context("failed to load run trades")?;
+    )
+    .bind(&buy_intent_id)
+    .bind(&sell_intent_id)
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load run trades")?;
     let trades = trade_rows
         .iter()
-        .map(|row| TradeFactRow {
-            venue: row.get(0),
-            exchange_order_id: row.get(1),
-            trade_id: row.get(2),
-            intent_id: row.get(3),
-            quantity: row.get(4),
-            price: row.get(5),
-            fee_asset: row.get(6),
-            fee_amount: row.get(7),
-            occurred_at_ms: to_u64(row.get::<_, i64>(8)).unwrap_or(0),
+        .map(|row| -> Result<TradeFactRow> {
+            Ok(TradeFactRow {
+                venue: row.try_get(0)?,
+                exchange_order_id: row.try_get(1)?,
+                trade_id: row.try_get(2)?,
+                intent_id: row.try_get(3)?,
+                quantity: row.try_get(4)?,
+                price: row.try_get(5)?,
+                fee_asset: row.try_get(6)?,
+                fee_amount: row.try_get(7)?,
+                occurred_at_ms: to_u64(row.try_get::<i64, _>(8)?).unwrap_or(0),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    let event_rows = client
-        .query(
-            "SELECT event_id, plan_id, event_version, event_type, occurred_at_ms, payload
+    let event_rows = sqlx::query(
+        "SELECT event_id, plan_id, event_version, event_type, occurred_at_ms, payload
              FROM execution_events WHERE plan_id = $1 ORDER BY event_version",
-            &[&plan_id],
-        )
-        .await
-        .context("failed to load execution events")?;
+    )
+    .bind(&plan_id)
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load execution events")?;
     let execution_events = event_rows
         .iter()
-        .map(|row| ExecutionEventRow {
-            event_id: row.get(0),
-            plan_id: row.get(1),
-            event_version: row.get(2),
-            event_type: row.get(3),
-            occurred_at_ms: to_u64(row.get::<_, i64>(4)).unwrap_or(0),
-            payload: row.get(5),
+        .map(|row| -> Result<ExecutionEventRow> {
+            Ok(ExecutionEventRow {
+                event_id: row.try_get(0)?,
+                plan_id: row.try_get(1)?,
+                event_version: row.try_get(2)?,
+                event_type: row.try_get(3)?,
+                occurred_at_ms: to_u64(row.try_get::<i64, _>(4)?).unwrap_or(0),
+                payload: row.try_get(5)?,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     let prefix = format!("{run_id}-%");
-    let audit_rows = client
-        .query(
-            "SELECT event_id, aggregate_id, aggregate_version, event_type, correlation_id,
-                    occurred_at_ms, payload
+    let audit_rows = sqlx::query(
+        "SELECT event_id, aggregate_id, aggregate_version, event_type, correlation_id,
+                occurred_at_ms, payload
              FROM audit_events
              WHERE aggregate_id LIKE $1 OR correlation_id LIKE $1
              ORDER BY occurred_at_ms",
-            &[&prefix],
-        )
-        .await
-        .context("failed to load run audit events")?;
+    )
+    .bind(&prefix)
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load run audit events")?;
     let audit = audit_rows
         .iter()
-        .map(|row| AuditEventRow {
-            event_id: row.get(0),
-            aggregate_id: row.get(1),
-            aggregate_version: row.get(2),
-            event_type: row.get(3),
-            correlation_id: row.get(4),
-            occurred_at_ms: to_u64(row.get::<_, i64>(5)).unwrap_or(0),
-            payload: row.get(6),
+        .map(|row| -> Result<AuditEventRow> {
+            Ok(AuditEventRow {
+                event_id: row.try_get(0)?,
+                aggregate_id: row.try_get(1)?,
+                aggregate_version: row.try_get(2)?,
+                event_type: row.try_get(3)?,
+                correlation_id: row.try_get(4)?,
+                occurred_at_ms: to_u64(row.try_get::<i64, _>(5)?).unwrap_or(0),
+                payload: row.try_get(6)?,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    let balance_rows = client
-        .query(
-            "SELECT snapshot_id, account_id, venue, asset, total, free, observed_at_ms
+    let balance_rows = sqlx::query(
+        "SELECT snapshot_id, account_id, venue, asset, total, free, observed_at_ms
              FROM balance_snapshots
              WHERE account_id = $1 AND source = 'SIMULATION'
              ORDER BY observed_at_ms",
-            &[&account_id],
-        )
-        .await
-        .context("failed to load run balance snapshots")?;
+    )
+    .bind(&account_id)
+    .fetch_all(&mut *txn)
+    .await
+    .context("failed to load run balance snapshots")?;
     let balances = balance_rows
         .iter()
-        .map(|row| {
-            let snapshot_id: String = row.get(0);
+        .map(|row| -> Result<BalancePoint> {
+            let snapshot_id: String = row.try_get(0)?;
             let (run, node) = parse_sim_snapshot_id(&snapshot_id)
                 .unwrap_or_else(|| ("".to_owned(), "unknown".to_owned()));
-            BalancePoint {
+            Ok(BalancePoint {
                 run_id: run,
-                account_id: row.get(1),
-                venue: row.get(2),
-                asset: row.get(3),
-                total: row.get(4),
-                free: row.get(5),
+                account_id: row.try_get(1)?,
+                venue: row.try_get(2)?,
+                asset: row.try_get(3)?,
+                total: row.try_get(4)?,
+                free: row.try_get(5)?,
                 node,
-                observed_at_ms: to_u64(row.get::<_, i64>(6)).unwrap_or(0),
-            }
+                observed_at_ms: to_u64(row.try_get::<i64, _>(6)?).unwrap_or(0),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    close(client, connection).await;
+    let _ = txn.rollback().await;
     Ok(SimulationRunDetail {
         run: Box::new(run_row),
         report,
@@ -657,9 +665,9 @@ fn build_run_filter(
 
 /// 列表行读取（主营列；不读 `report` 列）。`where_sql` 支持 `$1..$n` 参数。
 async fn read_run_rows(
-    client: &Client,
+    txn: &mut Transaction<'_, Postgres>,
     where_sql: &str,
-    params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    params: &[(String, String)],
 ) -> Result<Vec<SimulationRunRow>> {
     let sql = format!(
         "SELECT run_id, executed_at_ms, evaluated_at_ms, symbol, buy_venue, sell_venue,
@@ -670,95 +678,105 @@ async fn read_run_rows(
                 external_order_calls
          FROM simulation_runs {where_sql}"
     );
-    let rows = client
-        .query(&sql, params)
+    let mut query = sqlx::query(&sql);
+    for (_, value) in params {
+        query = query.bind(value);
+    }
+    let rows = query
+        .fetch_all(&mut **txn)
         .await
         .context("failed to read simulation runs")?;
-    Ok(rows
-        .iter()
-        .map(|row| SimulationRunRow {
-            run_id: row.get(0),
-            executed_at_ms: to_u64(row.get::<_, i64>(1)).unwrap_or(0),
-            evaluated_at_ms: to_u64(row.get::<_, i64>(2)).unwrap_or(0),
-            symbol: row.get(3),
-            buy_venue: row.get(4),
-            sell_venue: row.get(5),
-            direction: row.get(6),
-            scenario: row.get(7),
-            rejection_reason: row.get(8),
-            quantity: row.get(9),
-            bought_quantity: row.get(10),
-            sold_quantity: row.get(11),
-            buy_avg_price: row.get(12),
-            sell_avg_price: row.get(13),
-            buy_fee: row.get(14),
-            sell_fee: row.get(15),
-            scanned_net_profit: row.get(16),
-            simulated_net_profit: row.get(17),
-            compensation_decision: row.get(18),
-            execution_state: row.get(19),
-            idempotent_replay: row.get(20),
-            external_order_calls: to_u64(row.get::<_, i64>(21)).unwrap_or(0),
+    rows.iter()
+        .map(|row| -> Result<SimulationRunRow> {
+            Ok(SimulationRunRow {
+                run_id: row.try_get(0)?,
+                executed_at_ms: to_u64(row.try_get::<i64, _>(1)?).unwrap_or(0),
+                evaluated_at_ms: to_u64(row.try_get::<i64, _>(2)?).unwrap_or(0),
+                symbol: row.try_get(3)?,
+                buy_venue: row.try_get(4)?,
+                sell_venue: row.try_get(5)?,
+                direction: row.try_get(6)?,
+                scenario: row.try_get(7)?,
+                rejection_reason: row.try_get(8)?,
+                quantity: row.try_get(9)?,
+                bought_quantity: row.try_get(10)?,
+                sold_quantity: row.try_get(11)?,
+                buy_avg_price: row.try_get(12)?,
+                sell_avg_price: row.try_get(13)?,
+                buy_fee: row.try_get(14)?,
+                sell_fee: row.try_get(15)?,
+                scanned_net_profit: row.try_get(16)?,
+                simulated_net_profit: row.try_get(17)?,
+                compensation_decision: row.try_get(18)?,
+                execution_state: row.try_get(19)?,
+                idempotent_replay: row.try_get(20)?,
+                external_order_calls: to_u64(row.try_get::<i64, _>(21)?).unwrap_or(0),
+            })
         })
-        .collect())
+        .collect::<Result<Vec<_>>>()
 }
 
 /// 双腿意图 + order_facts + order_action_facts（一次意图查询 + 一次动作查询，Rust 端 join）。
-async fn read_intent_rows(client: &Client, plan_id: &str) -> Result<Vec<IntentFactRow>> {
-    let intent_rows = client
-        .query(
-            "SELECT oi.intent_id, oi.leg_id, oi.client_order_id, oi.venue, oi.side,
-                    oi.quantity, oi.limit_price, oi.created_at_ms,
-                    of.submission_status, of.cancel_status, of.reconciliation_status,
-                    of.filled_quantity, of.exchange_order_id
+async fn read_intent_rows(
+    txn: &mut Transaction<'_, Postgres>,
+    plan_id: &str,
+) -> Result<Vec<IntentFactRow>> {
+    let intent_rows = sqlx::query(
+        "SELECT oi.intent_id, oi.leg_id, oi.client_order_id, oi.venue, oi.side,
+                oi.quantity, oi.limit_price, oi.created_at_ms,
+                of.submission_status, of.cancel_status, of.reconciliation_status,
+                of.filled_quantity, of.exchange_order_id
              FROM order_intents oi
              LEFT JOIN order_facts of ON of.intent_id = oi.intent_id
              WHERE oi.plan_id = $1
              ORDER BY oi.leg_id",
-            &[&plan_id],
-        )
-        .await
-        .context("failed to load run intents")?;
+    )
+    .bind(plan_id)
+    .fetch_all(&mut **txn)
+    .await
+    .context("failed to load run intents")?;
     let mut intents: Vec<IntentFactRow> = intent_rows
         .iter()
-        .map(|row| IntentFactRow {
-            intent_id: row.get(0),
-            leg_id: row.get(1),
-            client_order_id: row.get(2),
-            venue: row.get(3),
-            side: row.get(4),
-            quantity: row.get(5),
-            limit_price: row.get(6),
-            created_at_ms: to_u64(row.get::<_, i64>(7)).unwrap_or(0),
-            submission_status: row.get(8),
-            cancel_status: row.get(9),
-            reconciliation_status: row.get(10),
-            filled_quantity: row.get(11),
-            exchange_order_id: row.get(12),
-            actions: Vec::new(),
+        .map(|row| -> Result<IntentFactRow> {
+            Ok(IntentFactRow {
+                intent_id: row.try_get(0)?,
+                leg_id: row.try_get(1)?,
+                client_order_id: row.try_get(2)?,
+                venue: row.try_get(3)?,
+                side: row.try_get(4)?,
+                quantity: row.try_get(5)?,
+                limit_price: row.try_get(6)?,
+                created_at_ms: to_u64(row.try_get::<i64, _>(7)?).unwrap_or(0),
+                submission_status: row.try_get(8)?,
+                cancel_status: row.try_get(9)?,
+                reconciliation_status: row.try_get(10)?,
+                filled_quantity: row.try_get(11)?,
+                exchange_order_id: row.try_get(12)?,
+                actions: Vec::new(),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let intent_ids: Vec<String> = intents.iter().map(|i| i.intent_id.clone()).collect();
     if !intent_ids.is_empty() {
-        let action_rows = client
-            .query(
-                "SELECT intent_id, fact_id, fact_version, action, occurred_at_ms, payload
-                 FROM order_action_facts
-                 WHERE intent_id = ANY($1)
-                 ORDER BY intent_id, fact_version",
-                &[&intent_ids],
-            )
-            .await
-            .context("failed to load order action facts")?;
+        let action_rows = sqlx::query(
+            "SELECT intent_id, fact_id, fact_version, action, occurred_at_ms, payload
+             FROM order_action_facts
+             WHERE intent_id = ANY($1)
+             ORDER BY intent_id, fact_version",
+        )
+        .bind(&intent_ids)
+        .fetch_all(&mut **txn)
+        .await
+        .context("failed to load order action facts")?;
         for row in action_rows {
-            let intent_id: String = row.get(0);
+            let intent_id: String = row.try_get(0)?;
             if let Some(intent) = intents.iter_mut().find(|i| i.intent_id == intent_id) {
                 intent.actions.push(ActionFactRow {
-                    fact_id: row.get(1),
-                    fact_version: row.get(2),
-                    action: row.get(3),
-                    occurred_at_ms: to_u64(row.get::<_, i64>(4)).unwrap_or(0),
-                    payload: row.get(5),
+                    fact_id: row.try_get(1)?,
+                    fact_version: row.try_get(2)?,
+                    action: row.try_get(3)?,
+                    occurred_at_ms: to_u64(row.try_get::<i64, _>(4)?).unwrap_or(0),
+                    payload: row.try_get(5)?,
                 });
             }
         }
@@ -767,22 +785,24 @@ async fn read_intent_rows(client: &Client, plan_id: &str) -> Result<Vec<IntentFa
 }
 
 /// 山脊数据：非 Rejected run 按日桶聚合净盈亏数组（桶内 <8 点自动跨日合并）。
-async fn load_ridge(client: &Client) -> Result<Vec<RidgeBucket>> {
-    let rows = client
-        .query(
-            "SELECT executed_at_ms, simulated_net_profit
+async fn load_ridge(txn: &mut Transaction<'_, Postgres>) -> Result<Vec<RidgeBucket>> {
+    let rows = sqlx::query(
+        "SELECT executed_at_ms, simulated_net_profit
              FROM simulation_runs WHERE scenario <> 'REJECTED'
              ORDER BY executed_at_ms",
-            &[],
-        )
-        .await
-        .context("failed to load ridge data")?;
+    )
+    .fetch_all(&mut **txn)
+    .await
+    .context("failed to load ridge data")?;
     let mut buckets: BTreeMap<u64, Vec<Decimal>> = BTreeMap::new();
     for row in rows {
-        let executed_at_ms = to_u64(row.get::<_, i64>(0)).unwrap_or(0);
+        let executed_at_ms = to_u64(row.try_get::<i64, _>(0)?).unwrap_or(0);
         let day = executed_at_ms / DAY_MS;
         let bucket_start = day * DAY_MS;
-        buckets.entry(bucket_start).or_default().push(row.get(1));
+        buckets
+            .entry(bucket_start)
+            .or_default()
+            .push(row.try_get(1)?);
     }
     let ridge = merge_sparse_buckets(buckets);
     Ok(ridge.into_iter().map(Into::into).collect())
@@ -817,61 +837,54 @@ impl From<(u64, Vec<Decimal>)> for RidgeBucket {
 
 /// 执行流转图聚合：EVALUATED（非 Rejected run）/ 预留（PlanReserved 审计去重）/ 双腿成交 /
 /// 补偿评估 / COMPLETED / MANUAL_ESCALATED，全部自不可变事件表计数。
-async fn load_flow_aggregate(client: &Client) -> Result<FlowAggregate> {
-    let evaluated: i64 = client
-        .query_one(
-            "SELECT count(*) FROM simulation_runs WHERE scenario <> 'REJECTED'",
-            &[],
-        )
-        .await
-        .context("failed to count evaluated runs")?
-        .get(0);
-    let reserved: i64 = client
-        .query_one(
-            "SELECT count(DISTINCT aggregate_id) FROM audit_events
+async fn load_flow_aggregate(txn: &mut Transaction<'_, Postgres>) -> Result<FlowAggregate> {
+    let evaluated: i64 =
+        sqlx::query("SELECT count(*) FROM simulation_runs WHERE scenario <> 'REJECTED'")
+            .fetch_one(&mut **txn)
+            .await
+            .context("failed to count evaluated runs")?
+            .try_get(0)?;
+    let reserved: i64 = sqlx::query(
+        "SELECT count(DISTINCT aggregate_id) FROM audit_events
              WHERE event_type = 'PlanReserved' AND aggregate_id LIKE 'f02-%'",
-            &[],
-        )
-        .await
-        .context("failed to count reserved runs")?
-        .get(0);
-    let filled: i64 = client
-        .query_one(
-            "SELECT count(DISTINCT plan_id) FROM execution_events
+    )
+    .fetch_one(&mut **txn)
+    .await
+    .context("failed to count reserved runs")?
+    .try_get(0)?;
+    let filled: i64 = sqlx::query(
+        "SELECT count(DISTINCT plan_id) FROM execution_events
              WHERE event_type = 'COMPLETED' AND plan_id LIKE 'f02-%'",
-            &[],
-        )
-        .await
-        .context("failed to count filled runs")?
-        .get(0);
-    let compensated: i64 = client
-        .query_one(
-            "SELECT count(DISTINCT plan_id) FROM execution_events
+    )
+    .fetch_one(&mut **txn)
+    .await
+    .context("failed to count filled runs")?
+    .try_get(0)?;
+    let compensated: i64 = sqlx::query(
+        "SELECT count(DISTINCT plan_id) FROM execution_events
              WHERE event_type = 'COMPENSATION_DECIDED' AND plan_id LIKE 'f02-%'",
-            &[],
-        )
-        .await
-        .context("failed to count compensated runs")?
-        .get(0);
+    )
+    .fetch_one(&mut **txn)
+    .await
+    .context("failed to count compensated runs")?
+    .try_get(0)?;
     // COMPLETED 去重后既含双腿成交也含单腿成交 run；completed_runs 与 compensated 正交。
-    let completed: i64 = client
-        .query_one(
-            "SELECT count(DISTINCT plan_id) FROM execution_events
+    let completed: i64 = sqlx::query(
+        "SELECT count(DISTINCT plan_id) FROM execution_events
              WHERE event_type = 'COMPLETED' AND plan_id LIKE 'f02-%'",
-            &[],
-        )
-        .await
-        .context("failed to count completed runs")?
-        .get(0);
-    let escalated: i64 = client
-        .query_one(
-            "SELECT count(DISTINCT plan_id) FROM execution_events
+    )
+    .fetch_one(&mut **txn)
+    .await
+    .context("failed to count completed runs")?
+    .try_get(0)?;
+    let escalated: i64 = sqlx::query(
+        "SELECT count(DISTINCT plan_id) FROM execution_events
              WHERE event_type = 'MANUAL_ESCALATED' AND plan_id LIKE 'f02-%'",
-            &[],
-        )
-        .await
-        .context("failed to count escalated runs")?
-        .get(0);
+    )
+    .fetch_one(&mut **txn)
+    .await
+    .context("failed to count escalated runs")?
+    .try_get(0)?;
     Ok(FlowAggregate {
         evaluated_runs: to_u64(evaluated).unwrap_or(0),
         reserved_runs: to_u64(reserved).unwrap_or(0),
