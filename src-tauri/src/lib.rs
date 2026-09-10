@@ -7,96 +7,16 @@ use std::{
 };
 
 use commands::{
-    SessionController, UziController, account_status, continuous_observation_status,
-    desktop_status, get_observer_config, get_simulation_overview_command,
-    get_simulation_run_detail_command, get_simulation_runs_command, load_app_config,
-    load_app_config_file, load_config_summary, observe_once, replay_observations,
-    run_accounting_control_smoke, run_paper_smoke, run_reconnect_smoke,
-    run_simulation_smoke_command, save_app_config, save_observer_config,
-    start_continuous_observation, stop_continuous_observation, uzi_cancel, uzi_ready, uzi_start,
-    uzi_status,
+    SessionController, account_status, continuous_observation_status, desktop_status,
+    get_observer_config, get_simulation_overview_command, get_simulation_run_detail_command,
+    get_simulation_runs_command, load_app_config, load_app_config_file, load_config_summary,
+    observe_once, replay_observations, run_accounting_control_smoke, run_paper_smoke,
+    run_reconnect_smoke, run_simulation_smoke_command, save_app_config, save_observer_config,
+    start_continuous_observation, stop_continuous_observation,
 };
 use tauri::Manager;
 
 static EXIT_FLUSH_STARTED: AtomicBool = AtomicBool::new(false);
-
-/// Custom scheme serving UZI reports.
-///
-/// Reports are single self-contained HTML documents, so they are framed rather
-/// than inlined. Serving them through a scheme (instead of loosening the app's
-/// CSP to admit the `asset:` origin) keeps `default-src 'self'` intact and lets
-/// each document carry its own, tighter policy: the report's inline tooltip
-/// script needs `unsafe-inline`, which the app itself must never allow.
-///
-/// The path is taken as an absolute filesystem path; that is only reachable
-/// from the app's own commands, which is why arbitrary traversal is not a
-/// concern here — the URL is never built from untrusted input.
-const UZI_REPORT_SCHEME: &str = "taoli-uzi";
-
-fn uzi_report_response(request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
-    use tauri::http::{Response, StatusCode, header};
-
-    // Percent-decode the path (`file://`-style escapes may be present).
-    let raw = request.uri().path().trim_start_matches('/');
-    let mut decoded = String::with_capacity(raw.len());
-    let mut bytes = raw.bytes();
-    while let Some(byte) = bytes.next() {
-        if byte == b'%' {
-            let hi = bytes.next();
-            let lo = bytes.next();
-            if let (Some(hi), Some(lo)) = (hi, lo)
-                && let Ok(hex) = u8::from_str_radix(&format!("{}{}", hi as char, lo as char), 16)
-            {
-                decoded.push(hex as char);
-                continue;
-            }
-            decoded.push('%');
-            continue;
-        }
-        decoded.push(byte as char);
-    }
-
-    let body = match std::fs::read(&decoded) {
-        Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(html) => personal_taoli_uzi::report::sanitize(&html).into_bytes(),
-            Err(error) => {
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(format!("report is not valid UTF-8: {error}").into_bytes())
-                    .expect("static response");
-            }
-        },
-        Err(error) => {
-            return Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(format!("report not readable: {error}").into_bytes())
-                .expect("static response");
-        }
-    };
-
-    // Covers the document's own requests: no remote origins, and the inline
-    // tooltip script is the only script allowed to run.
-    let policy = "default-src 'none';                   img-src data: 'self';                   style-src 'unsafe-inline';                   script-src 'unsafe-inline';                   font-src 'self';                   connect-src 'none';                   form-action 'none';                   base-uri 'none'";
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .header("Content-Security-Policy", policy)
-        .header("X-Content-Type-Options", "nosniff")
-        .body(body)
-        .expect("static response")
-}
-
-/// Absolute path of the last report, as a `taoli-uzi://` URL the webview can load.
-#[tauri::command]
-async fn uzi_report_url(controller: tauri::State<'_, UziController>) -> Result<String, String> {
-    let path = controller
-        .last_report()
-        .ok_or_else(|| "no report has been produced yet".to_string())?;
-    // A leading slash makes the path parse as the URI's authority-host position
-    // rather than an opaque string; the handler trims it back off.
-    Ok(format!("{UZI_REPORT_SCHEME}:///{path}"))
-}
 
 /// Loads the saved app config (JSON) at startup and injects non-empty values
 /// into the `TAOLI_*` environment variables before any command or observer
@@ -187,10 +107,6 @@ pub fn run() {
         .init();
     tauri::Builder::default()
         .manage(SessionController::default())
-        .manage(UziController::default())
-        .register_uri_scheme_protocol(UZI_REPORT_SCHEME, |_app, request| {
-            uzi_report_response(&request)
-        })
         .setup(|app| {
             load_saved_env_config();
             install_term_signal_handler(app.handle());
@@ -213,11 +129,6 @@ pub fn run() {
             stop_continuous_observation,
             continuous_observation_status,
             run_reconnect_smoke,
-            uzi_ready,
-            uzi_start,
-            uzi_status,
-            uzi_cancel,
-            uzi_report_url,
             load_app_config,
             save_app_config,
             get_observer_config,

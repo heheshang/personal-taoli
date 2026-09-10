@@ -13,7 +13,6 @@ const pages = [
   { id: 'market', label: '市场' },
   { id: 'control', label: '控制台' },
   { id: 'simulation', label: '模拟套利' },
-  { id: 'uzi', label: '个股分析' },
   { id: 'settings', label: '设置' },
 ]
 </script>

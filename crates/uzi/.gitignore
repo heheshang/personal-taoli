@@ -1,4 +1,0 @@
-# Regenerable differential-test fixtures (MB-scale). Produced by the tools in
-# this directory; not needed to build the crate.
-tools/out/rule_vectors.json
-tools/out/ref_features.json

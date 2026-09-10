@@ -10,7 +10,6 @@ mod simulation;
 mod simulation_query;
 mod support;
 mod system;
-mod uzi;
 
 pub use account::account_status;
 pub use accounting_control::run_accounting_control_smoke;
@@ -28,4 +27,3 @@ pub use simulation_query::{
     get_simulation_overview_command, get_simulation_run_detail_command, get_simulation_runs_command,
 };
 pub use system::{desktop_status, load_config_summary};
-pub use uzi::{UziController, uzi_cancel, uzi_ready, uzi_start, uzi_status};
