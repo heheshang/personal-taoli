@@ -9,7 +9,9 @@
 //! produced by the original code; see `examples/score_diff.rs`. That is why
 //! `py.rs` reproduces CPython semantics rather than using idiomatic Rust.
 
+pub mod evaluator;
 pub mod features;
+pub mod panel;
 pub mod panel_data;
 pub mod py;
 pub mod rules;

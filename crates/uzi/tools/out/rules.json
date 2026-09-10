@@ -470,6 +470,46 @@
     "fail_msg": "PE 异常 · 彩票股特征 · Asness 论文常空"
    }
   ],
+  "bj_cj": [
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "buffett": [
    {
     "id": "roe_5y_15",
@@ -1029,6 +1069,140 @@
     "fail_msg": "表外债务 {off_balance_debt_ratio:.0%} · 雷"
    }
   ],
+  "chen_xq": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
+  "chengdu": [
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "dalio": [
    {
     "id": "rate_cycle_pos",
@@ -1406,6 +1580,46 @@
     "fail_msg": "10 年后看不清"
    }
   ],
+  "fang_xx": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "fengliu": [
    {
     "id": "good_odds",
@@ -1587,6 +1801,46 @@
     },
     "pass_msg": "营收 3Y CAGR {revenue_growth_3y_cagr:.1f}%",
     "fail_msg": "营收 3Y CAGR 仅 {revenue_growth_3y_cagr:.1f}%"
+   }
+  ],
+  "fs_wyj": [
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
    }
   ],
   "gann": [
@@ -2150,6 +2404,81 @@
     "fail_msg": "分红记录不够"
    }
   ],
+  "gu_bl": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "gurley": [
    {
     "id": "marketplace_or_saas",
@@ -2283,6 +2612,65 @@
     },
     "pass_msg": "EV/Rev = {ev_to_revenue:.1f}x · 估值有锚",
     "fail_msg": "EV/Rev = {ev_to_revenue:.1f}x · 已脱离锚"
+   }
+  ],
+  "hu_jl": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
    }
   ],
   "jensen_huang": [
@@ -2419,6 +2807,81 @@
     "fail_msg": "R&D 强度 {rd_intensity:.0f}% · 跟不上 Jensen 节奏"
    }
   ],
+  "jiao_yy": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "klarman": [
    {
     "id": "margin_of_safety",
@@ -2475,6 +2938,161 @@
     },
     "pass_msg": "近期催化剂 {recent_events_count} 个",
     "fail_msg": "缺乏明确催化剂"
+   }
+  ],
+  "lasa": [
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
+  "liu_sh": [
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
+  "liuyi_zl": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
    }
   ],
   "livermore": [
@@ -2745,6 +3363,46 @@
     },
     "pass_msg": "{research_coverage:.0f} 家研报 · 买入 {buy_rating_pct:.0f}%",
     "fail_msg": "研报支持不够"
+   }
+  ],
+  "mao_lb": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
    }
   ],
   "marks": [
@@ -3287,7 +3945,47 @@
     "fail_msg": "净利不复利 · 不在长期主义清单"
    }
   ],
-  "oneil": [
+  "ningbo_st": [
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
+  "oneill": [
    {
     "id": "c_eps_growth",
     "name": "C: 季度 EPS 同比 > 25%",
@@ -3920,6 +4618,121 @@
     "fail_msg": "无明确趋势"
    }
   ],
+  "sun_ge": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
+  "sunan": [
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "templeton": [
    {
     "id": "pe_extreme_low",
@@ -4080,6 +4893,46 @@
     "fail_msg": "波动过大"
    }
   ],
+  "wang_zr": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "wood": [
    {
     "id": "s_curve",
@@ -4223,6 +5076,140 @@
     "fail_msg": "1Y 回撤 {max_drawdown_1y:.0f}% 过大，即使颠覆也要风控"
    }
   ],
+  "xiao_ey": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   },
+   {
+    "id": "fundamentals_ok",
+    "name": "基本面辅助选股 (ROE > 10%)",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "gt",
+      "l": {
+       "fld": "roe_latest",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 10
+      }
+     }
+    },
+    "pass_msg": "ROE {roe_latest:.1f}%",
+    "fail_msg": "基本面不达标"
+   }
+  ],
+  "xiao_xian": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "xiezhiyu": [
    {
     "id": "garp_balance",
@@ -4313,98 +5300,103 @@
     "fail_msg": "增速不够"
    }
   ],
-  "zhangkun": [
+  "xin_dd": [
    {
-    "id": "roe_persistent",
-    "name": "ROE 持续 > 15% (5 年 ≥ 3 次)",
-    "weight": 5,
-    "spec": {
-     "cmp": {
-      "op": "ge",
-      "l": {
-       "fld": "roe_5y_above_15",
-       "dflt": 0
-      },
-      "r": {
-       "lit": 3
-      }
-     }
-    },
-    "pass_msg": "ROE 5 年 {roe_5y_above_15}/5 次 > 15%",
-    "fail_msg": "ROE 持续性 {roe_5y_above_15}/5"
-   },
-   {
-    "id": "pricing_power",
-    "name": "定价权 (净利率 > 18%)",
-    "weight": 3,
-    "spec": {
-     "cmp": {
-      "op": "gt",
-      "l": {
-       "fld": "net_margin",
-       "dflt": 0
-      },
-      "r": {
-       "lit": 18
-      }
-     }
-    },
-    "pass_msg": "净利率 {net_margin:.1f}% 有定价权",
-    "fail_msg": "净利率 {net_margin:.1f}% 无定价权"
-   },
-   {
-    "id": "moat_brand",
-    "name": "品牌/无形资产壁垒",
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
     "weight": 3,
     "spec": {
      "cmp": {
       "op": "ge",
       "l": {
-       "fld": "moat_intangible",
+       "fld": "lhb_30d_count",
        "dflt": 0
       },
       "r": {
-       "lit": 7
+       "lit": 1
       }
      }
     },
-    "pass_msg": "无形资产 {moat_intangible:.0f}/10",
-    "fail_msg": "品牌壁垒不强"
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
    },
    {
-    "id": "pe_discipline",
-    "name": "PE 不超过 40 (张坤估值纪律)",
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
+  "yangjia": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
     "weight": 3,
     "spec": {
-     "and": [
-      {
-       "cmp": {
-        "op": "lt",
-        "l": {
-         "lit": 0
-        },
-        "r": {
-         "fld": "pe",
-         "dflt": 999
-        }
-       }
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
       },
-      {
-       "cmp": {
-        "op": "lt",
-        "l": {
-         "fld": "pe",
-         "dflt": 999
-        },
-        "r": {
-         "lit": 40
-        }
-       }
+      "r": {
+       "lit": 2
       }
-     ]
+     }
     },
-    "pass_msg": "PE {pe:.0f} 符合张坤估值纪律",
-    "fail_msg": "PE {pe:.0f} 超出张坤历史持仓估值上限"
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
    }
   ],
   "zhang_lei": [
@@ -4557,6 +5549,288 @@
     "fail_msg": "{industry} · 纯周期 · 不是高瓴的菜"
    }
   ],
+  "zhang_mz": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
+  "zhangkun": [
+   {
+    "id": "roe_persistent",
+    "name": "ROE 持续 > 15% (5 年 ≥ 3 次)",
+    "weight": 5,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "roe_5y_above_15",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 3
+      }
+     }
+    },
+    "pass_msg": "ROE 5 年 {roe_5y_above_15}/5 次 > 15%",
+    "fail_msg": "ROE 持续性 {roe_5y_above_15}/5"
+   },
+   {
+    "id": "pricing_power",
+    "name": "定价权 (净利率 > 18%)",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "gt",
+      "l": {
+       "fld": "net_margin",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 18
+      }
+     }
+    },
+    "pass_msg": "净利率 {net_margin:.1f}% 有定价权",
+    "fail_msg": "净利率 {net_margin:.1f}% 无定价权"
+   },
+   {
+    "id": "moat_brand",
+    "name": "品牌/无形资产壁垒",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "moat_intangible",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 7
+      }
+     }
+    },
+    "pass_msg": "无形资产 {moat_intangible:.0f}/10",
+    "fail_msg": "品牌壁垒不强"
+   },
+   {
+    "id": "pe_discipline",
+    "name": "PE 不超过 40 (张坤估值纪律)",
+    "weight": 3,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "pe",
+         "dflt": 999
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "fld": "pe",
+         "dflt": 999
+        },
+        "r": {
+         "lit": 40
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "PE {pe:.0f} 符合张坤估值纪律",
+    "fail_msg": "PE {pe:.0f} 超出张坤历史持仓估值上限"
+   }
+  ],
+  "zhao_lg": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
+   }
+  ],
   "zhushaoxing": [
    {
     "id": "long_term_growth",
@@ -4622,6 +5896,100 @@
     },
     "pass_msg": "波动 {volatility_1y:.0f}% 适合长持",
     "fail_msg": "波动过大"
+   }
+  ],
+  "zuoshou": [
+   {
+    "id": "stage_2",
+    "name": "Stage 2 上升",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "eq",
+      "l": {
+       "fld": "stage_num",
+       "dflt": null
+      },
+      "r": {
+       "lit": 2
+      }
+     }
+    },
+    "pass_msg": "Stage 2 上升中",
+    "fail_msg": "不在 Stage 2"
+   },
+   {
+    "id": "lhb_hot",
+    "name": "近 30 天龙虎榜有热度",
+    "weight": 3,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "lhb_30d_count",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 1
+      }
+     }
+    },
+    "pass_msg": "30 天上榜 {lhb_30d_count:.0f} 次",
+    "fail_msg": "近 30 天未上榜"
+   },
+   {
+    "id": "top_of_sector",
+    "name": "行业领先 (排名前 3)",
+    "weight": 2,
+    "spec": {
+     "and": [
+      {
+       "cmp": {
+        "op": "lt",
+        "l": {
+         "lit": 0
+        },
+        "r": {
+         "fld": "industry_rank",
+         "dflt": 99
+        }
+       }
+      },
+      {
+       "cmp": {
+        "op": "le",
+        "l": {
+         "fld": "industry_rank",
+         "dflt": 99
+        },
+        "r": {
+         "lit": 3
+        }
+       }
+      }
+     ]
+    },
+    "pass_msg": "行业第 {industry_rank}",
+    "fail_msg": "非行业龙头"
+   },
+   {
+    "id": "sentiment_hot",
+    "name": "舆情热度 > 50",
+    "weight": 2,
+    "spec": {
+     "cmp": {
+      "op": "ge",
+      "l": {
+       "fld": "sentiment_heat",
+       "dflt": 0
+      },
+      "r": {
+       "lit": 50
+      }
+     }
+    },
+    "pass_msg": "热度 {sentiment_heat:.0f}",
+    "fail_msg": "热度 {sentiment_heat:.0f} 不够"
    }
   ]
  }

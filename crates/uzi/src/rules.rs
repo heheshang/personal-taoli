@@ -489,7 +489,10 @@ mod tests {
     #[test]
     fn embedded_ruleset_parses() {
         let set = RuleSet::parse(crate::RULES_JSON).expect("embedded rules.json");
-        assert_eq!(set.groups.len(), 43);
-        assert_eq!(set.groups.values().map(|v| v.len()).sum::<usize>(), 180);
+        // 66 investors, 242 rules. Keying by module constant instead of
+        // investor id undercounts by 62 rules (the 23 programmatically-built
+        // hot-money sets).
+        assert_eq!(set.groups.len(), 66);
+        assert_eq!(set.groups.values().map(|v| v.len()).sum::<usize>(), 242);
     }
 }

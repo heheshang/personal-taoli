@@ -103,7 +103,9 @@ pub struct PanelData {
     pub industry_affinity: BTreeMap<String, Affinity>,
     #[serde(default)]
     pub seats: BTreeMap<String, Value>,
-    pub investor_rule_groups: BTreeMap<String, String>,
+    /// Database order. The panel iterates in this order so the report's judge
+    /// sequence matches the original rather than an alphabetical one.
+    pub investor_order: Vec<String>,
     pub investor_meta: BTreeMap<String, InvestorMeta>,
     pub feature_tables: FeatureTables,
 }

@@ -376,13 +376,16 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     random.seed(20260910)
 
-    groups = []
-    for name in sorted(dir(ic)):
-        if not name.endswith("_RULES"):
-            continue
-        val = getattr(ic, name)
-        if isinstance(val, list) and val and hasattr(val[0], "check"):
-            groups.append((name, val))
+    # Keyed by INVESTOR id, not by module constant: 23 hot-money investors have
+    # their rule lists built programmatically (`YOUZI_RULES_MAP` plus appended
+    # rules), so they have no module-level constant to name. Indexing by
+    # investor removes the mapping layer — and with it a whole class of
+    # lookup bugs — entirely.
+    groups = [
+        (inv_id, rules)
+        for inv_id, rules in sorted(ic.INVESTOR_RULES.items())
+        if rules
+    ]
 
     failures: list[str] = []
     rules_out = {}
@@ -394,7 +397,7 @@ def main() -> int:
     real_features = sf.extract_features(raw, dims)
 
     for gname, rules in groups:
-        key = gname[: -len("_RULES")].lower()
+        key = gname
         entries = []
         for r in rules:
             total += 1
@@ -436,7 +439,7 @@ def main() -> int:
 
     checked = 0
     for gname, rules in groups:
-        key = gname[: -len("_RULES")].lower()
+        key = gname
         for r, entry in zip(rules, rules_out[key]):
             for i, fvec in enumerate(vectors):
                 try:
@@ -469,7 +472,7 @@ def main() -> int:
     for fvec in vectors:
         row = {}
         for gname, rules in groups:
-            key = gname[: -len("_RULES")].lower()
+            key = gname
             for r in rules:
                 try:
                     v = r.check(fvec)
