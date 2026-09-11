@@ -158,6 +158,7 @@ crates/core/src/agent/          ← 新增子模块（只读边界内）
   trace.rs                      ← 会话 trace：append-only 落盘 + 结构校验回放
   instructions.rs               ← 领域指令加载（内容来自仓库文件，缺失/为空即失败关闭）
   access.rs                     ← 操作档位：sandbox + approvalPolicy + reviewer + 自有沙箱形状
+  progress.rs                   ← 把 80 余种通知收敛为一小组 TurnProgress 事件
   sandbox/                      ← macOS Seatbelt 约束（策略文本上游逐字 + 文件系统策略子集）
     mod.rs                      ← 可用性探测（上游没有）+ 失败关闭的 argv 包装
     seatbelt.rs                 ← 移植：可写根归一化、访问策略、-D 参数装配
@@ -226,6 +227,24 @@ skill，两者产生的副作用动作都要过审批。
 **为何是累积而非「最近一轮」**：界面按 Codex 桌面版呈现为会话流，只保留最近一轮会导致新一轮抹掉上一轮。这是一次**干净切替**——旧的扁平字段已删除，无兼容层。
 
 **视觉作用域**：Codex 令牌（蓝主色、superellipse 圆角、16px 聊天气泡字号）仅作用于 `.codex-scope`，不覆盖本项目 UI-01 的全局令牌。代价是本页主色与其余页面不同；统一需另立一轮。
+
+### 3.3d 流式进度（轮次 M）
+
+**分层**：`progress.rs` 只做**词汇归一**（80 余种通知 → 十来个事件，增量按 chunk 转发，本层无状态）；
+会话把它转发给 `TurnContext.progress: Option<ProgressSink>`；命令层的 `agent_live::LiveTracker`
+把事件折叠进共享状态的 `live` 块；界面轮询该块。
+
+**为什么在命令层折叠而不是让界面自己折叠**：`live` 是锁保护下的共享状态，折叠必须在那把锁
+之下完成；集中在一处才能避免「界面看到的」与「记录里的」出现两套说法。
+
+**三条边界**：
+- 流式文本与单步输出**各只保留尾部**（4,000 字符）——状态每次轮询都要序列化，长轮次可产出兆字节。
+- `live` 带 `turn_seq`，**上一轮的迟到事件不改写本轮**。
+- 轮次结束后**清空** `live`：届时权威数据在 `turns`，留着会重复渲染。
+
+**锁的选择**：与命令层其余部分一致用 `std::sync::Mutex`（本项目自有代码 9 处、`parking_lot` 0 处，
+且本模块与 `agent.rs` 共享同一把 `Arc<Mutex<AgentStatus>>`），并以 `PoisonError::into_inner`
+容忍中毒——折叠进度时 panic 不应让界面连状态都读不到，那正是排查所需的线索。
 
 ### 3.3c 操作档位（轮次 L）
 

@@ -28,6 +28,8 @@ import { AGENT_DECISION_LABEL } from '../commands'
 import type {
   AgentAccessLevel,
   AgentDecision,
+  AgentLive,
+  AgentLiveItem,
   AgentReady,
   AgentStatus,
   AgentTurn,
@@ -48,6 +50,17 @@ const expanded = ref<Set<string>>(new Set())
 const thread = ref<HTMLElement | null>(null)
 const composer = ref<HTMLTextAreaElement | null>(null)
 const levels = ref<AgentAccessLevel[]>([])
+/** 展开的实时步骤（运行中输出会变，默认折叠只显示一行预览）。 */
+const expandedLive = ref<Set<string>>(new Set())
+function toggleLiveItem(itemId: string) {
+  const next = new Set(expandedLive.value)
+  if (next.has(itemId)) {
+    next.delete(itemId)
+  } else {
+    next.add(itemId)
+  }
+  expandedLive.value = next
+}
 
 /**
  * 当前档位。
@@ -69,6 +82,60 @@ const accessInfo = computed(
 const approvalBypassed = computed(
   () => !!accessInfo.value && !accessInfo.value.consults_client,
 )
+
+/** 进行中轮次的实时视图。 */
+const live = computed<AgentLive | null>(() => status.value?.live ?? null)
+
+/** 实时步骤的中文标签与配色。 */
+const ITEM_LABEL: Record<string, string> = {
+  reasoning: '推理',
+  command: '命令',
+  file_change: '文件变更',
+  tool_call: '工具',
+  message: '回复',
+  other: '步骤',
+}
+function itemLabel(kind: string): string {
+  return ITEM_LABEL[kind] ?? kind
+}
+
+const ITEM_STATE: Record<string, { label: string; tone: string }> = {
+  running: { label: '进行中', tone: 'warn' },
+  completed: { label: '完成', tone: 'ok' },
+  failed: { label: '失败', tone: 'bad' },
+  declined: { label: '已拒绝', tone: '' },
+}
+function itemState(state: string): { label: string; tone: string } {
+  return ITEM_STATE[state] ?? { label: state, tone: '' }
+}
+
+/** 实时阶段的中文说明。 */
+const STAGE_LABEL: Record<string, string> = {
+  thinking: '思考中',
+  working: '执行中',
+  writing: '生成回复',
+  awaiting_approval: '等待审批',
+  done: '结束',
+}
+const liveStageLabel = computed(() =>
+  live.value ? (STAGE_LABEL[live.value.stage] ?? live.value.stage) : '',
+)
+
+/** token 用量摘要，运行时上报后才有。 */
+const liveTokens = computed(() => {
+  const tokens = live.value?.tokens
+  if (!tokens) return null
+  const window = tokens.context_window
+  return window
+    ? `${tokens.total_tokens.toLocaleString()} / ${window.toLocaleString()} tokens`
+    : `${tokens.total_tokens.toLocaleString()} tokens`
+})
+
+/** 单步的输出预览（首行），streaming 时足够看出在跑什么。 */
+function livePreview(item: AgentLiveItem): string {
+  const first = (item.output.split('\n').find(line => line.trim()) ?? '').trim()
+  return first.length > 96 ? `${first.slice(0, 96)}…` : first
+}
 
 const POLL_MS = 1000
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -398,6 +465,48 @@ onUnmounted(stopPolling)
           <div>尚未发起分析。</div>
           <div>说明要分析哪只个股即可；能力来自可用的 skill 与运行时工具。</div>
         </div>
+
+        <!-- 进行中轮次的实时视图：阶段 / token / 步骤流。轮次结束后后端清空，
+             权威数据转入 turns。 -->
+        <section v-if="live" class="codex-live">
+          <div class="codex-live-head">
+            <span class="codex-chip warn"><i class="codex-dot" />{{ liveStageLabel }}</span>
+            <span v-if="liveTokens" class="muted agent-id">{{ liveTokens }}</span>
+            <span class="muted agent-id">第 {{ live.turn_seq + 1 }} 轮</span>
+          </div>
+
+          <!-- 推理摘要流式文本 -->
+          <div v-if="live.reasoning" class="codex-live-reasoning">{{ live.reasoning }}</div>
+
+          <!-- 步骤流：命令 / 工具 / 文件变更，含运行状态与增量输出 -->
+          <div v-for="item in live.items" :key="item.item_id" class="codex-tool">
+            <button
+              class="codex-tool-head"
+              type="button"
+              @click="toggleLiveItem(item.item_id)"
+            >
+              <i class="codex-tool-caret" :class="{ open: expandedLive.has(item.item_id) }">▶</i>
+              <span class="codex-chip" :class="itemState(item.state).tone">
+                {{ itemLabel(item.kind) }}
+              </span>
+              <span class="codex-tool-name">{{ item.title }}</span>
+              <span class="codex-tool-status">
+                <template v-if="item.state === 'running'">进行中…</template>
+                <template v-else-if="item.exit_code !== null">退出码 {{ item.exit_code }}</template>
+                <template v-else>{{ itemState(item.state).label }}</template>
+                <template v-if="item.duration_ms !== null"> · {{ item.duration_ms }} ms</template>
+                <template v-else-if="livePreview(item)"> · {{ livePreview(item) }}</template>
+              </span>
+            </button>
+            <pre
+              v-if="expandedLive.has(item.item_id) && item.output"
+              class="codex-tool-body"
+            >{{ item.output }}</pre>
+          </div>
+
+          <!-- 正文字流式文本 -->
+          <div v-if="live.message" class="codex-assistant">{{ live.message }}</div>
+        </section>
 
         <article v-for="turn in turns" :key="turn.seq" class="codex-turn">
           <!-- 用户消息 -->

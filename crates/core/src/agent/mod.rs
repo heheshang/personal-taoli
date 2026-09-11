@@ -26,6 +26,7 @@ pub mod access;
 pub mod app_server;
 pub mod approval;
 pub mod instructions;
+pub mod progress;
 pub mod protocol;
 pub mod sandbox;
 pub mod tools;
@@ -41,6 +42,7 @@ use approval::{
     ApprovalDecider, ApprovalKind, ApprovalLog, ApprovalRecord, ApprovalRequest, Decision,
     DecisionSource, advertised_decisions, response_payload, summarise,
 };
+use progress::{ItemKind, ItemState, ProgressItem, ProgressSink, Stage, TokenUsage, TurnProgress};
 use tools::{ToolOutcome, ToolRegistry};
 use trace::{RecordedTurnStatus, ThreadOptions, TraceEvent, TraceWriter};
 
@@ -209,6 +211,12 @@ pub struct TurnContext {
     /// confined away from its rule store, which is the default here: a permanent
     /// verdict then silently does nothing, so the option must not be offered.
     pub persistence: approval::Persistence,
+    /// Where live progress goes, when someone is watching.
+    ///
+    /// `None` runs the turn silently, which is what tests want. The interface
+    /// passes a sink that folds events into the shared status, so a turn is
+    /// visible while it runs rather than only after it ends.
+    pub progress: Option<ProgressSink>,
     pub limits: TurnLimits,
 }
 
@@ -436,6 +444,7 @@ impl AgentSession {
             approvals,
             audit,
             persistence,
+            progress,
             limits,
         } = context;
 
@@ -473,6 +482,9 @@ impl AgentSession {
                 &*approvals,
                 &audit,
                 persistence,
+                progress
+                    .as_ref()
+                    .map(|sink| sink.as_ref() as &(dyn Fn(TurnProgress) + Send + Sync)),
                 &limits,
                 deadline,
             )
@@ -511,9 +523,18 @@ impl AgentSession {
         approvals: &dyn ApprovalDecider,
         audit: &Option<Arc<ApprovalLog>>,
         persistence: approval::Persistence,
+        progress: Option<&(dyn Fn(TurnProgress) + Send + Sync)>,
         limits: &TurnLimits,
         deadline: tokio::time::Instant,
     ) -> Result<(), AgentError> {
+        // Announced here rather than by the caller so a sink cannot observe
+        // item events for a turn whose start it never saw.
+        report(
+            progress,
+            TurnProgress::Started {
+                turn_id: outcome.turn_id.clone(),
+            },
+        );
         let turn_id = outcome.turn_id.clone();
         loop {
             let message = match tokio::time::timeout_at(deadline, self.server.next_message()).await
@@ -556,6 +577,15 @@ impl AgentSession {
                     } else if let Some(kind) = ApprovalKind::from_method(&method) {
                         // A side-effecting action: the owner decides, and a
                         // missing verdict is a refusal.
+                        // Announced before the decider runs, so a watcher sees
+                        // the wait while it lasts rather than only afterwards.
+                        report(
+                            progress,
+                            TurnProgress::ApprovalRequested {
+                                request_id: id,
+                                summary: summarise(kind, &params),
+                            },
+                        );
                         let (record, payload) = decide_approval(
                             approvals,
                             id,
@@ -587,6 +617,12 @@ impl AgentSession {
                             }
                         }
                         self.server.respond(id, payload).await?;
+                        report(
+                            progress,
+                            TurnProgress::ApprovalResolved {
+                                request_id: record.request_id,
+                            },
+                        );
                         outcome.approvals.push(record);
                     } else {
                         // Anything else (elicitation, auth refresh, attestation)
@@ -602,30 +638,36 @@ impl AgentSession {
                         outcome.refused_requests.push(method);
                     }
                 }
-                ServerMessage::Notification { method, params } => match method.as_str() {
-                    "turn/completed" => return Ok(()),
-                    "turn/failed" => {
-                        let detail = params
-                            .as_ref()
-                            .map(|params| params.to_string())
-                            .unwrap_or_default();
-                        return Err(AgentError::TurnFailed { turn_id, detail });
-                    }
-                    "item/completed" => {
-                        if let Some(text) = completed_agent_message(params.as_ref()) {
-                            outcome.final_message = Some(text.clone());
-                            if let Some(trace) = &self.trace {
-                                trace.try_record(&TraceEvent::Item {
-                                    turn_id: turn_id.clone(),
-                                    kind: "agent_message".to_string(),
-                                    text,
-                                    at_ms: now_ms(),
-                                });
+                ServerMessage::Notification { method, params } => {
+                    // Everything observable is mirrored to the sink first, then
+                    // acted on: the stream is a view of the turn, so it must not
+                    // diverge based on which branch returns.
+                    forward_progress(progress, &method, params.as_ref());
+                    match method.as_str() {
+                        "turn/completed" => return Ok(()),
+                        "turn/failed" => {
+                            let detail = params
+                                .as_ref()
+                                .map(|params| params.to_string())
+                                .unwrap_or_default();
+                            return Err(AgentError::TurnFailed { turn_id, detail });
+                        }
+                        "item/completed" => {
+                            if let Some(text) = completed_agent_message(params.as_ref()) {
+                                outcome.final_message = Some(text.clone());
+                                if let Some(trace) = &self.trace {
+                                    trace.try_record(&TraceEvent::Item {
+                                        turn_id: turn_id.clone(),
+                                        kind: "agent_message".to_string(),
+                                        text,
+                                        at_ms: now_ms(),
+                                    });
+                                }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
             }
         }
     }
@@ -779,6 +821,165 @@ async fn dispatch_tool_call(
     (record, outcome)
 }
 
+/// Calls the sink, tolerating its absence.
+fn report(progress: Option<&(dyn Fn(TurnProgress) + Send + Sync)>, event: TurnProgress) {
+    if let Some(progress) = progress {
+        progress(event);
+    }
+}
+
+/// Translates the notifications that carry visible progress.
+///
+/// Only the handful that move the view are forwarded; the runtime sends eighty-odd
+/// methods per session and mirroring all of them would bury the signal. Each
+/// branch reads fields defensively: a notification whose shape changed should
+/// drop out of the stream, not panic the turn.
+fn forward_progress(
+    progress: Option<&(dyn Fn(TurnProgress) + Send + Sync)>,
+    method: &str,
+    params: Option<&Value>,
+) {
+    let Some(progress) = progress else {
+        return;
+    };
+    let Some(params) = params else {
+        return;
+    };
+    let item_id = |params: &Value| {
+        params
+            .get("itemId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let delta = |params: &Value| {
+        params
+            .get("delta")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    match method {
+        "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
+            progress(TurnProgress::ReasoningDelta {
+                item_id: item_id(params),
+                text: delta(params),
+            });
+        }
+        "item/agentMessage/delta" => {
+            progress(TurnProgress::MessageDelta {
+                item_id: item_id(params),
+                text: delta(params),
+            });
+        }
+        "item/commandExecution/outputDelta"
+        | "command/exec/outputDelta"
+        | "process/outputDelta"
+        | "item/fileChange/outputDelta" => {
+            progress(TurnProgress::ItemOutput {
+                item_id: item_id(params),
+                text: delta(params),
+            });
+        }
+        "item/started" => {
+            if let Some(item) = params.get("item") {
+                progress(TurnProgress::ItemStarted(progress_item(item)));
+            }
+        }
+        "item/completed" => {
+            if let Some(item) = params.get("item") {
+                progress(TurnProgress::ItemFinished {
+                    item_id: item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    state: item
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(ItemState::from_wire)
+                        .unwrap_or(ItemState::Completed),
+                    output: item
+                        .get("aggregatedOutput")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    exit_code: item.get("exitCode").and_then(Value::as_i64),
+                    duration_ms: item.get("durationMs").and_then(Value::as_u64),
+                });
+            }
+        }
+        "thread/tokenUsage/updated" => {
+            progress(TurnProgress::Tokens(token_usage(params)));
+        }
+        "turn/completed" | "turn/failed" => progress(TurnProgress::Stage(Stage::Done)),
+        _ => {}
+    }
+}
+
+/// Builds the visible form of an item from the runtime's payload.
+fn progress_item(item: &Value) -> ProgressItem {
+    let kind = item
+        .get("type")
+        .and_then(Value::as_str)
+        .map(ItemKind::from_wire)
+        .unwrap_or(ItemKind::Other);
+    // A command is identified by its command line; a tool call by its name.
+    // Neither is guaranteed present, so fall back to the type rather than to an
+    // empty label the interface would render as a blank row.
+    let title = item
+        .get("command")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("tool").and_then(Value::as_str))
+        .or_else(|| item.get("name").and_then(Value::as_str))
+        .or_else(|| item.get("type").and_then(Value::as_str))
+        .unwrap_or("item")
+        .to_string();
+    let detail = item.get("cwd").and_then(Value::as_str).map(str::to_string);
+    ProgressItem {
+        item_id: item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        kind,
+        title,
+        detail,
+        state: item
+            .get("status")
+            .and_then(Value::as_str)
+            .map(ItemState::from_wire)
+            .unwrap_or(ItemState::Running),
+        output: item
+            .get("aggregatedOutput")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        exit_code: item.get("exitCode").and_then(Value::as_i64),
+        duration_ms: item.get("durationMs").and_then(Value::as_u64),
+    }
+}
+
+/// Reads the runtime's token accounting.
+fn token_usage(params: &Value) -> TokenUsage {
+    let usage = params.get("tokenUsage").unwrap_or(params);
+    let last = usage.get("last").unwrap_or(usage);
+    let field = |name: &str| {
+        last.get(name)
+            .or_else(|| usage.get(name))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    TokenUsage {
+        input_tokens: field("inputTokens"),
+        cached_input_tokens: field("cachedInputTokens"),
+        output_tokens: field("outputTokens"),
+        reasoning_output_tokens: field("reasoningOutputTokens"),
+        total_tokens: field("totalTokens"),
+        context_window: usage.get("modelContextWindow").and_then(Value::as_u64),
+    }
+}
+
 /// Text of a completed `agentMessage` item, if this notification is one.
 fn completed_agent_message(params: Option<&Value>) -> Option<String> {
     let item = params?.get("item")?;
@@ -879,6 +1080,7 @@ mod tests {
             // Tests default to the confined state, which is what the command
             // layer uses: permanent grants are unavailable.
             persistence: approval::Persistence::Blocked,
+            progress: None,
             limits: TurnLimits::default(),
         }
     }
@@ -1155,6 +1357,7 @@ mod tests {
                     approvals: Arc::new(approval::DenyAll),
                     audit: Some(Arc::clone(&audit)),
                     persistence: approval::Persistence::Blocked,
+                    progress: None,
                     limits: TurnLimits::default(),
                 },
             )
@@ -1230,6 +1433,7 @@ mod tests {
                     approvals: Arc::new(NeverAnswers),
                     audit: Some(Arc::clone(&audit)),
                     persistence: approval::Persistence::Blocked,
+                    progress: None,
                     limits: TurnLimits {
                         // Short enough to keep the suite quick, long enough for
                         // the runtime to raise the request.
@@ -1311,6 +1515,7 @@ mod tests {
                     approvals: Arc::clone(&decider) as Arc<dyn ApprovalDecider>,
                     audit: None,
                     persistence: approval::Persistence::Blocked,
+                    progress: None,
                     limits: TurnLimits::default(),
                 },
             )
@@ -1517,30 +1722,37 @@ mod tests {
 
     /// A confinement that cannot be applied must stop the launch, not be skipped.
     ///
-    /// The policy here is valid but the *availability* is forced unavailable, so
-    /// the failure comes from the probe rather than the profile.
+    /// The policy used here is **deliberately unbuildable** (a relative writable
+    /// root), so the confinement fails whichever way the availability probe
+    /// goes. That matters: an earlier version of this test branched on a
+    /// separate `probe()` call, and since `connect` probes again internally the
+    /// two could disagree — a real flake, not a hypothetical one.
     #[tokio::test]
-    async fn an_unavailable_confinement_refuses_to_launch() {
-        if crate::agent::sandbox::probe().is_available() {
-            eprintln!(
-                "skipping: this machine can apply seatbelt, so the refusal path is unreachable"
-            );
-            return;
-        }
+    async fn an_unbuildable_confinement_refuses_to_launch() {
+        let policy = crate::agent::sandbox::SandboxPolicy {
+            writable_roots: vec![PathBuf::from("relative-is-not-allowed")],
+            ..crate::agent::sandbox::SandboxPolicy::default()
+        };
         let config = AppServerConfig {
             program: PathBuf::from("/bin/true"),
-            confinement: Some(crate::agent::sandbox::SandboxPolicy::default()),
+            confinement: Some(policy),
             ..AppServerConfig::default()
         };
+
         let error = AgentSession::connect(config)
             .await
             .err()
-            .expect("an unusable sandbox must refuse");
+            .expect("an unusable sandbox must refuse to start the runtime");
         assert!(
             matches!(error, AgentError::Confinement { .. }),
             "expected Confinement, got {error:?}"
         );
-        assert!(error.to_string().contains("refusing to run unconfined"));
+        // Either the probe refused or the profile could not be built; both are
+        // refusals, and the message must say confinement was the problem.
+        assert!(
+            error.to_string().contains("confine"),
+            "the refusal must name confinement: {error}"
+        );
     }
 
     /// Acceptance (round G): the repository's domain instructions actually reach

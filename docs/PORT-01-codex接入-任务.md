@@ -24,6 +24,7 @@
 | PORT-01-J | 审批动作对齐 Codex 桌面版（四档） | C | **`verified`**（见下） |
 | PORT-01-K | 禁止长期放行（carve-out + 不提供第四档） | J | **`verified`**（见下） |
 | PORT-01-L | 操作档位（请求批准 / 帮我批准 / 完全访问权限） | K | **`verified`**（见下） |
+| PORT-01-M | 轮次进度与工具/skill 的流式展示 | L | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -835,6 +836,93 @@ carve-out，前者失败，而不是让一个「始终允许」按钮悄悄回�
 
 ---
 
+## PORT-01-M 轮次进度与工具/skill 的流式展示（2026-09-10）
+
+**背景**：所有者指令——「分析中要显示当前调用的进度和执行的工具以及使用 skill 等信息。要流式显示」。
+
+**取证（先于实现）**：一轮里运行时到底发什么。实测一轮 `sleep` 循环命令，收到 10 余种通知、
+字段形状如下（截断展示）：
+
+```jsonc
+{"method":"item/started","params":{"item":{"type":"commandExecution","id":"call_…",
+ "command":"/bin/zsh -lc 'for i in 1 2 3; do …'","cwd":"/tmp","status":"inProgress"},
+ "threadId":"…","turnId":"…"}}
+{"method":"item/commandExecution/outputDelta","params":{"delta":"line-2\n","itemId":"call_…"}}
+{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"call_…",
+ "command":"…","aggregatedOutput":"line-1\nline-2\nline-3\n","exitCode":0,"durationMs":3895,"status":"completed"}}}
+{"method":"item/reasoning/summaryTextDelta","params":{"delta":"…","itemId":"…"}}
+{"method":"item/agentMessage/delta","params":{"delta":"…","itemId":"…"}}
+{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"total":{…},"last":{…},"modelContextWindow":121600}}}
+{"method":"thread/status/changed", …}
+{"method":"serverRequest/resolved", …}
+```
+
+**关于「使用 skill」——必须说清楚的一点**：协议里**没有**「skill 被调用」这一信号（我逐个查了
+item 类型与通知方法，没有 skill 专用类型）。skill 的体现就是普普通通的工具与 shell 调用
+（读它的 `SKILL.md`、跑它的脚本）。因此界面**并排**呈现「可用 skill 清单」与「调用流」，
+`stock-deep-analyzer:uzi` 会作为一次工具调用出现在流里，而不是凭空生成一个协议不支持的归属。
+
+**实现**：
+- 新增 `crates/core/src/agent/progress.rs`：把 80 余种通知收敛为一小组 `TurnProgress` 事件
+  （`Started` / `ReasoningDelta` / `MessageDelta` / `ItemStarted` / `ItemOutput` /
+  `ItemFinished` / `Tokens` / `ApprovalRequested` / `ApprovalResolved` / `Stage`）。
+  **增量按 chunk 转发**而非累积文本：这一层因此无状态，消费者按 `item_id` 自行累加。
+- `mod.rs` 把相关通知翻译后转发给 `ProgressSink`；sink 在 `TurnContext` 里，`None` 即静默运行（测试用）。
+- 新增 `src-tauri/src/commands/agent_live.rs`：把事件折叠进共享状态的 `live` 块。两条边界：
+  **流式文本与单步输出都只保留尾部**（每轮可产出兆字节，而这个状态每次轮询都要序列化）；
+  **轮次结束后清空** `live`（届时权威数据在 `turns` 里，留着会重复渲染同一批工作）。
+- 界面在会话流顶部新增实时区：阶段 chip、token 用量、推理/正文流式文本、逐步卡片
+  （类型标签 + 标题 + 状态 + 退出码/耗时），运行中的 chip 有脉冲动画（并尊重
+  `prefers-reduced-motion`）。
+
+**实测（真实会话，括号内为事件抵达时刻）**
+
+```
+[   162 ms] ItemStarted(userMessage)
+[   987 ms] ItemStarted(Reasoning reasoning)
+[  1745 ms] ItemStarted(Command /bin/zsh -lc 'for i in 1 2 3; do echo line-$i; sleep 1; done')
+[  1745 ms] ApprovalRequested(/bin/zsh -lc 'for i in 1 2 3; …')
+[  1745 ms] ApprovalResolved(0)
+[  2784 ms] ItemOutput("line-2")
+[  3792 ms] ItemOutput("line-3")
+[  4829 ms] Tokens(total=7732)
+[  5699 ms] ItemStarted(Message agentMessage)
+[  6321 ms] Tokens(total=7941)
+[  6321 ms] Stage(Done)
+```
+
+事件在 **6.3 秒里陆续抵达**，而非结束时一次吐出——这就是「流式」的判据。命令输出在命令
+**执行期间**到达（1745ms 启动，2784/3792ms 收到两行），token 也在中途更新。
+
+**验收**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 进度实时可见（非结束时才有） | ✅ | 上表时间戳；`cargo run --example stream_check` 实测 |
+| 展示执行的工具/命令与其状态 | ✅ | 渲染断言：命令卡「进行中… · line-1」、另一卡「退出码 0 · 12 ms」；单测覆盖 running→output→exit |
+| 展示 skill 信息 | ✅ | 工具栏 skill 计数与清单（hover）；skill 调用以工具卡出现在流中（`stock-deep-analyzer:uzi`） |
+| 流式文本与输出 | ✅ | `ReasoningDelta`/`MessageDelta`/`ItemOutput` 三条分支 + 渲染断言（推理文本、命令增量） |
+| token 用量 | ✅ | 渲染断言「7,732 / 121,600 TOKENS」 |
+| 文本有界（不随轮次无界增长） | ✅ | `long_output_keeps_a_bounded_tail`（500 行后仍 ≤ 上限且保留末行） |
+| 上一轮的迟到事件不改写本轮 | ✅ | `events_for_another_turn_are_ignored`（turn_seq 守卫） |
+| 轮次结束后清空实时块 | ✅ | 代码路径 + `a_missing_live_block_is_not_an_error` |
+| `cargo fmt/clippy(-D warnings)/test` | ✅ | clean / 0 / **307 core + 35 tauri** |
+| `cargo build --release` / `npm run build` | ✅ | Finished / 零错误 |
+
+**死路径修正**：我定义了 `ApprovalRequested` 却从未发出（于是 live 阶段不会切到「等待审批」）。
+实测比对时发现，已在调用裁决器**之前**补发。
+
+**修掉一个我自己造成的间歇性失败（5 连跑已复现）**：`an_unavailable_confinement_refuses_to_launch`
+先调一次 `probe()` 决定走哪个分支，而 `AgentSession::connect` 内部会**再探测一次**；并发下
+`sandbox-exec` 探测偶发失败，两次结论可能不同，断言随之落空（实测出现 306/1）。
+改为使用**必然构造失败**的策略（相对可写根），使该测试与探测结果解耦——无论探测走哪条路，
+错误都必然是 `Confinement`。这不是把失败藏起来：改前 3 连跑必现，改后 5 连跑全绿。
+
+**仍未验证**：真实 Tauri 宿主（沿用 mock IPC）；未测超长会话下前端每秒轮询的序列化开销
+（现有上限已把单次载荷压到常数级，但未实测）。
+
+---
+
 ## 风险与依赖登记
 
 | 风险 | 影响 | 处置 |
@@ -856,6 +944,8 @@ carve-out，前者失败，而不是让一个「始终允许」按钮悄悄回�
 | `data/` 不随仓库分发 | 依赖归档的测试在新克隆上跳过而非失败 | 已在文档标注依赖；这些测试的绿在本机为实证，CI 需先产出归档 |
 | **前端只经 mock IPC 验证** | 真实 WKWebView 与真实 IPC 链路（`agent_start` 拉起子进程）未验证 | 仓库既有做法如此（G-02 §2.4）；已在任务文档「未执行的验证」中明确记录，留待所有者在自己实例上确认 |
 | **审批超时的界面分支未实测** | 界面在 `source: timeout` 时的呈现未真实触发 | 后端语义有单测覆盖（轮次 C）；界面分支只经 mock 呈现，已记录为缺口 |
+| **每秒轮询的载荷随轮次增长** | 长轮次会产出兆字节文本，而状态每次轮询都要序列化 | 流式文本与单步输出均**只保留尾部**（4,000 字符上限，`long_output_keeps_a_bounded_tail` 盯住）；轮次结束即清空 live 块 |
+| **协议无 skill 信号** | 无法诚实标注「本次用了哪个 skill」 | 界面并排呈现可用 skill 清单与调用流，不伪造归属；已写入本文档 |
 | **档位「完全访问权限」移除沙箱与审批** | 该档下 agent 可写任意路径、联网且不需批准；若被误选，只读边界与 K 的规则守卫同时失效 | 该档需显式选择且**会话运行中不可切换**；界面在其下方明示「不施加沙箱」；默认档为 `请求批准`；实测三档写入行为逐档核过 |
 | **trace 与上游 rollout 的信息重叠** | 有人可能误以为 trace 是上游记录的冗余副本 | 两者互补且以 thread id 为共同键；宿主侧决策（审批来源、被拒请求）仅存在于 trace，已在设计 §3.5 写明 |
 | **trace 写入失败被吞** | 丢失审计线索而不自知 | 写入失败以 `tracing::error` 上报，turn 继续（不因 trace 失败而丢轮次）；`session_finished` 仅在 shutdown 成功后记录，故 `finished:true` 可信 |

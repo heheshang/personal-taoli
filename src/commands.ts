@@ -428,8 +428,47 @@ export interface AgentStatus {
   skills: AgentSkill[]
   /** 当前会话使用的操作档位。 */
   access_level: string
+  /** 正在进行的轮次的实时视图；无进行中轮次时为 null。 */
+  live: AgentLive | null
   /** 会话级致命错误；轮次内的失败记在该轮的 `error`。 */
   error: string | null
+}
+
+/** 进行中一轮里的一步。 */
+export interface AgentLiveItem {
+  item_id: string
+  /** `reasoning` / `command` / `file_change` / `tool_call` / `message` / `other`。 */
+  kind: string
+  /** 一行标题：命令行走命令行，工具调用走工具名。 */
+  title: string
+  detail: string | null
+  /** `running` / `completed` / `failed` / `declined`。 */
+  state: string
+  /** 已流式收到的输出（后端保留尾部）。 */
+  output: string
+  exit_code: number | null
+  duration_ms: number | null
+}
+
+/** 本轮 token 计费。 */
+export interface AgentTokens {
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  reasoning_output_tokens: number
+  total_tokens: number
+  context_window: number | null
+}
+
+/** 正在进行的轮次的实时视图。 */
+export interface AgentLive {
+  turn_seq: number
+  /** `thinking` / `working` / `writing` / `awaiting_approval` / `done`。 */
+  stage: string
+  reasoning: string
+  message: string
+  items: AgentLiveItem[]
+  tokens: AgentTokens | null
 }
 
 /** 是否已配置 codex 运行时、归档与 trace 目录（未就绪时界面给出说明）。 */

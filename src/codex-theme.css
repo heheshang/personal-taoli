@@ -494,3 +494,55 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── 进行中轮次的实时视图 ─────────────────────────────────────────── */
+
+.codex-live {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--cx-gray-150);
+  border-radius: var(--cx-radius-lg);
+  background: var(--cx-gray-50);
+}
+
+.codex-live-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 推理摘要：与正文区分开，且比正文小一号——它是过程，不是结论。 */
+.codex-live-reasoning {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--cx-text-2);
+  max-height: 160px;
+  overflow-y: auto;
+  border-left: 2px solid var(--cx-gray-150);
+  padding-left: 10px;
+}
+
+/* 运行中的步骤：左侧一道脉冲色条，让「正在跑」一眼可见。 */
+.codex-live .codex-tool {
+  background: var(--cx-gray-0);
+}
+
+.codex-live .codex-chip.warn .codex-dot {
+  animation: codex-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes codex-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codex-live .codex-chip.warn .codex-dot {
+    animation: none;
+  }
+}

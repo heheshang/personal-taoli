@@ -37,9 +37,10 @@ use personal_taoli_core::agent::{
 use crate::error::{ApiResponse, ErrorCode};
 
 use super::{
+    agent_live::LiveTracker,
     dto::{
-        AgentAccessLevel, AgentApprovalDecision, AgentApprovalRequest, AgentReady, AgentSkill,
-        AgentStatus, AgentToolCall, AgentTurn,
+        AgentAccessLevel, AgentApprovalDecision, AgentApprovalRequest, AgentLive, AgentReady,
+        AgentSkill, AgentStatus, AgentToolCall, AgentTurn,
     },
     support::{api_fail, api_map},
 };
@@ -380,6 +381,7 @@ fn stopped_status(program: Option<String>) -> AgentStatus {
         turns: Vec::new(),
         skills: Vec::new(),
         access_level: AccessLevel::default().token().to_string(),
+        live: None,
         error: None,
     }
 }
@@ -504,6 +506,7 @@ impl AgentController {
             turns: Vec::new(),
             skills: Vec::new(),
             access_level: level.token().to_string(),
+            live: None,
             error: None,
         }));
 
@@ -724,12 +727,24 @@ async fn run_agent(
             AgentCommand::Ask { prompt } => {
                 // 新轮次在开始时即入列，界面据此立刻显示用户消息与「进行中」
                 // 状态，而不是等到结束时才出现。
-                let seq = {
+                let (seq, tracker) = {
                     let mut guard = lock(&status);
                     guard.phase = "running";
                     guard.error = None;
                     guard.pending_approval = None;
                     let seq = guard.turns.len() as u64;
+                    // The live view is created here, before the turn's first
+                    // event, so an early notification cannot arrive with nowhere
+                    // to land.
+                    guard.live = Some(AgentLive {
+                        turn_seq: seq,
+                        stage: "thinking".to_string(),
+                        reasoning: String::new(),
+                        message: String::new(),
+                        items: Vec::new(),
+                        tokens: None,
+                    });
+                    let tracker = Arc::new(LiveTracker::new(Arc::clone(&status), seq));
                     guard.turns.push(AgentTurn {
                         seq,
                         prompt: prompt.clone(),
@@ -741,7 +756,7 @@ async fn run_agent(
                         started_at_ms: now_ms(),
                         finished_at_ms: None,
                     });
-                    seq
+                    (seq, tracker)
                 };
 
                 let context = TurnContext {
@@ -749,6 +764,8 @@ async fn run_agent(
                     approvals: Arc::new(UiApprovalDecider::new(Arc::clone(&slot))),
                     audit: None,
                     persistence,
+                    // Streams the turn into the shared status while it runs.
+                    progress: Some(tracker.sink()),
                     limits: TurnLimits {
                         timeout: TURN_TIMEOUT,
                         max_tool_calls: MAX_TOOL_CALLS,
@@ -787,6 +804,9 @@ async fn run_agent(
                     turn.error = error;
                     turn.finished_at_ms = Some(now_ms());
                 }
+                // The record is now authoritative; keeping the live copy would
+                // render the same work twice.
+                guard.live = None;
                 guard.phase = "ready";
             }
             AgentCommand::Stop { done } => {

@@ -209,6 +209,57 @@ pub struct AgentToolCall {
     pub output: String,
 }
 
+/// 进行中一轮里的一步。
+///
+/// 与 [`AgentToolCall`] 的区别：那是轮次**结束**后的记录，这是**运行中**的视图，
+/// 因此带状态（running/completed/failed/declined）与增量输出。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentLiveItem {
+    pub item_id: String,
+    /// `reasoning` / `command` / `file_change` / `tool_call` / `message` / `other`。
+    pub kind: String,
+    /// 一行标题：命令行走命令行，工具调用走工具名。
+    pub title: String,
+    /// 运行时的附加信息（命令是工作目录）。
+    pub detail: Option<String>,
+    /// `running` / `completed` / `failed` / `declined`。
+    pub state: String,
+    /// 已流式收到的输出（保留尾部，见 `agent_live`）。
+    pub output: String,
+    pub exit_code: Option<i64>,
+    pub duration_ms: Option<u64>,
+}
+
+/// 本轮 token 计费。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTokens {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+    /// 模型上下文窗口，运行时上报时才有。
+    pub context_window: Option<u64>,
+}
+
+/// 正在进行的轮次的实时视图。
+///
+/// 轮次结束后由后端清空：届时权威数据在 [`AgentTurn`] 里，留着会重复渲染同一批
+/// 工作。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentLive {
+    /// 属于哪一轮（与 [`AgentTurn::seq`] 对应），防止上一轮的迟到事件改写本轮。
+    pub turn_seq: u64,
+    /// `thinking` / `working` / `writing` / `awaiting_approval` / `done`。
+    pub stage: String,
+    /// 推理摘要的流式文本（尾部）。
+    pub reasoning: String,
+    /// 助手正文的流式文本（尾部）。
+    pub message: String,
+    pub items: Vec<AgentLiveItem>,
+    pub tokens: Option<AgentTokens>,
+}
+
 /// 一轮分析的完整记录。
 ///
 /// 每轮独立成条，使界面能像 codex 桌面版那样把会话呈现为**消息流**，而不是只
@@ -269,6 +320,8 @@ pub struct AgentStatus {
     pub skills: Vec<AgentSkill>,
     /// 当前会话使用的操作档位（未启动时为新会话将使用的档位）。
     pub access_level: String,
+    /// 正在进行的轮次的实时视图；无进行中轮次时为 `null`。
+    pub live: Option<AgentLive>,
     /// 会话级致命错误（运行时启动失败或退出）。轮次内的失败记在该轮的 `error`。
     pub error: Option<String>,
 }
