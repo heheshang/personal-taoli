@@ -381,8 +381,17 @@ impl CodexAppServer {
     }
 
     /// Starts a turn carrying one text input and returns the turn id.
-    pub async fn start_turn(&mut self, thread_id: &str, text: &str) -> Result<String, AgentError> {
-        let params = turn_start_params(thread_id, text);
+    ///
+    /// `output_schema`, when given, constrains the turn's **final** assistant
+    /// message to that JSON Schema; intermediate progress messages remain prose.
+    pub async fn start_turn(
+        &mut self,
+        thread_id: &str,
+        text: &str,
+        output_schema: Option<&Value>,
+        context: Option<(&str, &str)>,
+    ) -> Result<String, AgentError> {
+        let params = turn_start_params(thread_id, text, output_schema, context);
         let result = self.request("turn/start", params).await?;
         result
             .get("turn")

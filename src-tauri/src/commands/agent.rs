@@ -28,7 +28,7 @@ use personal_taoli_core::agent::{
     access::{AccessLevel, AccessSetting},
     app_server::AppServerConfig,
     approval::{self, ApprovalDecider, ApprovalRequest, Decision},
-    discover_program, instructions,
+    discover_program, instructions, report,
     sandbox::{self, SandboxPolicy},
     tools::ToolRegistry,
     trace::ThreadOptions,
@@ -717,6 +717,10 @@ async fn run_agent(
     // once per session, and a failure here must stop the launch.
     let developer_instructions =
         instructions::load_default().map_err(|error| anyhow::anyhow!("{error}"))?;
+    // Same treatment as the instructions: a missing or malformed contract stops the
+    // launch rather than silently running a session that cannot produce a report.
+    let report_schema: serde_json::Value =
+        report::load_default().map_err(|error| anyhow::anyhow!("{error}"))?;
 
     let config = AppServerConfig {
         program: PathBuf::from(program),
@@ -793,6 +797,8 @@ async fn run_agent(
                         approvals: Vec::new(),
                         refused_requests: Vec::new(),
                         messages: Vec::new(),
+                        report: None,
+                        report_error: None,
                         error: None,
                         started_at_ms: now_ms(),
                         finished_at_ms: None,
@@ -805,6 +811,10 @@ async fn run_agent(
                     approvals: Arc::new(UiApprovalDecider::new(Arc::clone(&slot))),
                     audit: None,
                     persistence,
+                    // Every analysis turn asks for the report schema, so the
+                    // interface can render a structured result when the model
+                    // honours it — and falls back to the prose when it does not.
+                    output_schema: Some(report_schema.clone()),
                     // Streams the turn into the shared status while it runs.
                     progress: Some(tracker.sink()),
                     limits: turn_limits(),
@@ -812,24 +822,29 @@ async fn run_agent(
                 let result = session.run_turn(&prompt, context).await;
 
                 let mut guard = lock(&status);
-                let (tool_calls, approvals, refused, messages, error) = match result {
-                    Ok(outcome) => (
-                        outcome.tool_calls.iter().map(tool_call_dto).collect(),
-                        outcome.approvals.iter().map(approval_dto).collect(),
-                        outcome.refused_requests.clone(),
-                        outcome.messages.clone(),
-                        None,
-                    ),
-                    Err(error) => (
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        // 轮次失败不终止会话：运行时仍在，下一轮可继续；原因
-                        // 原样呈现给所有者。
-                        Some(format!("{error:#}")),
-                    ),
-                };
+                let (tool_calls, approvals, refused, messages, report, report_error, error) =
+                    match result {
+                        Ok(outcome) => (
+                            outcome.tool_calls.iter().map(tool_call_dto).collect(),
+                            outcome.approvals.iter().map(approval_dto).collect(),
+                            outcome.refused_requests.clone(),
+                            outcome.messages.clone(),
+                            outcome.report.clone(),
+                            outcome.report_error.clone(),
+                            None,
+                        ),
+                        Err(error) => (
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                            None,
+                            None,
+                            // 轮次失败不终止会话：运行时仍在，下一轮可继续；原因
+                            // 原样呈现给所有者。
+                            Some(format!("{error:#}")),
+                        ),
+                    };
 
                 // 落回本轮记录。seq 由本任务独占递增，因此按 seq 定位比按下标
                 // 更稳。
@@ -838,6 +853,8 @@ async fn run_agent(
                     turn.approvals = approvals;
                     turn.refused_requests = refused;
                     turn.messages = messages;
+                    turn.report = report;
+                    turn.report_error = report_error;
                     turn.error = error;
                     turn.finished_at_ms = Some(now_ms());
                 }

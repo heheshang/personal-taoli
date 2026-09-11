@@ -668,3 +668,172 @@
 .markdown-body img {
   max-width: 100%;
 }
+
+/* ── 结构化报告 ──────────────────────────────────────────────────── */
+
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--cx-gray-150);
+  border-radius: var(--cx-radius-xl);
+  background: var(--cx-gray-0);
+}
+
+.report-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.report-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--cx-text);
+}
+
+.report-ticker {
+  margin-left: 6px;
+  font-family: var(--cx-mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--cx-text-3);
+}
+
+.report-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.report-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--cx-text-3);
+}
+
+.report-summary {
+  font-size: 14px;
+}
+
+.report-highlights {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--cx-text);
+}
+
+.report-panel {
+  border-top: 1px solid var(--cx-gray-100);
+  padding-top: 12px;
+}
+
+.report-panel h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--cx-text-3);
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.report-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.report-cell-label {
+  font-size: 11px;
+  color: var(--cx-text-3);
+}
+
+.report-cell-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--cx-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-cell-note {
+  font-size: 10px;
+  color: var(--cx-text-3);
+}
+
+.report-table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.report-table th,
+.report-table td {
+  border: 1px solid var(--cx-gray-150);
+  padding: 5px 8px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-table th {
+  background: var(--cx-gray-50);
+  font-weight: 600;
+}
+
+.report-events {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.report-events li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.report-event-date {
+  flex: none;
+  font-family: var(--cx-mono);
+  font-size: 11px;
+  color: var(--cx-text-3);
+}
+
+.report-missing {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--cx-text-2);
+}
+
+.report-integrity {
+  background: var(--cx-gray-50);
+  border-radius: var(--cx-radius-lg);
+  padding: 12px;
+  border-top: none;
+}
+
+.report-disclaimer {
+  margin: 0;
+  font-size: 11px;
+  color: var(--cx-text-3);
+  line-height: 1.6;
+}

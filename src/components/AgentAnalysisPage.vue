@@ -25,6 +25,7 @@ import {
   agentSetAccessLevel,
 } from '../commands'
 import MarkdownBlock from './MarkdownBlock.vue'
+import ReportView from './ReportView.vue'
 import { AGENT_DECISION_LABEL } from '../commands'
 import type {
   AgentAccessLevel,
@@ -547,14 +548,26 @@ onUnmounted(stopPolling)
             <template v-if="record.source === 'timeout'"> · 超时未裁决</template>
           </div>
 
+          <!-- 结构化报告：本轮按 schema 输出并通过校验时才渲染。 -->
+          <ReportView v-if="turn.report" :report="turn.report" />
+
           <!-- 助手正文：本轮**全部**消息，按 Markdown 渲染。
-               分析类 skill 会边跑边汇报，只显示最后一条会把中间结果丢掉。 -->
+               分析类 skill 会边跑边汇报，只显示最后一条会把中间结果丢掉。
+               有报告时，承载它的最后一条消息不再重复显示（同一内容两种排版）。 -->
           <MarkdownBlock
-            v-for="(message, index) in turn.messages"
+            v-for="(message, index) in turn.report ? turn.messages.slice(0, -1) : turn.messages"
             :key="`m-${index}`"
             class="codex-assistant"
             :source="message"
           />
+
+          <!-- 要求了结构化输出但未通过校验：说明为何显示的是正文而非报告。 -->
+          <div v-if="turn.report_error" class="codex-chip warn">
+            <i class="codex-dot" />未按结构输出，已回退为正文
+          </div>
+          <div v-else-if="turn.report === null && turn.messages.length && !turn.error" class="codex-chip">
+            本轮无结构化报告
+          </div>
 
           <!-- 待审批：内联在会话流里 -->
           <div v-if="pending && turn.seq === openTurnSeq" class="codex-approval">

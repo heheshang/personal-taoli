@@ -28,6 +28,7 @@ pub mod approval;
 pub mod instructions;
 pub mod progress;
 pub mod protocol;
+pub mod report;
 pub mod sandbox;
 pub mod tools;
 pub mod trace;
@@ -259,6 +260,13 @@ pub struct TurnContext {
     /// confined away from its rule store, which is the default here: a permanent
     /// verdict then silently does nothing, so the option must not be offered.
     pub persistence: approval::Persistence,
+    /// JSON Schema constraining this turn's **final** assistant message.
+    ///
+    /// `None` asks for free-form prose, which is right for a conversational turn
+    /// ("what tools do you have?") and wrong for an analysis the interface renders
+    /// as a report. Loaded from the repository document rather than inlined here —
+    /// see [`report`].
+    pub output_schema: Option<Value>,
     /// Where live progress goes, when someone is watching.
     ///
     /// `None` runs the turn silently, which is what tests want. The interface
@@ -307,6 +315,20 @@ pub struct TurnOutcome {
     pub messages: Vec<String>,
     /// The last of [`Self::messages`]; `None` when the turn produced none.
     pub final_message: Option<String>,
+    /// The final message parsed as JSON, when the turn was asked for structure and
+    /// the result satisfied it.
+    ///
+    /// Kept alongside the raw text, not instead of it: the interface renders this
+    /// as a report but falls back to the prose when parsing fails, so a model that
+    /// ignored the schema degrades to Markdown rather than to an empty panel.
+    pub report: Option<Value>,
+    /// Why a requested report was rejected, when one was asked for and did not
+    /// satisfy the schema.
+    ///
+    /// Surfaced rather than only logged: the interface shows prose where the reader
+    /// expected a report, and "the model ignored the structure" is the difference
+    /// between a bug and a model that needs a firmer instruction.
+    pub report_error: Option<String>,
     /// Server requests refused because this client does not implement them.
     ///
     /// Recorded rather than dropped: a non-empty list means the model tried
@@ -500,6 +522,7 @@ impl AgentSession {
             approvals,
             audit,
             persistence,
+            output_schema,
             progress,
             limits,
         } = context;
@@ -511,7 +534,23 @@ impl AgentSession {
                 method: "turn/start".to_string(),
                 detail: "no thread has been started on this session".to_string(),
             })?;
-        let turn_id = self.server.start_turn(&thread_id, prompt).await?;
+        // The requirement is also stated in words, derived from the schema so the
+        // two cannot disagree. Measured: the schema field alone was not enough — the
+        // model refused, reporting that no structure had been provided.
+        let fragment = output_schema
+            .as_ref()
+            .map(crate::agent::report::context_fragment);
+        let turn_id = self
+            .server
+            .start_turn(
+                &thread_id,
+                prompt,
+                output_schema.as_ref(),
+                fragment
+                    .as_ref()
+                    .map(|(source, value)| (source.as_str(), value.as_str())),
+            )
+            .await?;
 
         let mut outcome = TurnOutcome {
             turn_id: turn_id.clone(),
@@ -520,6 +559,8 @@ impl AgentSession {
             approvals: Vec::new(),
             messages: Vec::new(),
             final_message: None,
+            report: None,
+            report_error: None,
             refused_requests: Vec::new(),
         };
 
@@ -538,6 +579,7 @@ impl AgentSession {
                 &*approvals,
                 &audit,
                 persistence,
+                output_schema.is_some(),
                 progress
                     .as_ref()
                     .map(|sink| sink.as_ref() as &(dyn Fn(TurnProgress) + Send + Sync)),
@@ -578,6 +620,7 @@ impl AgentSession {
         approvals: &dyn ApprovalDecider,
         audit: &Option<Arc<ApprovalLog>>,
         persistence: approval::Persistence,
+        wants_report: bool,
         progress: Option<&(dyn Fn(TurnProgress) + Send + Sync)>,
         limits: &TurnLimits,
     ) -> Result<(), AgentError> {
@@ -737,6 +780,38 @@ impl AgentSession {
                                         text: text.clone(),
                                         at_ms: now_ms(),
                                     });
+                                }
+                                if wants_report {
+                                    // Two ways a requested report fails to arrive, and
+                                    // both are worth telling the reader about: the model
+                                    // produced no JSON at all, or it produced JSON that
+                                    // does not satisfy the schema. The second was
+                                    // measured — it invented its own field names.
+                                    match serde_json::from_str::<Value>(&text) {
+                                        Ok(report) => {
+                                            match crate::agent::report::validate(&report) {
+                                                Ok(()) => outcome.report = Some(report),
+                                                Err(reason) => {
+                                                    tracing::warn!(
+                                                        target: "agent",
+                                                        %reason,
+                                                        "final message did not satisfy the report schema; \
+                                                         keeping the prose instead"
+                                                    );
+                                                    outcome.report_error = Some(reason);
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            let reason = format!("最终回复不是 JSON（{error}）");
+                                            tracing::warn!(
+                                                target: "agent",
+                                                %reason,
+                                                "final message was not JSON; keeping the prose"
+                                            );
+                                            outcome.report_error = Some(reason);
+                                        }
+                                    }
                                 }
                                 outcome.final_message = Some(text.clone());
                                 outcome.messages.push(text);
@@ -1193,6 +1268,7 @@ mod tests {
             approvals: Arc::new(AllowOnce),
             audit: None,
             persistence: approval::Persistence::Blocked,
+            output_schema: None,
             progress: None,
             limits,
         }
@@ -1220,6 +1296,7 @@ mod tests {
             // Tests default to the confined state, which is what the command
             // layer uses: permanent grants are unavailable.
             persistence: approval::Persistence::Blocked,
+            output_schema: None,
             progress: None,
             limits: TurnLimits::default(),
         }
@@ -1497,6 +1574,7 @@ mod tests {
                     approvals: Arc::new(approval::DenyAll),
                     audit: Some(Arc::clone(&audit)),
                     persistence: approval::Persistence::Blocked,
+                    output_schema: None,
                     progress: None,
                     limits: TurnLimits::default(),
                 },
@@ -1573,6 +1651,7 @@ mod tests {
                     approvals: Arc::new(NeverAnswers),
                     audit: Some(Arc::clone(&audit)),
                     persistence: approval::Persistence::Blocked,
+                    output_schema: None,
                     progress: None,
                     limits: TurnLimits {
                         // Short enough to keep the suite quick, long enough for
@@ -1655,6 +1734,7 @@ mod tests {
                     approvals: Arc::clone(&decider) as Arc<dyn ApprovalDecider>,
                     audit: None,
                     persistence: approval::Persistence::Blocked,
+                    output_schema: None,
                     progress: None,
                     limits: TurnLimits::default(),
                 },
@@ -2285,5 +2365,117 @@ mod tests {
         }
 
         session.shutdown().await.expect("shutdown must succeed");
+    }
+
+    /// The schema reaches the runtime and the result comes back structured.
+    ///
+    /// Measured: with `outputSchema` set, the model's final message *is* the JSON —
+    /// no surrounding prose — while any progress it reported earlier stays text.
+    /// Without it, the same question yields prose and no report.
+    #[tokio::test]
+    async fn a_report_turn_returns_structured_output() {
+        let Some(program) = codex_program() else {
+            eprintln!("skipping: codex is not installed on PATH");
+            return;
+        };
+        let Ok(schema) = crate::agent::report::load_default() else {
+            eprintln!("skipping: the report schema is absent");
+            return;
+        };
+
+        let tools = Arc::new(ToolRegistry::new());
+        let mut session = AgentSession::connect(fast_config(program))
+            .await
+            .expect("handshake must succeed");
+        session
+            .start_thread(&restricted_options(None), Arc::clone(&tools))
+            .await
+            .expect("thread must start");
+
+        let outcome = session
+            .run_turn(
+                "分析 002600.SZ。按给定结构输出；取不到数据就留空，不要编造。",
+                TurnContext {
+                    tools,
+                    approvals: Arc::new(approval::DenyAll),
+                    audit: None,
+                    persistence: approval::Persistence::Blocked,
+                    output_schema: Some(schema),
+                    progress: None,
+                    limits: TurnLimits::default(),
+                },
+            )
+            .await
+            .expect("turn must run");
+
+        let report = outcome.report.as_ref().unwrap_or_else(|| {
+            panic!(
+                "a turn asked for structure must yield a parsed report; status={:?} messages={:?}",
+                outcome.status, outcome.messages
+            )
+        });
+        // The three properties the interface keys on.
+        for key in crate::agent::report::REQUIRED_PROPERTIES {
+            assert!(
+                report.get(key).is_some(),
+                "report is missing `{key}`: {report}"
+            );
+        }
+        assert_eq!(report["ticker"], serde_json::json!("002600.SZ"));
+        // And the raw text is kept alongside, so a rendering failure cannot lose
+        // the answer.
+        assert!(
+            outcome
+                .final_message
+                .as_deref()
+                .is_some_and(|text| text.contains("002600.SZ")),
+            "the raw message must survive: {:?}",
+            outcome.final_message
+        );
+
+        let _ = session.shutdown().await;
+    }
+
+    /// A turn that was **not** asked for structure must not invent a report from
+    /// prose that happens to be JSON-shaped, nor fail when it is not.
+    #[tokio::test]
+    async fn a_conversational_turn_yields_no_report() {
+        let Some(program) = codex_program() else {
+            eprintln!("skipping: codex is not installed on PATH");
+            return;
+        };
+        let tools = Arc::new(ToolRegistry::new());
+        let mut session = AgentSession::connect(fast_config(program))
+            .await
+            .expect("handshake must succeed");
+        session
+            .start_thread(&restricted_options(None), Arc::clone(&tools))
+            .await
+            .expect("thread must start");
+
+        let outcome = session
+            .run_turn(
+                "用一句话说明你有哪些能力。不要输出 JSON。",
+                TurnContext {
+                    tools,
+                    approvals: Arc::new(approval::DenyAll),
+                    audit: None,
+                    persistence: approval::Persistence::Blocked,
+                    output_schema: None,
+                    progress: None,
+                    limits: TurnLimits::default(),
+                },
+            )
+            .await
+            .expect("turn must run");
+
+        assert!(
+            outcome.report.is_none(),
+            "no schema was requested, so there is no report: {:?}",
+            outcome.report
+        );
+        assert!(outcome.final_message.is_some());
+
+        let _ = session.shutdown().await;
     }
 }

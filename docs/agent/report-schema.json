@@ -1,0 +1,177 @@
+{
+  "$comment": "个股分析报告的结构化输出契约。运行时用法：thread/start 之后的 turn/start 传 outputSchema，它约束该轮**最终**助手消息为符合本 schema 的 JSON（实测：模型返回纯 JSON、无额外文字；中间的进度汇报仍是普通文本）。字段大量为可选：模型的领域约束要求「数字只能来自实际读到的数据，不得编造」（见 docs/agent/instructions.md §3），因此取不到的字段应当**缺席**，而不是填占位值——界面据此显示「未提供」。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ticker", "name", "summary"],
+  "properties": {
+    "ticker": {
+      "type": "string",
+      "description": "股票代码，含交易所后缀，如 002600.SZ / 600519.SH"
+    },
+    "name": {
+      "type": "string",
+      "description": "证券简称"
+    },
+    "summary": {
+      "type": "string",
+      "description": "结论摘要（Markdown 允许）。这是报告的核心结论，必须自足可读。"
+    },
+    "highlights": {
+      "type": "array",
+      "description": "要点，每条一句话",
+      "items": { "type": "string" }
+    },
+    "industry": {
+      "type": ["string", "null"],
+      "description": "所属行业；未知为 null"
+    },
+    "listedDate": { "type": ["string", "null"], "description": "上市日期" },
+    "dataAt": { "type": ["string", "null"], "description": "数据时点（ISO 8601）" },
+    "mode": {
+      "type": ["string", "null"],
+      "description": "数据完整度说明，如「Stage 1 只读快照」或「Stage 2 已完成」"
+    },
+    "verdict": {
+      "type": ["string", "null"],
+      "enum": ["看多", "中性", "看空", null],
+      "description": "方向性判断；仅为分析结论，不构成投资建议"
+    },
+    "score": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 100,
+      "description": "综合评分 0–100"
+    },
+    "quote": {
+      "type": "object",
+      "description": "行情快照",
+      "additionalProperties": false,
+      "properties": {
+        "price": { "type": ["number", "null"] },
+        "prevClose": { "type": ["number", "null"] },
+        "changePct": { "type": ["number", "null"], "description": "涨跌幅（%）" },
+        "marketCap": { "type": ["string", "null"], "description": "总市值，含单位，逐字取自数据源" },
+        "peTtm": { "type": ["number", "null"] },
+        "peValuation": { "type": ["string", "null"], "description": "估值口径 PE" },
+        "pb": { "type": ["string", "null"] }
+      }
+    },
+    "financial": {
+      "type": "object",
+      "description": "财务",
+      "additionalProperties": false,
+      "properties": {
+        "years": { "type": "array", "items": { "type": "string" } },
+        "revenue": { "type": "array", "items": { "type": "number" } },
+        "netProfit": { "type": "array", "items": { "type": "number" } },
+        "roe": { "type": "array", "items": { "type": "number" } },
+        "period": { "type": ["string", "null"], "description": "报告期" },
+        "revenueGrowthYoy": { "type": ["number", "null"], "description": "营收同比（%）" },
+        "revenueGrowthPeriod": { "type": ["string", "null"] },
+        "revenueGrowthLabel": { "type": ["string", "null"] },
+        "netProfitYoyPct": { "type": ["number", "null"] },
+        "health": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "currentRatio": { "type": ["number", "null"] },
+            "debtRatio": { "type": ["number", "null"] },
+            "netMarginPct": { "type": ["number", "null"] }
+          }
+        },
+        "dupont": {
+          "type": "object",
+          "description": "杜邦拆解",
+          "additionalProperties": false,
+          "properties": {
+            "netMarginPct": { "type": ["number", "null"] },
+            "assetTurnover": { "type": ["number", "null"] },
+            "equityMultiplier": { "type": ["number", "null"] },
+            "roeReconstructedPct": { "type": ["number", "null"] },
+            "roeQuality": { "type": ["string", "null"], "description": "如 margin_driven" }
+          }
+        }
+      }
+    },
+    "technical": {
+      "type": "object",
+      "description": "技术面",
+      "additionalProperties": false,
+      "properties": {
+        "stage": { "type": ["string", "null"], "description": "如「Stage 4 下跌」" },
+        "maAlignment": { "type": ["string", "null"] },
+        "ma20": { "type": ["number", "null"] },
+        "ma200": { "type": ["number", "null"] },
+        "aboveMa20": { "type": ["boolean", "null"] },
+        "aboveMa200": { "type": ["boolean", "null"] },
+        "rsi14": { "type": ["number", "null"] },
+        "ytdReturn": { "type": ["string", "null"] },
+        "yearHigh": { "type": ["number", "null"] },
+        "yearLow": { "type": ["number", "null"] },
+        "pctFromYearHigh": { "type": ["number", "null"] }
+      }
+    },
+    "valuation": {
+      "type": "object",
+      "description": "估值",
+      "additionalProperties": false,
+      "properties": {
+        "dcf": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "intrinsicPerShare": { "type": ["number", "null"] },
+            "currentPrice": { "type": ["number", "null"] },
+            "safetyMarginPct": { "type": ["number", "null"] },
+            "wacc": { "type": ["number", "null"] },
+            "terminalGrowth": { "type": ["number", "null"] },
+            "terminalValuePctOfEv": { "type": ["number", "null"] },
+            "stage1Growth": { "type": ["number", "null"] },
+            "stage2Growth": { "type": ["number", "null"] },
+            "sensitivity": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "wacc": { "type": ["string", "null"] },
+                  "terminalGrowth": { "type": ["string", "null"] },
+                  "value": { "type": ["number", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "peerCount": { "type": ["integer", "null"] },
+        "peQuantile": { "type": ["string", "null"], "description": "PE 历史分位；不可得写「未提供」" },
+        "pbQuantile": { "type": ["string", "null"] }
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "重大事件",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["date", "title"],
+        "properties": {
+          "date": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "description": "数据完整度自述。用于让读者知道这份结论建立在多少数据上。",
+      "additionalProperties": false,
+      "properties": {
+        "coveragePct": { "type": ["number", "null"] },
+        "passedChecks": { "type": ["integer", "null"] },
+        "totalChecks": { "type": ["integer", "null"] },
+        "criticalMissing": { "type": ["boolean", "null"] },
+        "missingDimensions": { "type": "array", "items": { "type": "string" } },
+        "fallbackDimensions": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

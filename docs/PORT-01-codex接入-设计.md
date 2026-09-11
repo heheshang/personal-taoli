@@ -228,6 +228,22 @@ skill，两者产生的副作用动作都要过审批。
 
 **视觉作用域**：Codex 令牌（蓝主色、superellipse 圆角、16px 聊天气泡字号）仅作用于 `.codex-scope`，不覆盖本项目 UI-01 的全局令牌。代价是本页主色与其余页面不同；统一需另立一轮。
 
+### 3.3h 结构化报告（轮次 Q）
+
+**`outputSchema` 是建议性的——实测。** 只发 schema，模型会拒绝（「未提供给定结构」）；加上
+`additionalContext` 说明后它会产出 JSON，但字段名自创。因此三层缺一不可：
+
+1. `turn/start` 的 `outputSchema`（尽力约束）；
+2. `additionalContext` 里的**要求措辞**，由 `report::context_fragment` **从 schema 生成**——
+   字段名因此不可能与 schema 漂移；
+3. 结果**校验**（`report::validate`）。通过才置 `report`；否则记 `report_error` 并**回退为正文**。
+
+**为什么必须回退**：模型自创字段的 JSON 能解析、也能通过「是 JSON 对象」这种弱检查，渲染出来会是
+一张空报告——比直接显示它写的正文更糟。失败必须可见，而不是呈现为一张看似正常的空表。
+
+**schema 是仓库文档**（`docs/agent/report-schema.json`），与会话启动时加载并同样失败关闭：
+它是模型、后端、界面三方的契约，放在代码里会有三处需要同步。
+
 ### 3.3g 结果呈现：只有对话，没有独立报告页（轮次 P）
 
 「分析结果」不再是一个页面。原先的双 tab 中，`分析结果` 读的是 `stockAnalysis.ts` 的**静态快照**

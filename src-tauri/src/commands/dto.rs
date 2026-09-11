@@ -276,6 +276,15 @@ pub struct AgentTurn {
     /// 不是只留最后一条：分析类 skill 会边跑边汇报（stage 进度等），最后才给
     /// 结论——只留最后一条会把中间结果全丢掉，而那正是读者要在对话里看到的内容。
     pub messages: Vec<String>,
+    /// 本轮的结构化报告，当本轮被要求按 schema 输出**且**结果通过校验时才有。
+    ///
+    /// 直接透传 JSON：schema 是前后端共同遵循的契约（`docs/agent/report-schema.json`），
+    /// 在这里再定义一遍 Rust 结构只会有两处需要同步。
+    /// 与 `messages` 并存——校验不通过时界面回退到 Markdown 正文，而不是显示空面板。
+    pub report: Option<serde_json::Value>,
+    /// 要求了结构化输出却未通过校验时的原因；
+    /// 界面据此说明「为什么这里显示的是正文而非报告」。
+    pub report_error: Option<String>,
     /// 本轮失败原因。`None` 表示本轮正常结束。
     pub error: Option<String>,
     pub started_at_ms: u64,

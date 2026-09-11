@@ -28,6 +28,7 @@
 | PORT-01-N | 轮次超时改为静默判据 + 超时中断 | M | **`verified`**（见下） |
 | PORT-01-O | 分析结果进对话 + Markdown 渲染 | N | **`verified`**（见下） |
 | PORT-01-P | 撤掉静态分析结果页，结果即真实输出 | O | **`verified`**（见下） |
+| PORT-01-Q | 结构化报告（outputSchema + 校验 + 渲染） | P | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -1101,6 +1102,60 @@ turn/start after interrupt -> OK: {"turn":{"id":"01a08e4c-…"}}   ← 这才是
 结果是 agent 的自由 Markdown，版式由它自己决定。若要恢复**结构化**呈现，协议里有 `outputSchema`
 （`TurnStartParams` 的字段），可让 agent 按给定 schema 输出后再由前端渲染固定版式——这是一件新事，
 不在本次「移除 + 用真实输出」的范围内。
+
+---
+
+## PORT-01-Q 结构化报告（outputSchema + 校验 + 渲染）（2026-09-10）
+
+**背景**：所有者指令——「需要做」，指恢复报告页的**结构化版式**（KPI 卡片、分区、表格）。
+
+**取证：`outputSchema` 是建议性的，不是强制的（实测三次，结论一致）**
+
+| 条件 | 结果 |
+|---|---|
+| 只发 `outputSchema`（提示词说「按给定结构输出」） | 模型**拒绝**：*「当前消息中未提供『给定结构』」*，去项目里找结构了 |
+| 加 `additionalContext`（`kind: application`）说明要求 | 产出 JSON，但字段名是**它自己编的**（`stock_code`/`company_name`） |
+| 再加同样的上下文与更强措辞 | 又一套自创字段（`业务结构_2026H1`/`板块`/`收入_亿元`） |
+
+协议原文只说 `outputSchema` 是 *"JSON Schema used to constrain the final assistant message"*，
+但实测在本运行时/模型下它**不构成强制约束**。据此设计，而非假设它有效。
+
+**实现**：
+- `docs/agent/report-schema.json`（受版本控制）：完整报告契约。字段大量**可选**——领域指令
+  禁止编造数据，取不到的字段应当**缺席**而非填占位值，界面据此显示「未提供」。所有 object 均
+  `additionalProperties: false`（有测试遍历断言，开放对象会让契约悄悄变成建议）。
+- `crates/core/src/agent/report.rs`：加载（与领域指令同一套向上解析）+ `context_fragment`
+  （**从 schema 生成**要求措辞，字段名不可能与 schema 漂移）+ `validate`（浅校验：三个必需字段
+  存在且非 null；深校验会重造运行时的 schema 引擎）。
+- `turn_start_params` 增 `outputSchema` 与 `additionalContext`（按来源标识分片、`kind: application`）。
+- 会话在**最终**消息上：解析 JSON → 校验 → 通过才置 `report`；任一步失败记 `report_error` 并保留正文。
+- 命令层把 `report` / `report_error` 透传给界面；schema 在会话启动时加载，缺失/非法即**拒绝启动**
+  （与领域指令同一处理）。
+- 前端 `ReportView.vue`：按 schema 渲染六个分区（行情 / 财务 / 技术面 / 估值 / 重大事件 /
+  数据完整度），可选字段缺席即整块隐藏而非显示 0。有报告时**不再重复**显示承载它的那条 JSON 消息。
+
+**验收（渲染断言）**
+
+| 场景 | 结果 |
+|---|---|
+| 报告通过校验 | ✅ `reportPresent`、标题「领益智造 002600.SZ」、徽章 `[中性, 评分 54, Stage 1 部分快照]`、六个分区、24 个数据格、敏感性表 2 行、事件 2 条、缺失维度已列出、摘要按 Markdown 渲染（`<strong>`）、**`assistantBlocks: 1`**（JSON 消息未重复） |
+| 校验失败（模型自创字段） | ✅ 无报告、显示正文 2 条 + chip「未按结构输出，已回退为正文」 |
+| 未要求结构的普通轮次 | ✅ 无报告、chip「本轮无结构化报告」 |
+| 零横向溢出 / 零页面错误 | ✅ 三种场景均 0 |
+| `cargo fmt/clippy(-D warnings)/test` | ✅ clean / 0 / **323 core + 38 tauri** |
+| `npm run build` | ✅ 零错误 |
+
+**端到端实测**：`a_report_turn_returns_structured_output` 用真实运行时 + 真实 schema 跑通，
+断言 `report.ticker == "002600.SZ"` 且原始文本同时保留；`a_conversational_turn_yields_no_report`
+断言未要求结构的轮次不会凭空产出报告。
+
+**修掉两处自己写出的缺口**：
+1. `report_error` 起初**从未被填充**——界面有分支却永不触发，即假实现。已补：校验失败时记录原因。
+2. 只覆盖了「产出了 JSON 但不符合 schema」这一种失败；**模型返回纯文本（非 JSON）**这种更常见的
+   失败不设 `report_error`，界面只会说「无结构化报告」而不说原因。已补第二条分支。
+
+**未验证**：真实 Tauri 宿主（沿用 mock IPC）；模型**稳定遵循** schema 的比例（实测三次里两次自创
+字段，故界面必须假设它可能失败——这正是校验存在的理由）。
 
 ---
 

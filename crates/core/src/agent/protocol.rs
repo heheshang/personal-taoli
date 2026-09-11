@@ -223,11 +223,35 @@ pub fn thread_start_params(
 }
 
 /// Parameters for `turn/start` carrying a single text input.
-pub fn turn_start_params(thread_id: &str, text: &str) -> Value {
-    serde_json::json!({
+///
+/// `output_schema` is the runtime's `outputSchema`: *"JSON Schema used to constrain
+/// the final assistant message for this turn."* Measured, the model then returns
+/// the JSON as the whole final message with no surrounding prose, while its earlier
+/// progress messages stay ordinary text — which is why a long analysis can still
+/// report as it goes and close with a structured result.
+pub fn turn_start_params(
+    thread_id: &str,
+    text: &str,
+    output_schema: Option<&Value>,
+    context: Option<(&str, &str)>,
+) -> Value {
+    let mut params = serde_json::json!({
         "threadId": thread_id,
         "input": [{ "type": "text", "text": text }],
-    })
+    });
+    if let Some(schema) = output_schema {
+        params["outputSchema"] = schema.clone();
+    }
+    // `additionalContext` is keyed by source and typed `application` (as opposed to
+    // `untrusted`), which is the runtime's channel for client-supplied context.
+    // Measured: without it the schema alone was ignored — the model refused, saying
+    // no structure had been provided.
+    if let Some((source, value)) = context {
+        params["additionalContext"] = serde_json::json!({
+            source: { "kind": "application", "value": value }
+        });
+    }
+    params
 }
 
 /// Parameters for `skills/extraRoots/set`.

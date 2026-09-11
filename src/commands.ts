@@ -410,6 +410,16 @@ export interface AgentTurn {
   refused_requests: string[]
   /** 本轮全部 agent 消息，按时间顺序；最后一条是其结论。 */
   messages: string[]
+  /**
+   * 本轮的结构化报告；仅当本轮被要求按 schema 输出**且**结果通过校验时才有。
+   *
+   * 字段形状见 `docs/agent/report-schema.json`。注意该 schema 在本运行时是
+   * **建议性**的（实测模型有时会用自己的字段名），因此后端会校验，不通过时
+   * 此字段为 null，界面回退到 `messages`。
+   */
+  report: Record<string, unknown> | null
+  /** 要求了结构化输出却未通过校验的原因。 */
+  report_error: string | null
   /** 本轮失败原因；`null` 表示本轮正常结束。 */
   error: string | null
   started_at_ms: number
