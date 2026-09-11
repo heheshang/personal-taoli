@@ -31,6 +31,13 @@ export const COMMANDS = {
   saveAppConfig: 'save_app_config',
   getObserverConfig: 'get_observer_config',
   saveObserverConfig: 'save_observer_config',
+  agentReady: 'agent_ready',
+  agentStart: 'agent_start',
+  agentAsk: 'agent_ask',
+  agentDecide: 'agent_decide',
+  agentStatus: 'agent_status',
+  agentStop: 'agent_stop',
+  agentDefaultPrompt: 'agent_default_prompt',
 } as const
 
 export const PAPER_KINDS = ['B01', 'B02', 'B03'] as const
@@ -302,4 +309,105 @@ export async function getSimulationRunDetail(
     databaseUrlParam: databaseUrl || null,
     runId,
   })
+}
+// ── PORT-01 codex 接入（只读分析）────────────────────────────────────────
+
+/** 接入就绪状态。`ready = false` 时 `reason` 给出可操作原因。 */
+export interface AgentReady {
+  ready: boolean
+  program: string | null
+  archive_path: string | null
+  trace_dir: string | null
+  /** 沙箱可用性的人类可读描述。不可用时 `reason` 同时给出说明。 */
+  sandbox: string
+  /** 领域指令的规模描述（来自受版本控制的 `docs/agent/instructions.md`）。 */
+  instructions: string | null
+  reason: string | null
+}
+
+/** 待裁决的审批请求。 */
+export interface AgentApprovalRequest {
+  request_id: number
+  kind: string
+  summary: string
+  advertised: string[]
+}
+
+/** 已裁决的审批记录。 */
+export interface AgentApprovalDecision {
+  request_id: number
+  kind: string
+  summary: string
+  decision: 'allow' | 'deny'
+  source: 'decider' | 'timeout' | 'unsupported'
+  waited_ms: number
+}
+
+export interface AgentToolCall {
+  call_id: string
+  tool: string
+  success: boolean
+  output: string
+}
+
+/** 一轮分析的完整记录。 */
+export interface AgentTurn {
+  seq: number
+  prompt: string
+  tool_calls: AgentToolCall[]
+  approvals: AgentApprovalDecision[]
+  refused_requests: string[]
+  final_message: string | null
+  /** 本轮失败原因；`null` 表示本轮正常结束。 */
+  error: string | null
+  started_at_ms: number
+  finished_at_ms: number | null
+}
+
+/** 会话生命周期快照。 */
+export interface AgentStatus {
+  phase: 'stopped' | 'starting' | 'ready' | 'running' | 'awaiting_approval' | 'error'
+  program: string | null
+  thread_id: string | null
+  trace_path: string | null
+  pending_approval: AgentApprovalRequest | null
+  /** 已完成与进行中的轮次，按时间升序。 */
+  turns: AgentTurn[]
+  /** 会话级致命错误；轮次内的失败记在该轮的 `error`。 */
+  error: string | null
+}
+
+/** 是否已配置 codex 运行时、归档与 trace 目录（未就绪时界面给出说明）。 */
+export async function agentReady(): Promise<AgentReady | undefined> {
+  return invokeCommand<AgentReady>(COMMANDS.agentReady)
+}
+
+/** 启动分析会话（拉起 codex 运行时并建立线程）。 */
+export async function agentStart(): Promise<AgentStatus | undefined> {
+  return invokeCommand<AgentStatus>(COMMANDS.agentStart)
+}
+
+/** 发起一轮只读分析。 */
+export async function agentAsk(prompt: string): Promise<AgentStatus | undefined> {
+  return invokeCommand<AgentStatus>(COMMANDS.agentAsk, { prompt })
+}
+
+/** 裁决待审批动作。 */
+export async function agentDecide(
+  requestId: number,
+  allow: boolean,
+): Promise<AgentStatus | undefined> {
+  return invokeCommand<AgentStatus>(COMMANDS.agentDecide, { requestId, allow })
+}
+
+export async function agentStatus(): Promise<AgentStatus | undefined> {
+  return invokeCommand<AgentStatus>(COMMANDS.agentStatus)
+}
+
+export async function agentStop(): Promise<AgentStatus | undefined> {
+  return invokeCommand<AgentStatus>(COMMANDS.agentStop)
+}
+
+export async function agentDefaultPrompt(): Promise<string | undefined> {
+  return invokeCommand<string>(COMMANDS.agentDefaultPrompt)
 }

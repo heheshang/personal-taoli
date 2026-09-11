@@ -144,3 +144,89 @@ impl From<personal_taoli_core::simulation::SimulationSmokeReport> for Simulation
         }
     }
 }
+
+// ── PORT-01 codex 接入（只读分析）──────────────────────────────────────────
+
+/// 接入就绪状态。`ready = false` 时 `reason` 给出可操作原因。
+///
+/// 就绪判断在**启动分析之前**完成：缺少运行时或归档时界面给出说明，而不是
+/// 点击后才失败。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentReady {
+    pub ready: bool,
+    pub program: Option<String>,
+    pub archive_path: Option<String>,
+    pub trace_dir: Option<String>,
+    /// 沙箱可用性的人类可读描述（不可用时界面同时给出 `reason`）。
+    pub sandbox: String,
+    /// 领域指令的规模描述（来自受版本控制的 `docs/agent/instructions.md`）。
+    pub instructions: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// 待裁决的审批请求（呈现给所有者）。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentApprovalRequest {
+    pub request_id: i64,
+    pub kind: String,
+    pub summary: String,
+    /// 运行时当时提供的裁决项，原样呈现，便于察觉上游词汇变化。
+    pub advertised: Vec<String>,
+}
+
+/// 已裁决的审批记录。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentApprovalDecision {
+    pub request_id: i64,
+    pub kind: String,
+    pub summary: String,
+    /// `allow` / `deny`。
+    pub decision: String,
+    /// `decider`（所有者裁决）/ `timeout`（超时按失败关闭）/ `unsupported`。
+    pub source: String,
+    pub waited_ms: u64,
+}
+
+/// 一次工具调用。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentToolCall {
+    pub call_id: String,
+    pub tool: String,
+    pub success: bool,
+    pub output: String,
+}
+
+/// 一轮分析的完整记录。
+///
+/// 每轮独立成条，使界面能像 codex 桌面版那样把会话呈现为**消息流**，而不是只
+/// 显示最近一轮。`seq` 单调递增，供前端做稳定 key。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTurn {
+    pub seq: u64,
+    pub prompt: String,
+    pub tool_calls: Vec<AgentToolCall>,
+    pub approvals: Vec<AgentApprovalDecision>,
+    pub refused_requests: Vec<String>,
+    pub final_message: Option<String>,
+    /// 本轮失败原因。`None` 表示本轮正常结束。
+    pub error: Option<String>,
+    pub started_at_ms: u64,
+    pub finished_at_ms: Option<u64>,
+}
+
+/// agent 会话生命周期快照。
+///
+/// `phase` 取值：`stopped` | `starting` | `ready` | `running` |
+/// `awaiting_approval` | `error`。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentStatus {
+    pub phase: &'static str,
+    pub program: Option<String>,
+    pub thread_id: Option<String>,
+    pub trace_path: Option<String>,
+    pub pending_approval: Option<AgentApprovalRequest>,
+    /// 已完成与进行中的轮次，按时间升序；最后一条可能是进行中的那一轮。
+    pub turns: Vec<AgentTurn>,
+    /// 会话级致命错误（运行时启动失败或退出）。轮次内的失败记在该轮的 `error`。
+    pub error: Option<String>,
+}

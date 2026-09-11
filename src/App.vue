@@ -16,6 +16,7 @@ import RelationshipGraph from './components/RelationshipGraph.vue'
 import DetailPanel from './components/DetailPanel.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import SimulationPage from './components/SimulationPage.vue'
+import AgentAnalysisPage from './components/AgentAnalysisPage.vue'
 import AppFooter from './components/AppFooter.vue'
 
 const status = ref<Status | null>(null)
@@ -253,6 +254,11 @@ onUnmounted(stopPolling)
           :active="activePage === 'simulation'"
           :database-url="databaseUrl"
         />
+      </div>
+
+      <!-- 个股分析页（PORT-01：codex 只读分析 + 人工审批） -->
+      <div v-show="activePage === 'agent'" class="page-content">
+        <AgentAnalysisPage :active="activePage === 'agent'" />
       </div>
 
       <!-- 设置页 -->

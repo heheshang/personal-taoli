@@ -1,5 +1,6 @@
 pub mod account;
 pub mod accounting;
+pub mod agent;
 pub mod alert;
 pub mod alert_manager;
 pub mod archive;

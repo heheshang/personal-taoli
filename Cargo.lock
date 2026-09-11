@@ -2592,6 +2592,7 @@ name = "personal-taoli-tauri"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dotenvy",
  "personal-taoli-core",
  "reqwest 0.12.28",

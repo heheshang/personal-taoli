@@ -1,0 +1,35 @@
+Third-party notices for personal-taoli.
+
+===============================================================================
+OpenAI Codex — Apache License 2.0
+===============================================================================
+
+Portions of this project are derived from OpenAI Codex:
+    https://github.com/openai/codex
+
+The following is the NOTICE file distributed with the upstream work, retained
+as required by section 4(d) of the Apache License 2.0:
+
+    OpenAI Codex
+    Copyright 2025 OpenAI
+
+    This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+    Copyright (c) 2016-2022 Florian Dehau
+    Copyright (c) 2023-2025 The Ratatui Developers
+
+Note: this project contains no Ratatui code. The Ratatui attribution above is
+part of the upstream NOTICE text and is reproduced verbatim rather than
+selectively edited.
+
+What was used, and what was changed, is recorded in
+`crates/core/src/agent/sandbox/PROVENANCE.md`. In short:
+
+  - `crates/core/src/agent/sandbox/policies/*.sbpl` are byte-identical copies
+    of the corresponding files in `codex-rs/sandboxing/src/`.
+  - `crates/core/src/agent/sandbox/seatbelt.rs` is an adaptation of the
+    filesystem half of `codex-rs/sandboxing/src/seatbelt.rs`.
+
+Those files remain under the Apache License 2.0 and must not be relicensed.
+
+A copy of the Apache License 2.0 is available at:
+    https://www.apache.org/licenses/LICENSE-2.0

@@ -7,8 +7,10 @@ use std::{
 };
 
 use commands::{
-    SessionController, account_status, continuous_observation_status, desktop_status,
-    get_observer_config, get_simulation_overview_command, get_simulation_run_detail_command,
+    AgentController, SessionController, account_status, agent_ask, agent_decide,
+    agent_default_prompt, agent_ready, agent_start, agent_status, agent_stop,
+    continuous_observation_status, desktop_status, get_observer_config,
+    get_simulation_overview_command, get_simulation_run_detail_command,
     get_simulation_runs_command, load_app_config, load_app_config_file, load_config_summary,
     observe_once, replay_observations, run_accounting_control_smoke, run_paper_smoke,
     run_reconnect_smoke, run_simulation_smoke_command, save_app_config, save_observer_config,
@@ -107,6 +109,7 @@ pub fn run() {
         .init();
     tauri::Builder::default()
         .manage(SessionController::default())
+        .manage(AgentController::default())
         .setup(|app| {
             load_saved_env_config();
             install_term_signal_handler(app.handle());
@@ -133,6 +136,13 @@ pub fn run() {
             save_app_config,
             get_observer_config,
             save_observer_config,
+            agent_ready,
+            agent_start,
+            agent_ask,
+            agent_decide,
+            agent_status,
+            agent_stop,
+            agent_default_prompt,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

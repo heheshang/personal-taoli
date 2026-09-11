@@ -1,0 +1,494 @@
+/**
+ * Codex 桌面版视觉令牌（个股分析页专用）。
+ *
+ * 取值来自本机 Codex 桌面版的实际样式表（`/Applications/ChatGPT.app` 内
+ * `webview/assets/app-initial-*.css`），不是凭印象配的：
+ *
+ * - 主色 `--blue-400:#0285ff` / `--blue-300:#339cff`（codex 用蓝，本项目全局用绿）
+ * - 聚焦环 `--color-ring:#339cffb3`
+ * - 灰阶 `--gray-0…--gray-1000`，浅色前景 `--color-text-foreground:#1a1c1f`
+ * - 圆角 `sm .375rem / md .5rem / lg .625rem / xl .75rem`，且 codex 用
+ *   `corner-shape: superellipse(1.5)` 做方圆角
+ * - 间距基准 `--spacing: .25rem`；工具栏高 46px；聊天字号 16px
+ *
+ * **作用域**：仅 `.codex-scope` 内生效。本项目全局设计令牌（UI-01）保持不变——
+ * 这是刻意的取舍：让这一个页面与 codex 一致，而不改动其他页面的既有视觉契约。
+ */
+.codex-scope {
+  --cx-blue: #0285ff;
+  --cx-blue-strong: #0169cc;
+  --cx-blue-soft: #e5f3ff;
+  --cx-blue-75: #cce6ff;
+  --cx-ring: #339cffb3;
+
+  --cx-gray-0: #fff;
+  --cx-gray-50: #f9f9f9;
+  --cx-gray-75: #f3f3f3;
+  --cx-gray-100: #ededed;
+  --cx-gray-150: #dfdfdf;
+  --cx-gray-200: #cdcdcd;
+  --cx-gray-300: #afafaf;
+  --cx-gray-400: #8f8f8f;
+  --cx-gray-500: #5d5d5d;
+  --cx-gray-700: #303030;
+  --cx-gray-900: #181818;
+  --cx-gray-1000: #0d0d0d;
+
+  --cx-text: #1a1c1f;
+  --cx-text-2: #5d5d5d;
+  --cx-text-3: #8f8f8f;
+
+  --cx-green: #00a240;
+  --cx-red: #fa423e;
+  --cx-orange: #e25507;
+
+  --cx-radius-sm: 6px;
+  --cx-radius-md: 8px;
+  --cx-radius-lg: 10px;
+  --cx-radius-xl: 12px;
+  --cx-radius-full: 9999px;
+  --cx-corner: superellipse(1.5);
+
+  --cx-toolbar-h: 46px;
+  --cx-chat-fs: 16px;
+  --cx-mono: "SF Mono", "Cascadia Code", "Roboto Mono", ui-monospace, monospace;
+}
+
+/* ── 外壳 ───────────────────────────────────────────────────────────── */
+
+.codex-scope {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 120px);
+}
+
+/* 顶部工具栏：对齐 codex 的 46px 工具条与浅色表面 */
+.codex-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--cx-toolbar-h);
+  padding: 0 4px;
+  border-bottom: 1px solid var(--cx-gray-150);
+}
+
+.codex-toolbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.codex-toolbar-title strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cx-text);
+  letter-spacing: 0;
+}
+
+.codex-toolbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--cx-text-3);
+  font-family: var(--cx-mono);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.codex-chip {
+  display: inline-flex;
+  /* 会话流是 flex column：不加 align-self 时 chip 会被拉伸成整行色条。 */
+  align-self: flex-start;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--cx-radius-full);
+  background: var(--cx-gray-75);
+  color: var(--cx-text-2);
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.codex-chip.ok {
+  background: color-mix(in srgb, var(--cx-green) 10%, transparent);
+  color: color-mix(in srgb, var(--cx-green) 85%, var(--cx-gray-1000));
+}
+.codex-chip.warn {
+  background: color-mix(in srgb, var(--cx-orange) 12%, transparent);
+  color: color-mix(in srgb, var(--cx-orange) 85%, var(--cx-gray-1000));
+}
+.codex-chip.bad {
+  background: color-mix(in srgb, var(--cx-red) 12%, transparent);
+  color: color-mix(in srgb, var(--cx-red) 85%, var(--cx-gray-1000));
+}
+
+.codex-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ── 会话流 ─────────────────────────────────────────────────────────── */
+
+.codex-thread {
+  flex: 1;
+  min-height: 260px;
+  max-height: min(58vh, 620px);
+  overflow-y: auto;
+  padding: 20px 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  scrollbar-width: thin;
+}
+
+.codex-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--cx-text-3);
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+.codex-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 用户消息：codex 里是右侧浅底气泡 */
+.codex-user {
+  align-self: flex-end;
+  max-width: min(76%, 720px);
+  padding: 9px 14px;
+  border-radius: var(--cx-radius-xl);
+  border-end-end-radius: var(--cx-radius-sm);
+  background: var(--cx-gray-75);
+  color: var(--cx-text);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 助手回复：无气泡，直接铺在内容列上（codex 的正文样式） */
+.codex-assistant {
+  font-size: var(--cx-chat-fs);
+  line-height: 1.65;
+  color: var(--cx-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.codex-turn-error {
+  display: flex;
+  align-self: stretch;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--cx-radius-lg);
+  background: color-mix(in srgb, var(--cx-red) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cx-red) 22%, transparent);
+  color: color-mix(in srgb, var(--cx-red) 88%, var(--cx-gray-1000));
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.codex-turn-error pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--cx-mono);
+  font-size: 11px;
+}
+
+/* ── 工具调用卡（codex 的执行块样式） ──────────────────────────────── */
+
+.codex-tool {
+  border: 1px solid var(--cx-gray-150);
+  border-radius: var(--cx-radius-lg);
+  overflow: hidden;
+  background: var(--cx-gray-0);
+}
+
+.codex-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--cx-gray-50);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--cx-text);
+}
+
+.codex-tool-head:hover {
+  background: var(--cx-gray-75);
+}
+
+.codex-tool-name {
+  font-family: var(--cx-mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.codex-tool-status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--cx-text-3);
+}
+
+.codex-tool-caret {
+  color: var(--cx-text-3);
+  transition: transform .15s;
+  font-size: 10px;
+}
+
+.codex-tool-caret.open {
+  transform: rotate(90deg);
+}
+
+.codex-tool-body {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--cx-gray-50);
+  border-top: 1px solid var(--cx-gray-150);
+  font-family: var(--cx-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--cx-gray-700);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 审批卡（codex 的确认块） ─────────────────────────────────────── */
+
+.codex-approval {
+  border: 1px solid color-mix(in srgb, var(--cx-orange) 30%, transparent);
+  border-radius: var(--cx-radius-lg);
+  background: color-mix(in srgb, var(--cx-orange) 6%, transparent);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.codex-approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--cx-orange) 85%, var(--cx-gray-1000));
+}
+
+.codex-approval-cmd {
+  font-family: var(--cx-mono);
+  font-size: 11px;
+  color: var(--cx-gray-700);
+  word-break: break-all;
+}
+
+.codex-approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.codex-approval-hint {
+  font-size: 11px;
+  color: var(--cx-text-3);
+  line-height: 1.6;
+}
+
+.codex-approval-advertised {
+  font-family: var(--cx-mono);
+  font-size: 10px;
+  color: var(--cx-text-3);
+  word-break: break-all;
+}
+
+/* ── 按钮（codex 的胶囊按钮） ─────────────────────────────────────── */
+
+.codex-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--cx-radius-full);
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .14s, color .14s, border-color .14s;
+  font-family: inherit;
+}
+
+.codex-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--cx-ring);
+}
+
+.codex-btn:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.codex-btn.primary {
+  background: var(--cx-gray-1000);
+  color: var(--cx-gray-0);
+}
+.codex-btn.primary:hover:not(:disabled) {
+  background: var(--cx-gray-700);
+}
+
+.codex-btn.ghost {
+  background: var(--cx-gray-0);
+  color: var(--cx-text);
+  border-color: var(--cx-gray-200);
+}
+.codex-btn.ghost:hover:not(:disabled) {
+  background: var(--cx-gray-75);
+}
+
+.codex-btn.danger {
+  background: var(--cx-gray-0);
+  color: var(--cx-red);
+  border-color: color-mix(in srgb, var(--cx-red) 35%, transparent);
+}
+.codex-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cx-red) 8%, transparent);
+}
+
+.codex-btn.send {
+  width: 32px;
+  padding: 0;
+  background: var(--cx-gray-1000);
+  color: var(--cx-gray-0);
+}
+.codex-btn.send:hover:not(:disabled) {
+  background: var(--cx-gray-700);
+}
+
+/* ── 输入区（codex 的 composer） ──────────────────────────────────── */
+
+.codex-composer {
+  position: sticky;
+  bottom: 0;
+  padding: 12px 4px 4px;
+  background: linear-gradient(to bottom, transparent, var(--bg-card) 28%);
+  /* 必须显式声明：全局样式表里有一条裸 `footer` 元素选择器，若此处用
+     <footer> 会被改成 `display: flex`，输入框与提示行就会并排，输入框
+     收缩到内容宽度（实测 156px）。显式声明后不再依赖元素名不被占用。 */
+  display: block;
+}
+
+.codex-composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
+  border: 1px solid var(--cx-gray-200);
+  border-radius: var(--cx-radius-xl);
+  corner-shape: var(--cx-corner);
+  background: var(--cx-gray-0);
+  transition: border-color .14s, box-shadow .14s;
+}
+
+.codex-composer-box:focus-within {
+  border-color: var(--cx-blue);
+  box-shadow: 0 0 0 3px var(--cx-ring);
+}
+
+.codex-composer-box textarea {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--cx-text);
+  /* 三行起步：单行输入框给不了「可以写一段分析要求」的暗示，而这个页面
+     的输入本来就是一句话以上的指令。JS 会随内容增高，这里定的是下限。 */
+  min-height: 66px;
+  max-height: 220px;
+  padding: 6px 0;
+  overflow-y: auto;
+}
+
+.codex-composer-box textarea::placeholder {
+  color: var(--cx-gray-400);
+}
+
+.codex-composer-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--cx-text-3);
+  line-height: 1.6;
+}
+
+/* ── 未就绪态 ────────────────────────────────────────────────────── */
+
+.codex-blocked {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--cx-radius-xl);
+  border: 1px solid var(--cx-gray-150);
+  background: var(--cx-gray-50);
+}
+
+.codex-blocked-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cx-text);
+}
+
+.codex-blocked-reason {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--cx-text-2);
+}
+
+.codex-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.codex-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--cx-text-2);
+  min-width: 0;
+}
+
+.codex-check code {
+  font-family: var(--cx-mono);
+  color: var(--cx-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
