@@ -26,7 +26,6 @@ import {
 } from '../commands'
 import MarkdownBlock from './MarkdownBlock.vue'
 import { AGENT_DECISION_LABEL } from '../commands'
-import StockAnalysisReport from './StockAnalysisReport.vue'
 import type {
   AgentAccessLevel,
   AgentDecision,
@@ -47,7 +46,6 @@ const ready = ref<AgentReady | null>(null)
 const status = ref<AgentStatus | null>(null)
 const prompt = ref('')
 const busy = ref(false)
-const viewMode = ref<'report' | 'session'>('report')
 /** 展开的工具调用卡（key = `${turn.seq}:${call.call_id}`）。 */
 const expanded = ref<Set<string>>(new Set())
 const thread = ref<HTMLElement | null>(null)
@@ -387,26 +385,6 @@ onUnmounted(stopPolling)
           <i class="codex-dot" />{{ phaseInfo.label }}
         </span>
       </div>
-      <div class="analysis-view-tabs" role="tablist" aria-label="个股分析视图">
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="viewMode === 'report'"
-          :class="{ active: viewMode === 'report' }"
-          @click="viewMode = 'report'"
-        >
-          分析结果
-        </button>
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="viewMode === 'session'"
-          :class="{ active: viewMode === 'session' }"
-          @click="viewMode = 'session'"
-        >
-          Codex 会话
-        </button>
-      </div>
       <div class="codex-toolbar-meta">
         <!-- 档位与 Codex 桌面版的权限下拉同构：会话运行中禁用，因为沙箱与审批
              设置在 thread/start 时确定，无法追加到已在运行的进程上。 -->
@@ -456,12 +434,6 @@ onUnmounted(stopPolling)
       </div>
     </header>
 
-    <StockAnalysisReport
-      v-if="viewMode === 'report'"
-      @open-session="viewMode = 'session'"
-    />
-
-    <template v-else>
       <!-- 未就绪：给出可操作原因与逐项检查，不提供启动入口 -->
       <section v-if="ready && !ready.ready" class="codex-blocked">
       <div class="codex-blocked-title"><i class="codex-dot" style="color: var(--cx-red)" />无法启动分析</div>
@@ -696,6 +668,5 @@ onUnmounted(stopPolling)
           </div>
         </div>
       </template>
-    </template>
   </div>
 </template>

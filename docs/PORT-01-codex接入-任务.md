@@ -27,6 +27,7 @@
 | PORT-01-M | 轮次进度与工具/skill 的流式展示 | L | **`verified`**（见下） |
 | PORT-01-N | 轮次超时改为静默判据 + 超时中断 | M | **`verified`**（见下） |
 | PORT-01-O | 分析结果进对话 + Markdown 渲染 | N | **`verified`**（见下） |
+| PORT-01-P | 撤掉静态分析结果页，结果即真实输出 | O | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -1051,6 +1052,55 @@ turn/start after interrupt -> OK: {"turn":{"id":"01a08e4c-…"}}   ← 这才是
 并不存在；`AgentAnalysisPage.vue` 里的双 tab 改动同批）。内容未丢失，但被记在该提交信息下。
 **本轮回改为只添加明确路径**，未触碰所有者的在制文件（`src/App.vue`、
 `src/components/StockAnalysisReport.vue`、`src/data/stockAnalysis.ts`）。
+
+---
+
+## PORT-01-P 撤掉静态「分析结果」页，结果即 agent 真实输出（2026-09-10）
+
+**背景**：所有者指令——「1 移除分析结果或者隐藏 2 改为真实输出」。
+
+**背景事实**：该页原先是一个双 tab 结构（`分析结果` / `Codex 会话`），其中「分析结果」读的是
+`src/data/stockAnalysis.ts` 里的**静态快照**（`mode` 字段自称「Stage 1 部分快照 · Stage 2 未完成」，
+多个字段为 `null` 占位）。它与 agent 的真实产出没有任何连接——展示的是写死的数据。
+
+**切替**（所有者选中「移除」，故不留隐藏分支）：
+- `AgentAnalysisPage.vue` 去掉 tab 栏、`viewMode` 状态、`StockAnalysisReport` 引入与用法，
+  以及那层 `v-else` 包装——页面现在**直接**就是会话流。
+- 删除 `src/components/StockAnalysisReport.vue`（1089 行）与 `src/data/stockAnalysis.ts`（195 行）：
+  已无消费者，留下即死代码。二者在 `e502733` 的 git 历史中，可恢复。
+- `codex-theme.css` 删除随之失效的 `.analysis-view-tabs` 规则（38 行）。
+
+**「真实输出」的落地**：结果就是 agent 在会话里写的消息——`turns[].messages`（PORT-01-O 已改为保留
+**全部**消息而非仅最后一条）逐条按 Markdown 渲染，领域指令第 2 节要求结论必须写在回复里。
+因此「分析结果」不再是一个独立页面，而是对话本身。
+
+**验收**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 页面无 tab、直接显示会话 | ✅ | 渲染断言 `tabsPresent: false`、`threadVisible: true`；视觉确认「无 tab 控件」 |
+| 静态快照数据已被移除 | ✅ | 产物 bundle 中不再含 `分析结果`/`Codex 会话`/`analysis-view-tabs`/`领益智造` |
+| 真实输出按 Markdown 完整渲染 | ✅ | `markdownBlocks: 2`、`h1` 命中、`h2 × 4`、表格 3 行、有序列表、代码块、引用 |
+| **长报告不被截断**（结论必须可见） | ✅ | 报告末尾标记 `END-OF-REPORT-MARKER` 存在（`lastLineVisible: true`） |
+| 零横向溢出 / 零页面错误 | ✅ | `overflow: 0`、无 `pageerror` |
+| `cargo fmt/clippy(-D warnings)/test` | ✅ | clean / 0 / **310 core + 38 tauri** |
+| `cargo build --release` / `npm run build` | ✅ | Finished / 零错误 |
+
+**修掉一个我自己造成的并发测试缺陷（重要）**：`turn_limit_tests::no_total_turn_budget_remains`
+在 `--workspace` 全量并发下**间歇失败**（单跑必过，已实测复现）。两个原因叠加：
+1. 该测试读的是**环境变量派生的默认值**，却没有加锁；
+2. 我在 `root_env_tests` 与 `turn_limit_tests` 里**各定义了一把锁**——两把锁对同一组进程级
+   环境变量提供不了任何互斥，等于没锁。
+
+修法：把锁提到 crate 级的 `mod test_env`，两个模块共用一把；并给这个读默认值的测试补上锁。
+**实测 5/5 全量并发通过**（修复前 4 次里复现 1 次）。这不是把失败藏起来，是找到并消除了竞态。
+
+**未验证**：真实 Tauri 宿主（沿用 mock IPC）。
+
+**可能的下一步（未做，等所有者定）**：原先那份报告页是有版式的（KPI 卡片、分区、表格）。现在
+结果是 agent 的自由 Markdown，版式由它自己决定。若要恢复**结构化**呈现，协议里有 `outputSchema`
+（`TurnStartParams` 的字段），可让 agent 按给定 schema 输出后再由前端渲染固定版式——这是一件新事，
+不在本次「移除 + 用真实输出」的范围内。
 
 ---
 

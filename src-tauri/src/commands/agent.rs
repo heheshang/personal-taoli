@@ -1024,23 +1024,31 @@ mod tests {
     }
 }
 
+/// Serialises every test that touches process-global environment variables.
+///
+/// **One** lock for the whole crate, not one per test module: two modules each
+/// holding their own mutex provide no mutual exclusion at all, which is exactly
+/// how a real flake appeared here. Tests that *read* env-derived defaults must
+/// take it too, not only the ones that write.
 #[cfg(test)]
-mod root_env_tests {
-    use super::*;
+mod test_env {
     use std::sync::Mutex;
 
-    /// Env vars are process-global, so any test that touches them must not run
-    /// concurrently with another that does. Serialised explicitly rather than
-    /// relying on `--test-threads=1`, which a plain `cargo test` does not pass.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    fn locked<F: FnOnce()>(body: F) {
+    pub fn locked<F: FnOnce()>(body: F) {
         let guard = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         body();
         drop(guard);
     }
+}
+
+#[cfg(test)]
+mod root_env_tests {
+    use super::test_env::locked;
+    use super::*;
 
     // ── 解析规则（纯函数，无环境依赖）────────────────────────────────
 
@@ -1333,19 +1341,8 @@ mod access_level_tests {
 
 #[cfg(test)]
 mod turn_limit_tests {
+    use super::test_env::locked;
     use super::*;
-    use std::sync::Mutex;
-
-    /// Env vars are process-global; serialise the tests that touch them.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn locked<F: FnOnce()>(body: F) {
-        let guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        body();
-        drop(guard);
-    }
 
     /// Regression: the limit that killed a real analysis must be gone.
     ///
@@ -1354,24 +1351,28 @@ mod turn_limit_tests {
     /// now is an idle limit (silence, not duration) plus a much larger ceiling.
     #[test]
     fn no_total_turn_budget_remains() {
-        let limits = turn_limits();
-        // The old total was 300s; the ceiling must be far above it, or the same
-        // failure returns for any skill that legitimately runs long.
-        assert!(
-            limits.max_duration >= Duration::from_secs(3_600),
-            "the ceiling must not be a wall-clock cap on real work: {:?}",
-            limits.max_duration
-        );
-        // And silence, not duration, is what marks a turn stuck.
-        assert!(
-            limits.idle_timeout >= Duration::from_secs(120),
-            "too eager to call a slow skill stuck: {:?}",
-            limits.idle_timeout
-        );
-        assert!(
-            limits.idle_timeout < limits.max_duration,
-            "the idle limit is the primary control and must fire first"
-        );
+        // Locked because it reads env-derived defaults: unlocked, it can observe
+        // another test's temporary override and fail intermittently.
+        locked(|| {
+            let limits = turn_limits();
+            // The old total was 300s; the ceiling must be far above it, or the same
+            // failure returns for any skill that legitimately runs long.
+            assert!(
+                limits.max_duration >= Duration::from_secs(3_600),
+                "the ceiling must not be a wall-clock cap on real work: {:?}",
+                limits.max_duration
+            );
+            // And silence, not duration, is what marks a turn stuck.
+            assert!(
+                limits.idle_timeout >= Duration::from_secs(120),
+                "too eager to call a slow skill stuck: {:?}",
+                limits.idle_timeout
+            );
+            assert!(
+                limits.idle_timeout < limits.max_duration,
+                "the idle limit is the primary control and must fire first"
+            );
+        });
     }
 
     #[test]

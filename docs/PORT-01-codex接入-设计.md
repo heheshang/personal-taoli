@@ -228,6 +228,15 @@ skill，两者产生的副作用动作都要过审批。
 
 **视觉作用域**：Codex 令牌（蓝主色、superellipse 圆角、16px 聊天气泡字号）仅作用于 `.codex-scope`，不覆盖本项目 UI-01 的全局令牌。代价是本页主色与其余页面不同；统一需另立一轮。
 
+### 3.3g 结果呈现：只有对话，没有独立报告页（轮次 P）
+
+「分析结果」不再是一个页面。原先的双 tab 中，`分析结果` 读的是 `stockAnalysis.ts` 的**静态快照**
+（自带 `null` 占位与「部分快照」字样），与 agent 的真实产出毫无连接，故整体移除；结果即
+`turns[].messages`，逐条按 Markdown 渲染。
+
+若要**结构化**呈现，协议提供 `TurnStartParams.outputSchema`——让 agent 按 schema 输出、前端渲染固定
+版式。那是一件独立的事，本次未做。
+
 ### 3.3f 结果呈现与 Markdown（轮次 O）
 
 **一轮保留全部 agent 消息**（`TurnOutcome.messages`）：分析 skill 边跑边汇报，只留最后一条

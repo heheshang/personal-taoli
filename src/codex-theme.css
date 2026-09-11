@@ -98,44 +98,6 @@
   overflow: hidden;
 }
 
-.analysis-view-tabs {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: 10px;
-  padding: 2px;
-  border-radius: var(--cx-radius-full);
-  background: var(--cx-gray-75);
-}
-
-.analysis-view-tabs button {
-  height: 26px;
-  padding: 0 11px;
-  border: 0;
-  border-radius: var(--cx-radius-full);
-  background: transparent;
-  color: var(--cx-text-2);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.analysis-view-tabs button:hover {
-  color: var(--cx-text);
-}
-
-.analysis-view-tabs button.active {
-  background: var(--cx-gray-0);
-  color: var(--cx-text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .08);
-}
-
-.analysis-view-tabs button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--cx-ring);
-}
-
 .codex-chip {
   display: inline-flex;
   /* 会话流是 flex column：不加 align-self 时 chip 会被拉伸成整行色条。 */
