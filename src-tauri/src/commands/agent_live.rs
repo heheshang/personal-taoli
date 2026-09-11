@@ -129,12 +129,21 @@ impl LiveTracker {
             TurnProgress::Started { .. } => {
                 self.with_live(|live| live.stage = "thinking".to_string());
             }
-            TurnProgress::ReasoningDelta { text, .. } => {
+            TurnProgress::ReasoningDelta { item_id, text } => {
+                // 归到**它自己的 item** 上，而不是一个聚合字段。
+                //
+                // 此前文本进的是聚合 `live.reasoning`，而该字段属于「正在进行中的这一轮」，
+                // 轮次一结束就被清空——于是推理行永远是空的，且整段推理**不留在记录里**。
+                // 增量本身带着 `itemId`，归属信息一直在，只是被丢掉了。
                 self.with_live(|live| {
-                    push_capped(&mut live.reasoning, &text);
+                    if let Some(item) = live.items.iter_mut().find(|item| item.item_id == item_id) {
+                        push_item_output(&mut item.output, &text);
+                    }
                     live.stage = "thinking".to_string();
                 });
             }
+            // 助手正文仍走聚合字段：它在界面上的呈现是**散文**（Markdown 块），
+            // 不是可折叠的行——答复就该可读，而不是藏在一个三角后面。
             TurnProgress::MessageDelta { text, .. } => {
                 self.with_live(|live| {
                     push_capped(&mut live.message, &text);
@@ -147,7 +156,13 @@ impl LiveTracker {
                     // The runtime can re-announce an item; keep the first
                     // title and update state rather than appending a duplicate.
                     match live.items.iter_mut().find(|it| it.item_id == entry.item_id) {
-                        Some(existing) => *existing = entry,
+                        // 重新宣告同一个 item 时**保留已收到的输出**：增量可能先于
+                        // 这条宣告到达，整体覆盖会把它们抹掉。
+                        Some(existing) => {
+                            let output = std::mem::take(&mut existing.output);
+                            *existing = entry;
+                            existing.output = output;
+                        }
                         None => live.items.push(entry),
                     }
                     live.stage = "working".to_string();
@@ -240,7 +255,6 @@ mod tests {
             live: Some(AgentLive {
                 turn_seq,
                 stage: "thinking".to_string(),
-                reasoning: String::new(),
                 message: String::new(),
                 items: Vec::new(),
                 tokens: None,
@@ -342,6 +356,18 @@ mod tests {
     #[test]
     fn streaming_text_drives_the_stage_and_is_kept() {
         let (status, tracker) = tracker(1);
+        // The item is announced first, as the runtime does, then its deltas
+        // arrive — the text must land on that item, not in a side channel.
+        tracker.apply(TurnProgress::ItemStarted(ProgressItem {
+            item_id: "r".to_string(),
+            kind: ItemKind::Reasoning,
+            title: "reasoning".to_string(),
+            detail: None,
+            state: ItemState::Running,
+            output: String::new(),
+            exit_code: None,
+            duration_ms: None,
+        }));
         tracker.apply(TurnProgress::ReasoningDelta {
             item_id: "r".to_string(),
             text: "We need".to_string(),
@@ -350,10 +376,23 @@ mod tests {
             item_id: "r".to_string(),
             text: " to run it".to_string(),
         });
-        let live = status.lock().unwrap().live.clone().unwrap();
-        assert_eq!(live.reasoning, "We need to run it");
-        assert_eq!(live.stage, "thinking");
 
+        let live = status.lock().unwrap().live.clone().unwrap();
+        assert_eq!(live.stage, "thinking");
+        // The assertion that matters: the reasoning row carries the reasoning.
+        // Before this change the text went to an aggregate field, so the row was
+        // blank and the reasoning vanished when the turn ended.
+        assert_eq!(
+            live.items
+                .iter()
+                .find(|item| item.item_id == "r")
+                .unwrap()
+                .output,
+            "We need to run it"
+        );
+
+        // The assistant's reply still streams into the aggregate: it renders as
+        // prose, not as a collapsible row.
         tracker.apply(TurnProgress::MessageDelta {
             item_id: "m".to_string(),
             text: "done".to_string(),
@@ -361,6 +400,51 @@ mod tests {
         let live = status.lock().unwrap().live.clone().unwrap();
         assert_eq!(live.message, "done");
         assert_eq!(live.stage, "writing");
+    }
+
+    /// A delta whose item was never announced must not be attributed to some
+    /// other row, nor panic — it is simply not yet placeable.
+    #[test]
+    fn a_delta_for_an_unknown_item_is_ignored() {
+        let (status, tracker) = tracker(1);
+        tracker.apply(TurnProgress::ReasoningDelta {
+            item_id: "never-announced".to_string(),
+            text: "orphan".to_string(),
+        });
+        let live = status.lock().unwrap().live.clone().unwrap();
+        assert!(live.items.is_empty());
+        assert_eq!(live.stage, "thinking");
+    }
+
+    /// A re-announcement of the same item keeps whatever text already arrived.
+    ///
+    /// Without this, a late `item/started` would wipe the deltas that preceded it
+    /// — the ordering is not guaranteed by the protocol, only usual.
+    #[test]
+    fn a_re_announcement_keeps_the_output_already_received() {
+        let (status, tracker) = tracker(1);
+        let announce = |tracker: &LiveTracker| {
+            tracker.apply(TurnProgress::ItemStarted(ProgressItem {
+                item_id: "r".to_string(),
+                kind: ItemKind::Reasoning,
+                title: "reasoning".to_string(),
+                detail: None,
+                state: ItemState::Running,
+                output: String::new(),
+                exit_code: None,
+                duration_ms: None,
+            }));
+        };
+        announce(&tracker);
+        tracker.apply(TurnProgress::ReasoningDelta {
+            item_id: "r".to_string(),
+            text: "kept".to_string(),
+        });
+        // Re-announcement arrives late.
+        announce(&tracker);
+        let live = status.lock().unwrap().live.clone().unwrap();
+        assert_eq!(live.items.len(), 1);
+        assert_eq!(live.items[0].output, "kept");
     }
 
     #[test]

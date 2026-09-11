@@ -32,6 +32,7 @@ import type {
   AgentAccessLevel,
   AgentDecision,
   AgentLive,
+  AgentLiveItem,
   AgentReady,
   AgentStatus,
   AgentTurn,
@@ -57,6 +58,17 @@ const levels = ref<AgentAccessLevel[]>([])
  * 默认折叠，因为一轮可以产出兆字节输出，而对话是用来读的。
  */
 const expandedSteps = ref<Set<string>>(new Set())
+
+/**
+ * 可折叠的步骤。
+ *
+ * 过滤掉助手消息：它是一条答复而非一个步骤，内容以 Markdown 散文呈现（见模板中的
+ * 正文块）。若在这里保留一行，那就是「有行、展开却没内容」的重复——助手消息的文本
+ * 只经由增量进入聚合字段，从不写进 item 的 output。
+ */
+function stepsOf(items: AgentLiveItem[]): AgentLiveItem[] {
+  return items.filter(item => item.kind !== 'message')
+}
 function toggleStep(itemId: string) {
   const next = new Set(expandedSteps.value)
   if (next.has(itemId)) {
@@ -360,7 +372,6 @@ watch(
 watch(
   () =>
     (status.value?.live?.items.length ?? 0) +
-    (status.value?.live?.reasoning.length ?? 0) +
     (status.value?.live?.message.length ?? 0) +
     (status.value?.pending_approval ? 1 : 0) +
     turns.value.length,
@@ -471,12 +482,11 @@ onUnmounted(stopPolling)
             <span class="muted agent-id">第 {{ live.turn_seq + 1 }} 轮</span>
           </div>
 
-          <!-- 推理摘要流式文本 -->
-          <div v-if="live.reasoning" class="codex-live-reasoning">{{ live.reasoning }}</div>
-
-          <!-- 步骤流：命令 / 工具 / 文件变更，含运行状态与增量输出。 -->
+          <!-- 步骤流：推理 / 命令 / 工具 / 文件变更，含运行状态与增量输出。
+               助手消息**不在其中**：它的内容是答复本身，下面按 Markdown 散文呈现；
+               留一行可折叠的它，只会得到「有行无内容」的重复。 -->
           <StepRow
-            v-for="item in live.items"
+            v-for="item in stepsOf(live.items)"
             :key="item.item_id"
             :item="item"
             :expanded="expandedSteps.has(item.item_id)"
@@ -495,10 +505,10 @@ onUnmounted(stopPolling)
           <!-- 用户消息 -->
           <div class="codex-user">{{ turn.prompt }}</div>
 
-          <!-- 本轮执行过的步骤，含输出。这是对话里能看到「跑过什么」的主来源：
-               它来自运行时上报的 item，命令、工具、文件变更都在其中。 -->
+          <!-- 本轮执行过的步骤，含各自的推理与输出。这是对话里能看到「跑过什么」的
+               主来源：它来自运行时上报的 item，推理、命令、工具、文件变更都在其中。 -->
           <StepRow
-            v-for="item in turn.items"
+            v-for="item in stepsOf(turn.items)"
             :key="item.item_id"
             :item="item"
             :expanded="expandedSteps.has(item.item_id)"

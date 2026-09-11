@@ -484,7 +484,7 @@ export interface AgentLive {
   turn_seq: number
   /** `thinking` / `working` / `writing` / `awaiting_approval` / `done`。 */
   stage: string
-  reasoning: string
+  /** 助手正文的流式文本；呈现为散文块，故仍走聚合字段。 */
   message: string
   items: AgentLiveItem[]
   tokens: AgentTokens | null

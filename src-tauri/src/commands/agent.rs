@@ -784,7 +784,6 @@ async fn run_agent(
                     guard.live = Some(AgentLive {
                         turn_seq: seq,
                         stage: "thinking".to_string(),
-                        reasoning: String::new(),
                         message: String::new(),
                         items: Vec::new(),
                         tokens: None,

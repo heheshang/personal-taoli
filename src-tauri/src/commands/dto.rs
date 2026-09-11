@@ -244,6 +244,9 @@ pub struct AgentTokens {
 
 /// 正在进行的轮次的实时视图。
 ///
+/// 没有「推理文本」这样的聚合字段：推理属于**它自己的步骤行**（`items` 里，
+/// 由 `itemId` 对应），聚合会把文本与归属拆开，并在轮次结束时把推理一并丢掉。
+///
 /// 轮次结束后由后端清空：届时权威数据在 [`AgentTurn`] 里，留着会重复渲染同一批
 /// 工作。
 #[derive(Debug, Clone, Serialize)]
@@ -252,8 +255,6 @@ pub struct AgentLive {
     pub turn_seq: u64,
     /// `thinking` / `working` / `writing` / `awaiting_approval` / `done`。
     pub stage: String,
-    /// 推理摘要的流式文本（尾部）。
-    pub reasoning: String,
     /// 助手正文的流式文本（尾部）。
     pub message: String,
     pub items: Vec<AgentLiveItem>,

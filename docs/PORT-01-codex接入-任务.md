@@ -34,6 +34,7 @@
 | PORT-01-T1 | 步骤图标（按 command 族） | S | **`verified`**（见下） |
 | PORT-01-T2 | 修掉自动滚动抢占用户滚动 | — | **`verified`**（见下） |
 | PORT-01-U | 修掉步骤在轮次结束时被清空 | T2 | **`verified`**（见下） |
+| PORT-01-V | 推理/助手消息各自显示在自己的行里 | U | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -1383,6 +1384,55 @@ threadText: 分析 002600.SZ | 已完成分析。
 `npm run build` 零错误。
 
 **未验证**：真实 Tauri 宿主（沿用 mock IPC）；超长输出折叠后的滚动表现。
+
+---
+
+## PORT-01-V 推理与助手消息各自显示在自己的行里（2026-09-10）
+
+**背景**：所有者指令——「需要对应的 reasoning 和 agentmessage 中显示对应的结果」。
+
+**缺口（读码确认）**：流式增量带着 `itemId` 到达，但折叠时**把归属丢掉了**。
+
+| 增量 | 之前的去处 | 后果 |
+|---|---|---|
+| `item/reasoning/summaryTextDelta { itemId, delta }` | 聚合字段 `live.reasoning` | 推理**行**永远为空；且聚合属于「正在进行的一轮」，轮次一结束被清空——**整段推理不留在记录里** |
+| `item/agentMessage/delta { itemId, delta }` | 聚合字段 `live.message` | 助手消息行（由 `item/started` 产生）为空壳；文本另由 `turn.messages` 兜着，故只有它是「有行无内容」的重复 |
+
+归属信息一直在数据里，只是被折叠逻辑丢弃了。
+
+**修复**（原则：**每份内容只出现一次**）
+
+1. **推理归到它自己的 item**：`ReasoningDelta` 改写该 item 的 `output`。推理行因此有内容，
+   并随 `turn.items` 一起**留存到记录里**。
+2. **助手消息不渲染为步骤行**：它的内容是**答复本身**，以 Markdown 散文呈现；留一行可折叠的它
+   只会得到「有行、展开却没内容」的重复。故渲染时过滤 `kind === 'message'`。
+3. **删掉聚合推理字段与那个独立推理块**（`AgentLive.reasoning`、`.codex-live-reasoning`）：
+   item 已是唯一来源，留着就是同一段文字的第二处。
+4. **重新宣告同一个 item 时保留已收到的输出**：增量的到达顺序由运行时决定，一条迟到的
+   `item/started` 原本会整体覆盖条目、**抹掉先到的文本**。这是本轮引入归属后新暴露的风险，
+   一并堵上。
+
+**验收（两条路径都验，因为渲染由同一个 `StepRow` 承担）**
+
+| 场景 | 结果 |
+|---|---|
+| 完成轮次：4 个 item（推理 / 命令 / 助手消息 / 推理） | ✅ **3 行**——助手消息被过滤；标题为 `reasoning`、`python3 run.py …`、`reasoning` |
+| 推理行承载推理文本 | ✅ 展开第 1 行 → `先确认数据源是否可用，再决定是否落到公开接口。`（修复前为空） |
+| 助手消息仍可读 | ✅ 以散文块呈现，且**只出现一次** |
+| 旧聚合推理块已移除 | ✅ `reasoningBlockGone: true` |
+| 实时路径 | ✅ 3 个 item → 2 行；推理行展开显示两段推理；正文以散文呈现；运行中的命令行仍在 |
+| 零横向溢出 / 零页面错误 | ✅ |
+
+**单测**（`agent_live`，10 个通过，含 3 个新增/改写）：
+`streaming_text_drives_the_stage_and_is_kept` 现在断言**推理落在它自己的 item 上**（这是本次契约）；
+`a_delta_for_an_unknown_item_is_ignored`（增量先于宣告到达时不得张冠李戴，也不得 panic）；
+`a_re_announcement_keeps_the_output_already_received`（迟到宣告不得抹掉已收文本）。
+
+**门禁**：`cargo fmt/clippy(-D warnings)/test` clean / 0 / **323 core + 40 tauri**；
+`npm run build` 零错误。
+
+**未验证**：真实 Tauri 宿主（沿用 mock IPC）；多个推理 item 在同一轮内的排序（按到达顺序，
+未与运行时的语义顺序做交叉核对）。
 
 ---
 
