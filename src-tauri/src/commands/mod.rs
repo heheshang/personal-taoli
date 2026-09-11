@@ -15,8 +15,8 @@ mod system;
 pub use account::account_status;
 pub use accounting_control::run_accounting_control_smoke;
 pub use agent::{
-    AgentController, agent_ask, agent_decide, agent_default_prompt, agent_ready, agent_start,
-    agent_status, agent_stop,
+    AgentController, agent_access_levels, agent_ask, agent_decide, agent_default_prompt,
+    agent_ready, agent_set_access_level, agent_start, agent_status, agent_stop,
 };
 pub use archive::replay_observations;
 pub use observation::observe_once;

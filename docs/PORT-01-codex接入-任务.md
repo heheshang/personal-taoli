@@ -23,6 +23,7 @@
 | PORT-01-I | 移除作用域错误的宿主工具 | H | **`verified`**（见下） |
 | PORT-01-J | 审批动作对齐 Codex 桌面版（四档） | C | **`verified`**（见下） |
 | PORT-01-K | 禁止长期放行（carve-out + 不提供第四档） | J | **`verified`**（见下） |
+| PORT-01-L | 操作档位（请求批准 / 帮我批准 / 完全访问权限） | K | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -781,6 +782,59 @@ carve-out，前者失败，而不是让一个「始终允许」按钮悄悄回�
 
 ---
 
+## PORT-01-L 操作档位（请求批准 / 帮我批准 / 完全访问权限）（2026-09-10）
+
+**背景**：所有者问「codex app 的请求批准、帮我批准、可完全访问权限是怎么设计的，在本项目中实现」。
+
+**取证（先于实现）**：
+
+* **app 的权限下拉**（`composer.permissionsDropdown.*`）：`请求批准` / `帮我批准` / `完全访问权限` / `自定义 (config.toml)` / `由组织管理`，标题「应如何批准 Codex 操作？」。
+* **Rust 预设**（`utils/approval-presets/src/lib.rs:28`）把每档定义为 `(AskForApproval, PermissionProfile)` 的一对，而非单一旋钮。
+* **`ApprovalsReviewer`** = `user` | `auto_review` | `guardian_subagent`（legacy）。`auto_review` 由**运行时的审查子代理**按风险判定——即「帮我批准」会绕过本页的审批卡。
+
+因此档位 = 三件事的合取：`sandbox` + `approvalPolicy` + `approvalsReviewer`，加上**本项目自己的 Seatbelt 形状**。
+
+**实现**：
+- 新增 `crates/core/src/agent/access.rs`：`AccessLevel` 与 `ApprovalsReviewer`，档位本身即单位（不暴露三个独立旋钮，否则可拼出 app 不提供、本项目也未推理过的组合）。
+- `thread_start_params` 增 `approvalsReviewer`；`ThreadOptions` 增该字段并记入 trace（向后兼容：新字段 `#[serde(default)]`）。
+- `codex_child_policy` → `AccessLevel::confinement(codex_home, trace, workspace)`：`Ask` 维持原只读边界；`AutoApprove` 追加**工作区**可写；`FullAccess` 返回 **None**（施加任何约束都会让该档位的说明变成假话）。
+- 顺带修掉 clippy 的参数过多：`AppServer::start_thread` 改为接收 `&ThreadOptions`，不再传 7 个位置参数（其中 3 个是字符串）。
+- 命令层：`agent_access_levels` / `agent_set_access_level`；会话运行中改档**拒绝**并说明原因（沙箱无法追加到已在运行的进程）。
+- 界面：工具栏下拉（与 app 同构，会话运行中禁用）；当档位会绕过审批或不施加沙箱时，在输入区上方显式说明。
+
+**实测（活体运行时，每档各起一个真实线程）**
+
+| 档位 | 运行时 sandbox / policy / reviewer | 我们的沙箱可写根 | 本页裁决器被调用 | 越出询问档白名单写入 |
+|---|---|---|---|---|
+| 请求批准 | `read-only` / `untrusted` / `user` | home + trace | **1 次** | **失败**（`Operation not permitted`） |
+| 帮我批准 | `workspace-write` / `on-request` / **`auto_review`** | home + trace + 工作区 | **0 次** | 失败（$HOME 不在工作区，codex 自行拒绝） |
+| 完全访问权限 | `danger-full-access` / `never` / `user` | **无** | **0 次** | **成功** |
+
+三点值得单独记住：
+1. 只有 `Ask` 会把请求交给本页；`AutoApprove` 由运行时自审，**本页的审批卡不会出现**——界面已显式说明，否则会让人以为每个动作仍由自己把关。
+2. `FullAccess` 下本项目**不施加任何约束**，agent 可写任意路径并联网。
+3. `AutoApprove` 仍然被**codex 自己的** `workspace-write` 沙箱约束（写 $HOME 被拒），所以该档并非无限制。
+
+**验收**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 三档标签与说明与 app 一致 | ✅ | 渲染断言下拉 = `["请求批准","帮我批准","完全访问权限"]`；`the_labels_are_the_ones_the_app_uses` |
+| 每档映射为 app 的三元组 | ✅ | `each_level_maps_to_the_runtimes_own_settings` + 上表活体实测 |
+| 只有询问档会咨询本页 | ✅ | `only_the_asking_level_consults_this_client` + 实测「裁决器被调用 1 / 0 / 0 次」 |
+| 沙箱随档位放宽，完全访问无沙箱 | ✅ | `confinement_widens_with_the_level_and_vanishes_at_full_access` + 实测写入三态 |
+| 界面说明绕过审批与无沙箱 | ✅ | 渲染断言：`ask` 无警告；`auto_approve`/`full_access` 各显示对应说明 |
+| 会话运行中改档被拒 | ✅ | `a_running_session_accepts_only_its_own_level`；界面在会话运行中禁用下拉 |
+| 未知 token 被拒而非回退 | ✅ | `an_unknown_level_token_is_refused` + `an_unknown_level_is_refused` |
+| `cargo fmt/clippy(-D warnings)/test` | ✅ | clean / 0 / **305 core + 27 tauri** |
+| `npm run build` | ✅ | 零错误 |
+
+**实现中修掉的一个真实缺陷**：TS 接口把后端的 `consults_client` 写成 `consultsClient`。字段名不符会让读取恒为 `undefined`，而 `undefined` 在布尔位置是 falsy —— 于是「是否绕过审批」的判断**静默走错分支**（「请求批准」也误报「不会出现审批卡」）。已对齐为 serde 原名并渲染复核。
+
+**仍未验证**：未在真实 Tauri 宿主里跑（沿用 mock IPC）；`auto_review` 的判定质量（是否会错误放行风险动作）未评估——那是运行时子代理的行为，属评测范畴。
+
+---
+
 ## 风险与依赖登记
 
 | 风险 | 影响 | 处置 |
@@ -802,6 +856,7 @@ carve-out，前者失败，而不是让一个「始终允许」按钮悄悄回�
 | `data/` 不随仓库分发 | 依赖归档的测试在新克隆上跳过而非失败 | 已在文档标注依赖；这些测试的绿在本机为实证，CI 需先产出归档 |
 | **前端只经 mock IPC 验证** | 真实 WKWebView 与真实 IPC 链路（`agent_start` 拉起子进程）未验证 | 仓库既有做法如此（G-02 §2.4）；已在任务文档「未执行的验证」中明确记录，留待所有者在自己实例上确认 |
 | **审批超时的界面分支未实测** | 界面在 `source: timeout` 时的呈现未真实触发 | 后端语义有单测覆盖（轮次 C）；界面分支只经 mock 呈现，已记录为缺口 |
+| **档位「完全访问权限」移除沙箱与审批** | 该档下 agent 可写任意路径、联网且不需批准；若被误选，只读边界与 K 的规则守卫同时失效 | 该档需显式选择且**会话运行中不可切换**；界面在其下方明示「不施加沙箱」；默认档为 `请求批准`；实测三档写入行为逐档核过 |
 | **trace 与上游 rollout 的信息重叠** | 有人可能误以为 trace 是上游记录的冗余副本 | 两者互补且以 thread id 为共同键；宿主侧决策（审批来源、被拒请求）仅存在于 trace，已在设计 §3.5 写明 |
 | **trace 写入失败被吞** | 丢失审计线索而不自知 | 写入失败以 `tracing::error` 上报，turn 继续（不因 trace 失败而丢轮次）；`session_finished` 仅在 shutdown 成功后记录，故 `finished:true` 可信 |
 

@@ -192,11 +192,17 @@ impl ApprovalPolicy {
 /// replacing its own base instructions, which is why the project's rules go
 /// here and not in `baseInstructions` — measured: the field needs no
 /// experimental capability, and the model honours it.
+/// `reviewer` decides **who** reviews what the policy escalates. `user` routes
+/// requests to this client; `auto_review` has the runtime review them itself
+/// (the app's “帮我批准”). Omitted when it is the default so the wire stays
+/// minimal, but sent whenever a level asks for auto review.
+#[allow(clippy::too_many_arguments)]
 pub fn thread_start_params(
     cwd: &str,
     ephemeral: bool,
     sandbox: &str,
     approval_policy: ApprovalPolicy,
+    reviewer: Option<crate::agent::access::ApprovalsReviewer>,
     developer_instructions: Option<&str>,
     dynamic_tools: Vec<Value>,
 ) -> Value {
@@ -207,6 +213,9 @@ pub fn thread_start_params(
         "approvalPolicy": approval_policy.as_wire(),
         "dynamicTools": dynamic_tools,
     });
+    if let Some(reviewer) = reviewer {
+        params["approvalsReviewer"] = Value::String(reviewer.as_wire().to_string());
+    }
     if let Some(instructions) = developer_instructions.filter(|text| !text.trim().is_empty()) {
         params["developerInstructions"] = Value::String(instructions.to_string());
     }
@@ -330,6 +339,7 @@ mod tests {
             true,
             "read-only",
             ApprovalPolicy::UnlessTrusted,
+            Some(crate::agent::access::ApprovalsReviewer::AutoReview),
             Some("domain rules"),
             vec![json!({"name": "t"})],
         );
@@ -338,6 +348,7 @@ mod tests {
         assert_eq!(params["sandbox"], json!("read-only"));
         // Without this the runtime may run commands without ever asking.
         assert_eq!(params["approvalPolicy"], json!("untrusted"));
+        assert_eq!(params["approvalsReviewer"], json!("auto_review"));
         assert_eq!(params["developerInstructions"], json!("domain rules"));
     }
 
@@ -352,6 +363,7 @@ mod tests {
                 true,
                 "read-only",
                 ApprovalPolicy::UnlessTrusted,
+                None,
                 instructions,
                 Vec::new(),
             );

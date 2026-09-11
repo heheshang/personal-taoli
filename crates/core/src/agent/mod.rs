@@ -22,6 +22,7 @@
 //! starts with a cleared environment plus an allowlist, and nothing in this
 //! module reaches `order` / `execution` / `account` writes.
 
+pub mod access;
 pub mod app_server;
 pub mod approval;
 pub mod instructions;
@@ -350,17 +351,7 @@ impl AgentSession {
             self.server.set_skill_roots(&options.skill_roots).await?;
         }
 
-        let thread_id = self
-            .server
-            .start_thread(
-                &options.cwd,
-                options.ephemeral,
-                options.sandbox.as_wire(),
-                options.approval_policy,
-                options.developer_instructions.as_deref(),
-                tools.specs(),
-            )
-            .await?;
+        let thread_id = self.server.start_thread(options, tools.specs()).await?;
         self.thread_id = Some(thread_id.clone());
 
         // What the model will actually be offered, asked rather than assumed:
@@ -394,6 +385,7 @@ impl AgentSession {
                     cwd: options.cwd.clone(),
                     sandbox: options.sandbox,
                     approval_policy: options.approval_policy,
+                    approvals_reviewer: options.approvals_reviewer,
                     skill_roots: options
                         .skill_roots
                         .iter()

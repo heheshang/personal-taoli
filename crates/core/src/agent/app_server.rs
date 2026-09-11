@@ -30,9 +30,10 @@ use tokio::time::timeout;
 
 use super::AgentError;
 use super::protocol::{
-    ApprovalPolicy, Incoming, METHOD_NOT_IMPLEMENTED, RequestId, RpcError, RpcRequest, RpcResponse,
-    classify, initialize_params, thread_start_params, turn_start_params,
+    Incoming, METHOD_NOT_IMPLEMENTED, RequestId, RpcError, RpcRequest, RpcResponse, classify,
+    initialize_params, thread_start_params, turn_start_params,
 };
+use super::trace::ThreadOptions;
 
 /// Client identity reported in the `initialize` handshake.
 const CLIENT_NAME: &str = "taoli";
@@ -347,22 +348,24 @@ impl CodexAppServer {
         .await
     }
 
-    /// Starts a thread with `dynamic_tools` and returns its id.
+    /// Starts a thread and returns its id.
+    ///
+    /// Takes the host's [`ThreadOptions`] rather than the individual fields: the
+    /// set grows whenever a session-level knob is added, and seven positional
+    /// arguments of which three are strings is a call site waiting to be
+    /// transposed.
     pub async fn start_thread(
         &mut self,
-        cwd: &str,
-        ephemeral: bool,
-        sandbox: &str,
-        approval_policy: ApprovalPolicy,
-        developer_instructions: Option<&str>,
+        options: &ThreadOptions,
         dynamic_tools: Vec<Value>,
     ) -> Result<String, AgentError> {
         let params = thread_start_params(
-            cwd,
-            ephemeral,
-            sandbox,
-            approval_policy,
-            developer_instructions,
+            &options.cwd,
+            options.ephemeral,
+            options.sandbox.as_wire(),
+            options.approval_policy,
+            Some(options.approvals_reviewer),
+            options.developer_instructions.as_deref(),
             dynamic_tools,
         );
         let result = self.request("thread/start", params).await?;

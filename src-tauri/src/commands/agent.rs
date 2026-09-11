@@ -25,6 +25,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use personal_taoli_core::agent::{
     AgentSession, TurnContext, TurnLimits,
+    access::{AccessLevel, AccessSetting},
     app_server::AppServerConfig,
     approval::{self, ApprovalDecider, ApprovalRequest, Decision},
     discover_program, instructions,
@@ -37,8 +38,8 @@ use crate::error::{ApiResponse, ErrorCode};
 
 use super::{
     dto::{
-        AgentApprovalDecision, AgentApprovalRequest, AgentReady, AgentSkill, AgentStatus,
-        AgentToolCall, AgentTurn,
+        AgentAccessLevel, AgentApprovalDecision, AgentApprovalRequest, AgentReady, AgentSkill,
+        AgentStatus, AgentToolCall, AgentTurn,
     },
     support::{api_fail, api_map},
 };
@@ -228,17 +229,28 @@ struct RunningAgent {
     commands: mpsc::Sender<AgentCommand>,
     slot: Arc<Mutex<Option<PendingApproval>>>,
     status: Arc<Mutex<AgentStatus>>,
+    /// The level this session was started with, so a change can be refused
+    /// rather than silently ignored: the runtime takes these settings at
+    /// `thread/start`, and a sandbox cannot be retrofitted onto a live process.
+    level: AccessLevel,
 }
 
 /// 应用级句柄：同一时刻至多一个分析会话。
 pub struct AgentController {
     inner: Mutex<Option<RunningAgent>>,
+    /// The level a new session will use.
+    ///
+    /// Session-scoped, like the app's per-composer dropdown, and independent of
+    /// `inner` so it survives a stopped session. Defaults to the asking level,
+    /// the only one that keeps the original read-only boundary.
+    access: Mutex<AccessSetting>,
 }
 
 impl Default for AgentController {
     fn default() -> Self {
         Self {
             inner: Mutex::new(None),
+            access: Mutex::new(AccessSetting::default()),
         }
     }
 }
@@ -247,12 +259,46 @@ impl Default for AgentController {
 ///
 /// 只授予运行时可证必需的可写位置：它自己的 home（会话与状态存储——实测缺少
 /// 该授权会启动失败）与 trace 目录。**工作区不在其中**：本接入的边界是只读。
-fn codex_confinement(codex_home: &Path, trace_dir: &Path) -> SandboxPolicy {
-    let mut policy = sandbox::codex_child_policy(codex_home, Some(trace_dir));
-    // 额外可写根：skill 的脚本会写自己的仓库（.cache / reports）。这是显式授权，
-    // 由 TAOLI_AGENT_WRITE_ROOTS 提供，不由 skill 根自动推导。
+/// 当前生效的档位：有控制器就用它，否则用默认（`ask`）。
+///
+/// `readiness` 拿不到 `AppHandle`，故接受一个可选控制器；命令层传真实状态。
+fn access_level(controller: Option<&AgentController>) -> AccessLevel {
+    controller.map_or_else(AccessLevel::default, |controller| {
+        lock(&controller.access).level
+    })
+}
+
+/// 档位清单，供界面渲染下拉项。
+fn access_levels() -> Vec<AgentAccessLevel> {
+    AccessLevel::ALL
+        .into_iter()
+        .map(|level| AgentAccessLevel {
+            token: level.token().to_string(),
+            label: level.label().to_string(),
+            description: level.description().to_string(),
+            consults_client: level.consults_this_client(),
+            confined: level != AccessLevel::FullAccess,
+        })
+        .collect()
+}
+
+/// 按档位派生沙箱子进程的策略。
+///
+/// 档位决定两件事，二者必须一致，否则标签就成了假话：交给运行时的沙箱/审批设置，
+/// 以及**本项目自己**的 Seatbelt 约束。`完全访问权限` 返回 `None`——不施加任何约束。
+fn confinement_for(
+    level: AccessLevel,
+    codex_home: &Path,
+    trace_dir: &Path,
+    workspace: &Path,
+) -> Option<SandboxPolicy> {
+    // `完全访问权限` yields no policy: applying one would make the level's own
+    // description ("可不受限制地…") untrue.
+    let mut policy = level.confinement(codex_home, Some(trace_dir), Some(workspace))?;
+    // 额外可写根：skill 的脚本会写自己的仓库（.cache / reports）。显式授权，
+    // 由 TAOLI_AGENT_WRITE_ROOTS 提供，不由 skill 根自动推导；只叠加在有约束的档位上。
     policy.writable_roots.extend(write_roots());
-    policy
+    Some(policy)
 }
 
 /// 就绪检查：运行时、trace 目录、沙箱、领域指令四项都必须可用。
@@ -261,6 +307,10 @@ fn codex_confinement(codex_home: &Path, trace_dir: &Path) -> SandboxPolicy {
 /// 缺归档时无故拒绝启动。`config_path` 仍保留在签名里，供后续需要配置的能力使用。
 fn readiness(config_path: Option<String>) -> AgentReady {
     let _ = config_path;
+    readiness_with(None)
+}
+
+fn readiness_with(controller: Option<&AgentController>) -> AgentReady {
     let program = discover_program().map(|path| path.to_string_lossy().into_owned());
     // 绝对路径：既用于创建，也用于沙箱可写根。
     let traces = trace_dir().ok();
@@ -315,6 +365,7 @@ fn readiness(config_path: Option<String>) -> AgentReady {
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
+        access_level: access_level(controller).token().to_string(),
         reason,
     }
 }
@@ -328,6 +379,7 @@ fn stopped_status(program: Option<String>) -> AgentStatus {
         pending_approval: None,
         turns: Vec::new(),
         skills: Vec::new(),
+        access_level: AccessLevel::default().token().to_string(),
         error: None,
     }
 }
@@ -414,7 +466,12 @@ impl AgentController {
                 }
                 status
             }
-            None => stopped_status(discover_program().map(|p| p.to_string_lossy().into_owned())),
+            None => {
+                let mut status =
+                    stopped_status(discover_program().map(|p| p.to_string_lossy().into_owned()));
+                status.access_level = lock(&self.access).level.token().to_string();
+                status
+            }
         }
     }
 
@@ -425,6 +482,7 @@ impl AgentController {
             anyhow::bail!(ready.reason.unwrap_or_else(|| "agent 未就绪".to_string()));
         }
         let program = ready.program.clone();
+        let level = lock(&self.access).level;
 
         {
             let guard = lock(&self.inner);
@@ -445,14 +503,21 @@ impl AgentController {
             pending_approval: None,
             turns: Vec::new(),
             skills: Vec::new(),
+            access_level: level.token().to_string(),
             error: None,
         }));
 
         let task_status = Arc::clone(&status);
         let task_slot = Arc::clone(&slot);
         tauri::async_runtime::spawn(async move {
-            let outcome =
-                run_agent(program, commands_rx, Arc::clone(&task_status), task_slot).await;
+            let outcome = run_agent(
+                program,
+                level,
+                commands_rx,
+                Arc::clone(&task_status),
+                task_slot,
+            )
+            .await;
             let mut guard = lock(&task_status);
             if let Err(error) = outcome {
                 guard.phase = "error";
@@ -466,6 +531,7 @@ impl AgentController {
             commands: commands_tx,
             slot,
             status: Arc::clone(&status),
+            level,
         });
 
         Ok(self.snapshot())
@@ -489,6 +555,28 @@ impl AgentController {
             .try_send(AgentCommand::Ask { prompt })
             .map_err(|_| anyhow::anyhow!("分析会话已停止"))?;
         drop(guard);
+        Ok(self.snapshot())
+    }
+
+    /// 设置新会话使用的档位。
+    ///
+    /// 会话运行中且档位不同则拒绝：运行时的沙箱与审批设置是 `thread/start` 时确定
+    /// 的，无法给一个已在运行的进程追加沙箱。停掉会话即可切换（与 app 的「适用于
+    /// 新聊天」一致）。
+    fn set_access_level(&self, level: AccessLevel) -> Result<AgentStatus, anyhow::Error> {
+        {
+            let guard = lock(&self.inner);
+            if let Some(agent) = guard.as_ref()
+                && agent.level != level
+            {
+                anyhow::bail!(
+                    "会话正在以「{}」运行，无法切换到「{}」：沙箱与审批设置在线程启动时确定，请先停止会话",
+                    agent.level.label(),
+                    level.label()
+                );
+            }
+        }
+        lock(&self.access).level = level;
         Ok(self.snapshot())
     }
 
@@ -555,6 +643,7 @@ impl AgentController {
 /// 后台任务主体：拥有 `AgentSession`，串行处理命令。
 async fn run_agent(
     program: Option<String>,
+    level: AccessLevel,
     mut commands: mpsc::Receiver<AgentCommand>,
     status: Arc<Mutex<AgentStatus>>,
     slot: Arc<Mutex<Option<PendingApproval>>>,
@@ -570,14 +659,15 @@ async fn run_agent(
     // 绝对路径是硬要求：沙箱拒绝相对可写根，且子进程的 cwd 也应是一个真实目录。
     let root = project_root()?;
     let trace = trace_dir()?;
-    let confinement = codex_confinement(&codex_home, &trace);
+    // `完全访问权限` produces no confinement at all; see `confinement_for`.
+    let confinement = confinement_for(level, &codex_home, &trace, &root);
     // A permanent approval is only meaningful if the runtime can write its rule
-    // store. The confinement denies that directory, so the fourth approval
-    // action is withheld rather than shown and silently ignored.
-    let persistence = if confinement.blocks_rule_persistence() {
-        approval::Persistence::Blocked
-    } else {
-        approval::Persistence::Allowed
+    // store. Every confined level denies that directory, so under them the fourth
+    // approval action is withheld rather than shown and ignored. The unconfined
+    // level has no such block — and no approvals either, its policy being `never`.
+    let persistence = match &confinement {
+        Some(policy) if policy.blocks_rule_persistence() => approval::Persistence::Blocked,
+        _ => approval::Persistence::Allowed,
     };
     // Re-read rather than carrying the readiness result: the document is read
     // once per session, and a failure here must stop the launch.
@@ -587,7 +677,7 @@ async fn run_agent(
     let config = AppServerConfig {
         program: PathBuf::from(program),
         request_timeout: Duration::from_secs(60),
-        confinement: Some(confinement),
+        confinement,
         ..AppServerConfig::default()
     };
     let mut session = AgentSession::connect(config).await?;
@@ -598,10 +688,15 @@ async fn run_agent(
     let options = ThreadOptions {
         cwd: root.to_string_lossy().into_owned(),
         ephemeral: false,
+        // The level is the single source for all three: they are one decision in
+        // the app too, and splitting them would allow combinations the app never
+        // offers and this project has not reasoned about.
+        sandbox: level.sandbox(),
+        approval_policy: level.approval_policy(),
+        approvals_reviewer: level.reviewer(),
         developer_instructions: Some(developer_instructions),
         skill_roots: skill_roots(),
         trace_dir: Some(trace),
-        ..ThreadOptions::default()
     };
     let thread_id = session.start_thread(&options, Arc::clone(&tools)).await?;
     let trace_path = session
@@ -711,8 +806,9 @@ async fn run_agent(
 }
 
 #[tauri::command]
-pub fn agent_ready() -> ApiResponse<AgentReady> {
-    ApiResponse::ok(readiness(None))
+pub fn agent_ready(app: AppHandle) -> ApiResponse<AgentReady> {
+    let state = app.state::<AgentController>();
+    ApiResponse::ok(readiness_with(Some(&state)))
 }
 
 #[tauri::command]
@@ -745,6 +841,30 @@ pub fn agent_decide(app: AppHandle, request_id: i64, decision: String) -> ApiRes
         ),
         Err(error) => api_fail(ErrorCode::InvalidRequest, error, false),
     }
+}
+
+/// 可选档位清单（标签与说明取自 Codex 桌面版）。
+#[tauri::command]
+pub fn agent_access_levels() -> ApiResponse<Vec<AgentAccessLevel>> {
+    ApiResponse::ok(access_levels())
+}
+
+/// 设置新会话使用的档位。会话运行中改档会被拒绝，需先停止会话。
+#[tauri::command]
+pub fn agent_set_access_level(app: AppHandle, level: String) -> ApiResponse<AgentStatus> {
+    let Some(level) = AccessLevel::parse(&level) else {
+        return api_fail(
+            ErrorCode::InvalidRequest,
+            format!("unknown access level `{level}`"),
+            false,
+        );
+    };
+    let state = app.state::<AgentController>();
+    api_map(
+        state.set_access_level(level),
+        ErrorCode::InvalidRequest,
+        false,
+    )
 }
 
 #[tauri::command]
@@ -800,7 +920,8 @@ mod tests {
         // The exact call that failed: the policy the command layer builds must
         // be accepted, not rejected for being relative.
         let codex_home = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex");
-        let policy = codex_confinement(&codex_home, &dir);
+        let policy = confinement_for(AccessLevel::Ask, &codex_home, &dir, Path::new("/tmp"))
+            .expect("the asking level is confined");
         for root in &policy.writable_roots {
             assert!(
                 root.is_absolute(),
@@ -810,7 +931,8 @@ mod tests {
         }
 
         // Building the argv is what rejected the relative path before.
-        let policy = codex_confinement(&codex_home, &dir);
+        let policy = confinement_for(AccessLevel::Ask, &codex_home, &dir, Path::new("/tmp"))
+            .expect("the asking level is confined");
         let command = vec!["/bin/echo".to_string(), "ok".to_string()];
         match personal_taoli_core::agent::sandbox::confined_argv(&command, &policy) {
             Ok(argv) => assert_eq!(argv[0], "/usr/bin/sandbox-exec"),
@@ -926,7 +1048,8 @@ mod root_env_tests {
             let codex_home =
                 PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex");
             let trace = dir.join("agent-traces-roots-test");
-            let policy = codex_confinement(&codex_home, &trace);
+            let policy = confinement_for(AccessLevel::Ask, &codex_home, &trace, Path::new("/tmp"))
+                .expect("the asking level is confined");
 
             assert!(
                 policy.writable_roots.contains(&dir),
@@ -1075,5 +1198,78 @@ mod decision_token_tests {
             "deny".to_string(),
         ];
         assert!(ensure_offered(&with_rule, Decision::AllowAlways).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod access_level_tests {
+    use super::*;
+
+    /// The interface renders these, so their labels and descriptions must be the
+    /// app's own — that is the whole point of the parity.
+    #[test]
+    fn the_levels_offered_match_the_apps_dropdown() {
+        let levels = access_levels();
+        let tokens: Vec<&str> = levels.iter().map(|level| level.token.as_str()).collect();
+        assert_eq!(tokens, vec!["ask", "auto_approve", "full_access"]);
+
+        let labels: Vec<&str> = levels.iter().map(|level| level.label.as_str()).collect();
+        assert_eq!(labels, vec!["请求批准", "帮我批准", "完全访问权限"]);
+        for level in &levels {
+            assert!(!level.description.is_empty(), "{level:?}");
+        }
+    }
+
+    /// The two facts the interface must not get wrong: which levels still ask
+    /// this client, and which still apply a sandbox.
+    #[test]
+    fn the_levels_report_whether_they_still_ask_and_still_confine() {
+        let levels = access_levels();
+        let by_token = |token: &str| {
+            levels
+                .iter()
+                .find(|level| level.token == token)
+                .unwrap_or_else(|| panic!("{token} missing"))
+        };
+
+        // Only the asking level puts requests to this client.
+        assert!(by_token("ask").consults_client);
+        assert!(
+            !by_token("auto_approve").consults_client,
+            "the runtime reviews"
+        );
+        assert!(!by_token("full_access").consults_client, "it never asks");
+
+        // Only full access drops the sandbox.
+        assert!(by_token("ask").confined);
+        assert!(by_token("auto_approve").confined);
+        assert!(!by_token("full_access").confined);
+    }
+
+    #[test]
+    fn a_default_controller_reports_the_asking_level() {
+        let controller = AgentController::default();
+        assert_eq!(lock(&controller.access).level, AccessLevel::Ask);
+    }
+
+    /// Setting a level is allowed while idle, and the snapshot reflects it —
+    /// this is what the dropdown shows before a session exists.
+    #[test]
+    fn a_level_set_while_idle_is_reported() {
+        let controller = AgentController::default();
+        let status = controller
+            .set_access_level(AccessLevel::AutoApprove)
+            .expect("idle controller accepts a change");
+        assert_eq!(status.access_level, "auto_approve");
+        assert_eq!(lock(&controller.access).level, AccessLevel::AutoApprove);
+    }
+
+    /// An unknown token must not silently fall back to a level: a typo would
+    /// otherwise change the sandbox.
+    #[test]
+    fn an_unknown_level_token_is_refused() {
+        assert!(AccessLevel::parse("sandboxed").is_none());
+        assert!(AccessLevel::parse("Ask").is_none());
+        assert!(AccessLevel::parse("").is_none());
     }
 }

@@ -166,6 +166,8 @@ pub struct AgentReady {
     ///
     /// 与 skill 根分开：能读到 skill 与允许它写自己的仓库是两件事。
     pub write_roots: Vec<String>,
+    /// 新会话将使用的操作档位。
+    pub access_level: String,
     pub reason: Option<String>,
 }
 
@@ -225,6 +227,23 @@ pub struct AgentTurn {
     pub finished_at_ms: Option<u64>,
 }
 
+/// 一个可选的操作档位，供界面渲染下拉项。
+///
+/// 标签与说明取自 Codex 桌面版语言包的同一组词，使两个界面用同样的话描述同一件事。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentAccessLevel {
+    pub token: String,
+    pub label: String,
+    pub description: String,
+    /// 该档位是否会把审批请求交给本客户端。
+    ///
+    /// 「帮我批准」由运行时自己的子代理判定，「完全访问」不问——两者都不会经过
+    /// 本页的审批卡，界面必须如实说明，否则会让人以为每个动作仍由自己把关。
+    pub consults_client: bool,
+    /// 该档位是否仍受本项目沙箱约束。`完全访问权限` 为 false。
+    pub confined: bool,
+}
+
 /// 运行时报告可用的一个 skill。
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentSkill {
@@ -248,6 +267,8 @@ pub struct AgentStatus {
     pub turns: Vec<AgentTurn>,
     /// 运行时报告可用的 skill。
     pub skills: Vec<AgentSkill>,
+    /// 当前会话使用的操作档位（未启动时为新会话将使用的档位）。
+    pub access_level: String,
     /// 会话级致命错误（运行时启动失败或退出）。轮次内的失败记在该轮的 `error`。
     pub error: Option<String>,
 }

@@ -20,8 +20,18 @@ import {
   agentStatus,
   agentStop,
 } from '../commands'
+import {
+  agentAccessLevels,
+  agentSetAccessLevel,
+} from '../commands'
 import { AGENT_DECISION_LABEL } from '../commands'
-import type { AgentDecision, AgentReady, AgentStatus, AgentTurn } from '../commands'
+import type {
+  AgentAccessLevel,
+  AgentDecision,
+  AgentReady,
+  AgentStatus,
+  AgentTurn,
+} from '../commands'
 
 /** 运行时报告可用的 skill 列表，用于工具栏提示。 */
 
@@ -37,6 +47,28 @@ const busy = ref(false)
 const expanded = ref<Set<string>>(new Set())
 const thread = ref<HTMLElement | null>(null)
 const composer = ref<HTMLTextAreaElement | null>(null)
+const levels = ref<AgentAccessLevel[]>([])
+
+/**
+ * 当前档位。
+ *
+ * 会话运行中显示该会话**实际**使用的档位（后端在 thread/start 时按它确定沙箱与
+ * 审批设置），未运行时显示下一会话将使用的档位。
+ */
+const accessLevel = computed(() => status.value?.access_level ?? 'ask')
+const accessInfo = computed(
+  () => levels.value.find(level => level.token === accessLevel.value) ?? null,
+)
+
+/**
+ * 该档位是否让本页的审批卡失去意义。
+ *
+ * 「帮我批准」由运行时自己的审查子代理判定，「完全访问」根本不问——两者都不会把
+ * 请求交给本页。界面必须说清楚，否则使用者会误以为每个动作仍由自己把关。
+ */
+const approvalBypassed = computed(
+  () => !!accessInfo.value && !accessInfo.value.consults_client,
+)
 
 const POLL_MS = 1000
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -143,6 +175,15 @@ async function refresh() {
   await scrollToBottom()
 }
 
+async function doSetAccessLevel(token: string) {
+  busy.value = true
+  try {
+    status.value = (await agentSetAccessLevel(token)) ?? status.value
+  } finally {
+    busy.value = false
+  }
+}
+
 async function doStart() {
   busy.value = true
   try {
@@ -238,6 +279,7 @@ function onComposerKeydown(event: KeyboardEvent) {
 }
 
 onMounted(async () => {
+  levels.value = (await agentAccessLevels()) ?? []
   ready.value = (await agentReady()) ?? null
   prompt.value = (await agentDefaultPrompt()) ?? ''
   await resizeComposer()
@@ -276,6 +318,20 @@ onUnmounted(stopPolling)
         </span>
       </div>
       <div class="codex-toolbar-meta">
+        <!-- 档位与 Codex 桌面版的权限下拉同构：会话运行中禁用，因为沙箱与审批
+             设置在 thread/start 时确定，无法追加到已在运行的进程上。 -->
+        <select
+          v-if="levels.length"
+          class="codex-access"
+          :value="accessLevel"
+          :disabled="busy || sessionAlive"
+          :title="accessInfo?.description ?? '选择 Codex 应如何请求批准'"
+          @change="doSetAccessLevel(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="level in levels" :key="level.token" :value="level.token">
+            {{ level.label }}
+          </option>
+        </select>
         <template v-if="ready?.ready">
           <span v-if="status?.thread_id" :title="status.thread_id">
             thread {{ status.thread_id.slice(0, 8) }}
@@ -480,6 +536,15 @@ onUnmounted(stopPolling)
         </div>
         <div class="codex-composer-hint">
           Enter 发送 · Shift+Enter 换行 · 宿主不注册工具 · 副作用动作需审批
+        </div>
+        <!-- 档位会绕过审批或去掉沙箱时必须说清楚：这不是可以忽略的细节。 -->
+        <div v-if="approvalBypassed" class="codex-composer-hint agent-note-warn">
+          当前档位「{{ accessInfo?.label }}」：{{ accessInfo?.description }}。
+          审批请求<strong>不会</strong>出现在上方卡片里——
+          {{ accessLevel === 'auto_approve' ? '由运行时自己的审查子代理判定' : '该档位不请求批准' }}。
+          <template v-if="accessInfo && !accessInfo.confined">
+            该档位<strong>不施加沙箱</strong>：agent 可不受限制地读写文件与访问网络。
+          </template>
         </div>
       </div>
     </template>

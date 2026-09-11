@@ -38,6 +38,8 @@ export const COMMANDS = {
   agentStatus: 'agent_status',
   agentStop: 'agent_stop',
   agentDefaultPrompt: 'agent_default_prompt',
+  agentAccessLevels: 'agent_access_levels',
+  agentSetAccessLevel: 'agent_set_access_level',
 } as const
 
 export const PAPER_KINDS = ['B01', 'B02', 'B03'] as const
@@ -325,7 +327,29 @@ export interface AgentReady {
   skill_roots: string[]
   /** 已授权的额外可写根（来自 `TAOLI_AGENT_WRITE_ROOTS`）。 */
   write_roots: string[]
+  /** 新会话将使用的操作档位。 */
+  access_level: string
   reason: string | null
+}
+
+/**
+/**
+ * 一个可选的操作档位。
+ *
+ * 字段名与后端 serde 输出逐字一致（`consults_client` / `confined`）：改成
+ * camelCase 会让读取永远得到 `undefined`，而 `undefined` 在布尔位置是 falsy ——
+ * 于是「是否绕过审批」的判断会静默走错分支。
+ *
+ * 标签与说明取自 Codex 桌面版语言包的同一组词，使两个界面用同样的话描述同一件事。
+ */
+export interface AgentAccessLevel {
+  token: string
+  label: string
+  description: string
+  /** 该档位是否会把审批请求交给本页。 */
+  consults_client: boolean
+  /** 该档位是否仍受本项目沙箱约束；`完全访问权限` 为 false。 */
+  confined: boolean
 }
 
 /** 运行时报告可用的一个 skill。名称可能带命名空间前缀，如 `stock-deep-analyzer:uzi`。 */
@@ -402,6 +426,8 @@ export interface AgentStatus {
   turns: AgentTurn[]
   /** 运行时报告可用的 skill（注册生效与否由运行时说了算）。 */
   skills: AgentSkill[]
+  /** 当前会话使用的操作档位。 */
+  access_level: string
   /** 会话级致命错误；轮次内的失败记在该轮的 `error`。 */
   error: string | null
 }
@@ -439,4 +465,16 @@ export async function agentStop(): Promise<AgentStatus | undefined> {
 
 export async function agentDefaultPrompt(): Promise<string | undefined> {
   return invokeCommand<string>(COMMANDS.agentDefaultPrompt)
+}
+
+// ── 操作档位（PORT-01-L）────────────────────────────────────────────────
+
+/** 可选档位清单。 */
+export async function agentAccessLevels(): Promise<AgentAccessLevel[] | undefined> {
+  return invokeCommand<AgentAccessLevel[]>(COMMANDS.agentAccessLevels)
+}
+
+/** 设置新会话使用的档位。会话运行中改档会被后端拒绝，需先停止会话。 */
+export async function agentSetAccessLevel(level: string): Promise<AgentStatus | undefined> {
+  return invokeCommand<AgentStatus>(COMMANDS.agentSetAccessLevel, { level })
 }

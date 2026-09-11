@@ -104,6 +104,13 @@ pub enum TraceEvent {
         cwd: String,
         sandbox: SandboxMode,
         approval_policy: ApprovalPolicy,
+        /// Who reviews escalations for this session.
+        ///
+        /// `default` so a trace written before this field existed still
+        /// replays: those sessions routed reviews to the client, which is
+        /// exactly what the default says.
+        #[serde(default)]
+        approvals_reviewer: crate::agent::access::ApprovalsReviewer,
         /// Skill roots registered for this session, in order.
         ///
         /// Recorded because the reachable skill set is a property of the
@@ -259,6 +266,8 @@ pub struct SessionTrace {
     pub cwd: String,
     pub sandbox: SandboxMode,
     pub approval_policy: ApprovalPolicy,
+    /// Who reviews escalations for this session.
+    pub approvals_reviewer: crate::agent::access::ApprovalsReviewer,
     /// Skill roots registered for this session, in order.
     pub skill_roots: Vec<String>,
     /// Which revision of the domain instructions was in force, when any.
@@ -297,6 +306,7 @@ type SessionStart = (
     String,
     SandboxMode,
     ApprovalPolicy,
+    crate::agent::access::ApprovalsReviewer,
     Vec<String>,
     Option<InstructionsFingerprint>,
 );
@@ -392,6 +402,7 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
                 cwd,
                 sandbox,
                 approval_policy,
+                approvals_reviewer,
                 skill_roots,
                 developer_instructions,
                 at_ms,
@@ -408,6 +419,7 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
                     cwd,
                     sandbox,
                     approval_policy,
+                    approvals_reviewer,
                     skill_roots,
                     developer_instructions,
                 ));
@@ -517,7 +529,15 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
         turns.push(turn);
     }
 
-    let Some((thread_id, cwd, sandbox, approval_policy, skill_roots, instructions)) = started
+    let Some((
+        thread_id,
+        cwd,
+        sandbox,
+        approval_policy,
+        approvals_reviewer,
+        skill_roots,
+        instructions,
+    )) = started
     else {
         return Err(TraceError::Empty);
     };
@@ -527,6 +547,7 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
         cwd,
         sandbox,
         approval_policy,
+        approvals_reviewer,
         skill_roots,
         instructions,
         turns,
@@ -582,6 +603,11 @@ pub struct ThreadOptions {
     /// Must be [`ApprovalPolicy::UnlessTrusted`] for every side-effecting action
     /// to reach the owner; see `protocol::ApprovalPolicy`.
     pub approval_policy: ApprovalPolicy,
+    /// Who reviews what the policy escalates.
+    ///
+    /// `User` routes requests here; `AutoReview` has the runtime review them
+    /// (the app's “帮我批准”). Part of the session's contract, so it is recorded.
+    pub approvals_reviewer: crate::agent::access::ApprovalsReviewer,
     /// Domain constraints injected as the runtime's `developerInstructions`.
     ///
     /// Carried verbatim from the repository document; see
@@ -607,6 +633,7 @@ impl Default for ThreadOptions {
             ephemeral: true,
             sandbox: SandboxMode::ReadOnly,
             approval_policy: ApprovalPolicy::UnlessTrusted,
+            approvals_reviewer: crate::agent::access::ApprovalsReviewer::User,
             developer_instructions: None,
             skill_roots: Vec::new(),
             trace_dir: None,
@@ -653,6 +680,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 sandbox: SandboxMode::ReadOnly,
                 approval_policy: ApprovalPolicy::UnlessTrusted,
+                approvals_reviewer: crate::agent::access::ApprovalsReviewer::User,
                 skill_roots: Vec::new(),
                 developer_instructions: None,
                 at_ms: 100,
@@ -757,6 +785,7 @@ mod tests {
             cwd: ".".to_string(),
             sandbox: SandboxMode::WorkspaceWrite,
             approval_policy: ApprovalPolicy::OnRequest,
+            approvals_reviewer: crate::agent::access::ApprovalsReviewer::User,
             skill_roots: Vec::new(),
             developer_instructions: None,
             at_ms: 1,
@@ -825,6 +854,7 @@ mod tests {
                     cwd: ".".to_string(),
                     sandbox: SandboxMode::ReadOnly,
                     approval_policy: ApprovalPolicy::UnlessTrusted,
+                    approvals_reviewer: crate::agent::access::ApprovalsReviewer::User,
                     skill_roots: Vec::new(),
                     developer_instructions: None,
                     at_ms: 1,
@@ -940,6 +970,7 @@ mod tests {
                     cwd: ".".to_string(),
                     sandbox: SandboxMode::ReadOnly,
                     approval_policy: ApprovalPolicy::UnlessTrusted,
+                    approvals_reviewer: crate::agent::access::ApprovalsReviewer::User,
                     skill_roots: Vec::new(),
                     developer_instructions: None,
                     at_ms: 1,
@@ -991,6 +1022,7 @@ mod tests {
                     cwd: ".".to_string(),
                     sandbox: SandboxMode::ReadOnly,
                     approval_policy: ApprovalPolicy::UnlessTrusted,
+                    approvals_reviewer: crate::agent::access::ApprovalsReviewer::User,
                     skill_roots: Vec::new(),
                     developer_instructions: None,
                     at_ms: 100,

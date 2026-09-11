@@ -157,6 +157,7 @@ crates/core/src/agent/          ← 新增子模块（只读边界内）
   approval.rs                   ← 审批归类、裁决、审计日志
   trace.rs                      ← 会话 trace：append-only 落盘 + 结构校验回放
   instructions.rs               ← 领域指令加载（内容来自仓库文件，缺失/为空即失败关闭）
+  access.rs                     ← 操作档位：sandbox + approvalPolicy + reviewer + 自有沙箱形状
   sandbox/                      ← macOS Seatbelt 约束（策略文本上游逐字 + 文件系统策略子集）
     mod.rs                      ← 可用性探测（上游没有）+ 失败关闭的 argv 包装
     seatbelt.rs                 ← 移植：可写根归一化、访问策略、-D 参数装配
@@ -225,6 +226,20 @@ skill，两者产生的副作用动作都要过审批。
 **为何是累积而非「最近一轮」**：界面按 Codex 桌面版呈现为会话流，只保留最近一轮会导致新一轮抹掉上一轮。这是一次**干净切替**——旧的扁平字段已删除，无兼容层。
 
 **视觉作用域**：Codex 令牌（蓝主色、superellipse 圆角、16px 聊天气泡字号）仅作用于 `.codex-scope`，不覆盖本项目 UI-01 的全局令牌。代价是本页主色与其余页面不同；统一需另立一轮。
+
+### 3.3c 操作档位（轮次 L）
+
+档位与 Codex 桌面版权限下拉同构，且**是单位而非三个旋钮**：一档同时决定运行时的 `sandbox`、`approvalPolicy`、`approvalsReviewer` 与本项目自己的 Seatbelt 形状。暴露三个独立旋钮会允许 app 不提供、本项目也未推理过的组合。
+
+| 档位 | 运行时 | 自有沙箱 | 本页审批卡 |
+|---|---|---|---|
+| 请求批准 | `read-only` / `untrusted` / `user` | 运行时可写目录仅 home + trace + 显式写根 | 每个副作用动作都过 |
+| 帮我批准 | `workspace-write` / `on-request` / `auto_review` | 追加工作区 | **不出现**——运行时自审 |
+| 完全访问权限 | `danger-full-access` / `never` / `user` | **无** | **不出现**——不请求批准 |
+
+**为什么 `FullAccess` 不施加约束**：该档的说明是「可不受限制地…」。施加任何 profile 都会让它变成假话；诚实的实现就是不约束，并在界面明示。
+
+**为什么 `Ask` 用 `untrusted` 而非运行时的默认 `on-request`**：`on-request` 由模型自行决定是否询问——实测会不询问就执行无副作用外观的命令。所有者要当那道闸，就不能把闸交给模型判断。
 
 ### 3.4 审批门禁与审计（轮次 C 已实现）
 
