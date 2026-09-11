@@ -45,10 +45,51 @@ use super::{
     support::{api_fail, api_map},
 };
 
-/// 单轮上限：总时长、工具调用数、审批等待时长。
-const TURN_TIMEOUT: Duration = Duration::from_secs(300);
+/// 单轮上限：**静默**时长、硬顶、工具调用数、审批等待时长。
+///
+/// 静默时长而非总时长：真实的深度分析 skill 会持续汇报进度而跑很久（实测 UZI
+/// skill 的 stage1 抓取早已超过五分钟仍在正常推进），用总时长做闸会把正在正常
+/// 工作的轮次砍掉。判据是「还在动」，不是「跑了多久」。
+///
+/// 二者可用环境变量覆盖，因为「多久算合理」取决于所有者用的 skill：
+/// `TAOLI_AGENT_TURN_IDLE_SECS`、`TAOLI_AGENT_TURN_MAX_SECS`。
+const DEFAULT_TURN_IDLE_SECS: u64 = 600;
+const DEFAULT_TURN_MAX_SECS: u64 = 7_200;
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
-const MAX_TOOL_CALLS: usize = 16;
+const MAX_TOOL_CALLS: usize = 32;
+
+/// 读取一个秒数上限，非法值一律退回默认并记录，不静默取 0。
+fn seconds_from_env(variable: &str, fallback: u64) -> Duration {
+    let Ok(raw) = std::env::var(variable) else {
+        return Duration::from_secs(fallback);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(0) => {
+            tracing::warn!(target: "agent", variable, "ignoring a zero limit; using the default");
+            Duration::from_secs(fallback)
+        }
+        Ok(seconds) => Duration::from_secs(seconds),
+        Err(error) => {
+            tracing::warn!(
+                target: "agent",
+                variable,
+                value = %raw,
+                %error,
+                "unparseable limit; using the default"
+            );
+            Duration::from_secs(fallback)
+        }
+    }
+}
+
+fn turn_limits() -> TurnLimits {
+    TurnLimits {
+        idle_timeout: seconds_from_env("TAOLI_AGENT_TURN_IDLE_SECS", DEFAULT_TURN_IDLE_SECS),
+        max_duration: seconds_from_env("TAOLI_AGENT_TURN_MAX_SECS", DEFAULT_TURN_MAX_SECS),
+        max_tool_calls: MAX_TOOL_CALLS,
+        approval_timeout: APPROVAL_TIMEOUT,
+    }
+}
 
 /// trace 落盘目录，**相对于项目根**（`/data/` 已在 `.gitignore` 中）。
 ///
@@ -766,11 +807,7 @@ async fn run_agent(
                     persistence,
                     // Streams the turn into the shared status while it runs.
                     progress: Some(tracker.sink()),
-                    limits: TurnLimits {
-                        timeout: TURN_TIMEOUT,
-                        max_tool_calls: MAX_TOOL_CALLS,
-                        approval_timeout: APPROVAL_TIMEOUT,
-                    },
+                    limits: turn_limits(),
                 };
                 let result = session.run_turn(&prompt, context).await;
 
@@ -1291,5 +1328,91 @@ mod access_level_tests {
         assert!(AccessLevel::parse("sandboxed").is_none());
         assert!(AccessLevel::parse("Ask").is_none());
         assert!(AccessLevel::parse("").is_none());
+    }
+}
+
+#[cfg(test)]
+mod turn_limit_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Env vars are process-global; serialise the tests that touch them.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn locked<F: FnOnce()>(body: F) {
+        let guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        body();
+        drop(guard);
+    }
+
+    /// Regression: the limit that killed a real analysis must be gone.
+    ///
+    /// A UZI stage-1 run was cut off after 300s while it was still reporting
+    /// progress. The offending limit was a **total** turn budget; what exists
+    /// now is an idle limit (silence, not duration) plus a much larger ceiling.
+    #[test]
+    fn no_total_turn_budget_remains() {
+        let limits = turn_limits();
+        // The old total was 300s; the ceiling must be far above it, or the same
+        // failure returns for any skill that legitimately runs long.
+        assert!(
+            limits.max_duration >= Duration::from_secs(3_600),
+            "the ceiling must not be a wall-clock cap on real work: {:?}",
+            limits.max_duration
+        );
+        // And silence, not duration, is what marks a turn stuck.
+        assert!(
+            limits.idle_timeout >= Duration::from_secs(120),
+            "too eager to call a slow skill stuck: {:?}",
+            limits.idle_timeout
+        );
+        assert!(
+            limits.idle_timeout < limits.max_duration,
+            "the idle limit is the primary control and must fire first"
+        );
+    }
+
+    #[test]
+    fn the_limits_are_overridable_because_they_depend_on_the_skill_in_use() {
+        locked(|| {
+            // SAFETY: guarded by ENV_LOCK.
+            unsafe {
+                std::env::set_var("TAOLI_AGENT_TURN_IDLE_SECS", "42");
+                std::env::set_var("TAOLI_AGENT_TURN_MAX_SECS", "4242");
+            }
+            let limits = turn_limits();
+            assert_eq!(limits.idle_timeout, Duration::from_secs(42));
+            assert_eq!(limits.max_duration, Duration::from_secs(4_242));
+            unsafe {
+                std::env::remove_var("TAOLI_AGENT_TURN_IDLE_SECS");
+                std::env::remove_var("TAOLI_AGENT_TURN_MAX_SECS");
+            }
+        });
+    }
+
+    /// A bad value must fall back, not silently become zero — a zero limit would
+    /// end every turn instantly.
+    #[test]
+    fn an_unusable_limit_falls_back_instead_of_becoming_zero() {
+        for bad in ["0", "-1", "soon", ""] {
+            assert_eq!(
+                seconds_from_env("TAOLI_AGENT_TURN_IDLE_SECS_UNSET", 600),
+                Duration::from_secs(600),
+                "an absent variable must use the default"
+            );
+            locked(|| {
+                // SAFETY: guarded by ENV_LOCK.
+                unsafe { std::env::set_var("TAOLI_AGENT_TURN_IDLE_SECS_PROBE", bad) };
+                let resolved = seconds_from_env("TAOLI_AGENT_TURN_IDLE_SECS_PROBE", 600);
+                unsafe { std::env::remove_var("TAOLI_AGENT_TURN_IDLE_SECS_PROBE") };
+                assert_eq!(
+                    resolved,
+                    Duration::from_secs(600),
+                    "`{bad}` must fall back rather than disable the limit"
+                );
+            });
+        }
     }
 }

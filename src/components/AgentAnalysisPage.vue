@@ -25,6 +25,7 @@ import {
   agentSetAccessLevel,
 } from '../commands'
 import { AGENT_DECISION_LABEL } from '../commands'
+import StockAnalysisReport from './StockAnalysisReport.vue'
 import type {
   AgentAccessLevel,
   AgentDecision,
@@ -45,6 +46,7 @@ const ready = ref<AgentReady | null>(null)
 const status = ref<AgentStatus | null>(null)
 const prompt = ref('')
 const busy = ref(false)
+const viewMode = ref<'report' | 'session'>('report')
 /** 展开的工具调用卡（key = `${turn.seq}:${call.call_id}`）。 */
 const expanded = ref<Set<string>>(new Set())
 const thread = ref<HTMLElement | null>(null)
@@ -384,6 +386,26 @@ onUnmounted(stopPolling)
           <i class="codex-dot" />{{ phaseInfo.label }}
         </span>
       </div>
+      <div class="analysis-view-tabs" role="tablist" aria-label="个股分析视图">
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="viewMode === 'report'"
+          :class="{ active: viewMode === 'report' }"
+          @click="viewMode = 'report'"
+        >
+          分析结果
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="viewMode === 'session'"
+          :class="{ active: viewMode === 'session' }"
+          @click="viewMode = 'session'"
+        >
+          Codex 会话
+        </button>
+      </div>
       <div class="codex-toolbar-meta">
         <!-- 档位与 Codex 桌面版的权限下拉同构：会话运行中禁用，因为沙箱与审批
              设置在 thread/start 时确定，无法追加到已在运行的进程上。 -->
@@ -433,8 +455,14 @@ onUnmounted(stopPolling)
       </div>
     </header>
 
-    <!-- 未就绪：给出可操作原因与逐项检查，不提供启动入口 -->
-    <section v-if="ready && !ready.ready" class="codex-blocked">
+    <StockAnalysisReport
+      v-if="viewMode === 'report'"
+      @open-session="viewMode = 'session'"
+    />
+
+    <template v-else>
+      <!-- 未就绪：给出可操作原因与逐项检查，不提供启动入口 -->
+      <section v-if="ready && !ready.ready" class="codex-blocked">
       <div class="codex-blocked-title"><i class="codex-dot" style="color: var(--cx-red)" />无法启动分析</div>
       <p class="codex-blocked-reason">{{ ready.reason }}</p>
       <div class="codex-checks">
@@ -456,11 +484,11 @@ onUnmounted(stopPolling)
           <code>{{ ready.write_roots.length ? ready.write_roots.join(' , ') : '仅 codex home 与 trace' }}</code>
         </div>
       </div>
-    </section>
+      </section>
 
-    <template v-else>
-      <!-- 会话流 -->
-      <div ref="thread" class="codex-thread">
+      <template v-else>
+        <!-- 会话流 -->
+        <div ref="thread" class="codex-thread">
         <div v-if="!turns.length" class="codex-empty">
           <div>尚未发起分析。</div>
           <div>说明要分析哪只个股即可；能力来自可用的 skill 与运行时工具。</div>
@@ -598,64 +626,65 @@ onUnmounted(stopPolling)
             已拒绝未实现的请求：{{ turn.refused_requests.join('、') }}
           </div>
         </article>
-      </div>
+        </div>
 
-      <!-- 会话级错误（如运行时退出） -->
-      <div v-if="status?.error" class="codex-turn-error">
-        <div><b>会话错误</b><pre>{{ status.error }}</pre></div>
-      </div>
+        <!-- 会话级错误（如运行时退出） -->
+        <div v-if="status?.error" class="codex-turn-error">
+          <div><b>会话错误</b><pre>{{ status.error }}</pre></div>
+        </div>
 
-      <!-- 底部输入区：codex composer。用 div 而非 footer：style.css 有一条裸
-           `footer` 元素选择器（给 AppFooter 用），会把 display 改成 flex，
-           使这里的输入框与提示行并排而非堆叠。 -->
-      <div class="codex-composer">
-        <div class="codex-composer-box">
-          <textarea
-            ref="composer"
-            v-model="prompt"
-            rows="3"
-            :disabled="running"
-            placeholder="例如：分析 600519.SH，先说明用哪个 skill，再给结论与依据"
-            @keydown="onComposerKeydown"
-            @input="resizeComposer"
-          />
-          <button
-            v-if="!sessionAlive"
-            class="codex-btn primary"
-            type="button"
-            :disabled="busy"
-            @click="doStart"
-          >
-            启动
-          </button>
-          <template v-else>
+        <!-- 底部输入区：codex composer。用 div 而非 footer：style.css 有一条裸
+             `footer` 元素选择器（给 AppFooter 用），会把 display 改成 flex，
+             使这里的输入框与提示行并排而非堆叠。 -->
+        <div class="codex-composer">
+          <div class="codex-composer-box">
+            <textarea
+              ref="composer"
+              v-model="prompt"
+              rows="3"
+              :disabled="running"
+              placeholder="例如：分析 600519.SH，先说明用哪个 skill，再给结论与依据"
+              @keydown="onComposerKeydown"
+              @input="resizeComposer"
+            />
             <button
-              class="codex-btn send"
+              v-if="!sessionAlive"
+              class="codex-btn primary"
               type="button"
-              :disabled="busy || running || !prompt.trim()"
-              title="发送"
-              @click="doAsk"
+              :disabled="busy"
+              @click="doStart"
             >
-              ↑
+              启动
             </button>
-            <button class="codex-btn ghost" type="button" :disabled="busy" @click="doStop">
-              停止
-            </button>
-          </template>
+            <template v-else>
+              <button
+                class="codex-btn send"
+                type="button"
+                :disabled="busy || running || !prompt.trim()"
+                title="发送"
+                @click="doAsk"
+              >
+                ↑
+              </button>
+              <button class="codex-btn ghost" type="button" :disabled="busy" @click="doStop">
+                停止
+              </button>
+            </template>
+          </div>
+          <div class="codex-composer-hint">
+            Enter 发送 · Shift+Enter 换行 · 宿主不注册工具 · 副作用动作需审批
+          </div>
+          <!-- 档位会绕过审批或去掉沙箱时必须说清楚：这不是可以忽略的细节。 -->
+          <div v-if="approvalBypassed" class="codex-composer-hint agent-note-warn">
+            当前档位「{{ accessInfo?.label }}」：{{ accessInfo?.description }}。
+            审批请求<strong>不会</strong>出现在上方卡片里——
+            {{ accessLevel === 'auto_approve' ? '由运行时自己的审查子代理判定' : '该档位不请求批准' }}。
+            <template v-if="accessInfo && !accessInfo.confined">
+              该档位<strong>不施加沙箱</strong>：agent 可不受限制地读写文件与访问网络。
+            </template>
+          </div>
         </div>
-        <div class="codex-composer-hint">
-          Enter 发送 · Shift+Enter 换行 · 宿主不注册工具 · 副作用动作需审批
-        </div>
-        <!-- 档位会绕过审批或去掉沙箱时必须说清楚：这不是可以忽略的细节。 -->
-        <div v-if="approvalBypassed" class="codex-composer-hint agent-note-warn">
-          当前档位「{{ accessInfo?.label }}」：{{ accessInfo?.description }}。
-          审批请求<strong>不会</strong>出现在上方卡片里——
-          {{ accessLevel === 'auto_approve' ? '由运行时自己的审查子代理判定' : '该档位不请求批准' }}。
-          <template v-if="accessInfo && !accessInfo.confined">
-            该档位<strong>不施加沙箱</strong>：agent 可不受限制地读写文件与访问网络。
-          </template>
-        </div>
-      </div>
+      </template>
     </template>
   </div>
 </template>

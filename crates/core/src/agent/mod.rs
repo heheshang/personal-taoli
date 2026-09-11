@@ -73,8 +73,17 @@ pub enum AgentError {
     Timeout { method: String, timeout: Duration },
     /// The child exited (or its pipes closed) before the operation finished.
     Closed { detail: String },
-    /// The turn did not finish within its deadline.
-    TurnTimeout { turn_id: String, timeout: Duration },
+    /// The turn stopped making progress, or ran past its ceiling.
+    ///
+    /// The two cases are reported apart because they mean different things: idle
+    /// means the runtime went quiet, which points at a stuck process or a hung
+    /// call; `MaxDuration` means it was still working but the host's budget ran
+    /// out, which points at the budget.
+    TurnTimeout {
+        turn_id: String,
+        reason: TurnTimeoutReason,
+        timeout: Duration,
+    },
     /// The session trace could not be opened.
     TraceFile {
         path: std::path::PathBuf,
@@ -123,11 +132,22 @@ impl std::fmt::Display for AgentError {
                 timeout.as_secs()
             ),
             Self::Closed { detail } => write!(formatter, "agent connection closed: {detail}"),
-            Self::TurnTimeout { turn_id, timeout } => write!(
-                formatter,
-                "turn {turn_id} did not finish within {}s",
-                timeout.as_secs()
-            ),
+            Self::TurnTimeout {
+                turn_id,
+                reason,
+                timeout,
+            } => match reason {
+                TurnTimeoutReason::Idle => write!(
+                    formatter,
+                    "turn {turn_id} produced no progress for {}s and was interrupted",
+                    timeout.as_secs()
+                ),
+                TurnTimeoutReason::MaxDuration => write!(
+                    formatter,
+                    "turn {turn_id} exceeded the {}s ceiling and was interrupted",
+                    timeout.as_secs()
+                ),
+            },
             Self::TraceFile { path, source } => write!(
                 formatter,
                 "cannot open session trace {}: {source}",
@@ -161,6 +181,15 @@ impl std::error::Error for AgentError {
     }
 }
 
+/// Which limit ended a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnTimeoutReason {
+    /// No event arrived for `idle_timeout`.
+    Idle,
+    /// The turn ran for `max_duration`.
+    MaxDuration,
+}
+
 /// Limits the host places on one turn.
 ///
 /// All three are host policy: a runaway model must not be able to spend
@@ -168,9 +197,21 @@ impl std::error::Error for AgentError {
 /// the model says.
 #[derive(Debug, Clone)]
 pub struct TurnLimits {
-    /// Wall-clock budget for the whole turn, including tool execution and any
-    /// time spent waiting for the owner.
-    pub timeout: Duration,
+    /// How long the turn may go **without any event** before it is treated as
+    /// stuck.
+    ///
+    /// This is the limit that matters for real work. A wall-clock budget is the
+    /// wrong instrument for a deep-analysis skill: measured on a real run, the
+    /// UZI skill was still streaming progress past five minutes (network
+    /// pre-flight, three fetch waves, rule scoring), and a total cap killed it
+    /// mid-flight while it was working perfectly. Activity is the signal —
+    /// a turn that keeps reporting is not stuck, however long it takes.
+    pub idle_timeout: Duration,
+    /// Hard ceiling on one turn, for a loop that never stops reporting.
+    ///
+    /// A backstop rather than the primary control: generous, because the cost of
+    /// cutting off real work exceeds the cost of waiting.
+    pub max_duration: Duration,
     /// Maximum tool calls the host will service in one turn.
     pub max_tool_calls: usize,
     /// How long an approval request may wait for a verdict.
@@ -182,10 +223,17 @@ pub struct TurnLimits {
 impl Default for TurnLimits {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(300),
+            // Ten minutes of silence. Long, deliberately: a false positive
+            // discards work that may have cost many minutes and many tokens,
+            // while a true positive only delays a diagnosis the owner can also
+            // make by pressing Stop.
+            idle_timeout: Duration::from_secs(600),
+            // Two hours: long enough for any analysis that is still making
+            // progress, short enough to stop a runaway loop eventually.
+            max_duration: Duration::from_secs(7_200),
             max_tool_calls: 32,
             // Generous relative to the turn budget: the owner is a person.
-            approval_timeout: Duration::from_secs(120),
+            approval_timeout: Duration::from_secs(300),
         }
     }
 }
@@ -474,7 +522,6 @@ impl AgentSession {
             });
         }
 
-        let deadline = tokio::time::Instant::now() + limits.timeout;
         let result = self
             .drive_turn(
                 &mut outcome,
@@ -486,7 +533,6 @@ impl AgentSession {
                     .as_ref()
                     .map(|sink| sink.as_ref() as &(dyn Fn(TurnProgress) + Send + Sync)),
                 &limits,
-                deadline,
             )
             .await;
 
@@ -525,7 +571,6 @@ impl AgentSession {
         persistence: approval::Persistence,
         progress: Option<&(dyn Fn(TurnProgress) + Send + Sync)>,
         limits: &TurnLimits,
-        deadline: tokio::time::Instant,
     ) -> Result<(), AgentError> {
         // Announced here rather than by the caller so a sink cannot observe
         // item events for a turn whose start it never saw.
@@ -536,13 +581,35 @@ impl AgentSession {
             },
         );
         let turn_id = outcome.turn_id.clone();
+        let started = tokio::time::Instant::now();
+        // Reset whenever the turn shows signs of life. A turn that keeps
+        // reporting is not stuck, however long it runs; see `TurnLimits`.
+        let mut last_activity = started;
+
         loop {
-            let message = match tokio::time::timeout_at(deadline, self.server.next_message()).await
+            let idle_deadline = last_activity + limits.idle_timeout;
+            let ceiling = started + limits.max_duration;
+            let message = match tokio::time::timeout_at(
+                idle_deadline.min(ceiling),
+                self.server.next_message(),
+            )
+            .await
             {
                 Err(_elapsed) => {
+                    let (reason, timeout) = if idle_deadline <= ceiling {
+                        (TurnTimeoutReason::Idle, limits.idle_timeout)
+                    } else {
+                        (TurnTimeoutReason::MaxDuration, limits.max_duration)
+                    };
+                    // Stop the runtime before returning. Measured: a thread left
+                    // mid-turn silently ignores the next `turn/start` and
+                    // re-reports the running turn, so the following turn would
+                    // watch the wrong turn's events and end on its completion.
+                    self.interrupt_turn(&turn_id).await;
                     return Err(AgentError::TurnTimeout {
                         turn_id,
-                        timeout: limits.timeout,
+                        reason,
+                        timeout,
                     });
                 }
                 Ok(None) => {
@@ -594,7 +661,7 @@ impl AgentSession {
                             &params,
                             persistence,
                             limits,
-                            deadline,
+                            started + limits.max_duration,
                         )
                         .await;
                         if let Some(trace) = &self.trace {
@@ -669,6 +736,43 @@ impl AgentSession {
                     }
                 }
             }
+
+            // Time we spent handling — dispatching a tool, waiting for a verdict
+            // — is not idleness. Without this, a slow tool would push the idle
+            // deadline into the past and the very next pass would call the turn
+            // stuck, immediately after it had just finished working.
+            last_activity = tokio::time::Instant::now();
+        }
+    }
+
+    /// Asks the runtime to stop the running turn.
+    ///
+    /// Needed before abandoning a turn: measured, a thread left mid-turn
+    /// silently ignores the next `turn/start` and re-reports the running turn,
+    /// so a following turn would watch the wrong turn's events.
+    ///
+    /// Best-effort by design — the caller is already on an error path, and a
+    /// failure here must not replace the reason the turn was abandoned. The
+    /// thread id is read from this session because the caller may not have it.
+    async fn interrupt_turn(&mut self, turn_id: &str) {
+        let Some(thread_id) = self.thread_id.clone() else {
+            return;
+        };
+        match self
+            .server
+            .request(
+                "turn/interrupt",
+                serde_json::json!({ "threadId": thread_id, "turnId": turn_id }),
+            )
+            .await
+        {
+            Ok(_) => tracing::debug!(target: "agent", turn_id, "interrupted the running turn"),
+            Err(error) => tracing::warn!(
+                target: "agent",
+                turn_id,
+                %error,
+                "could not interrupt the running turn; the runtime may still be working"
+            ),
         }
     }
 
@@ -1056,6 +1160,32 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(EchoTool));
         Arc::new(registry)
+    }
+
+    /// Approves every request once.
+    ///
+    /// The timeout tests need the command to actually run: with a refusal the
+    /// turn ends immediately and there is no silence to measure.
+    struct AllowOnce;
+
+    #[async_trait::async_trait]
+    impl ApprovalDecider for AllowOnce {
+        async fn decide(&self, _request: &ApprovalRequest) -> Decision {
+            Decision::AllowOnce
+        }
+    }
+
+    /// A context that lets commands run, for tests about time rather than about
+    /// the gate.
+    fn allowing_context(tools: Arc<ToolRegistry>, limits: TurnLimits) -> TurnContext {
+        TurnContext {
+            tools,
+            approvals: Arc::new(AllowOnce),
+            audit: None,
+            persistence: approval::Persistence::Blocked,
+            progress: None,
+            limits,
+        }
     }
 
     /// Options that make every side-effecting action reach the owner.
@@ -1937,6 +2067,212 @@ mod tests {
             .expect("an irrelevant skill root must not prevent the session");
         // Whatever the runtime decides about the root, the session is usable.
         assert!(session.thread_id().is_some());
+
+        session.shutdown().await.expect("shutdown must succeed");
+    }
+
+    /// The fixed bug, as a controlled A/B on one identical command.
+    ///
+    /// A real analysis was cut off at 300s while it was still reporting progress.
+    /// The instrument was wrong: a **total** budget measures duration, but what
+    /// marks a turn stuck is *silence*. The same chatty command is run twice,
+    /// changing only which limit binds:
+    ///
+    /// * bounded by a total budget (the old shape) → killed mid-work;
+    /// * bounded by idleness (the new shape, with a ceiling far away) → finishes.
+    ///
+    /// The command emits a line every second for ~10s, so it never goes quiet for
+    /// the 3s idle limit while far exceeding the 4s total one.
+    #[tokio::test]
+    async fn the_same_working_turn_survives_idleness_but_not_a_total_budget() {
+        let Some(program) = codex_program() else {
+            eprintln!("skipping: codex is not installed on PATH");
+            return;
+        };
+        let command = "Run exactly this shell command and nothing else:                        for i in 1 2 3 4 5 6 7 8 9 10; do echo tick-$i; sleep 1; done";
+
+        // (a) The old instrument: a total budget shorter than the work.
+        {
+            let tools = Arc::new(ToolRegistry::new());
+            let mut session = AgentSession::connect(fast_config(program.clone()))
+                .await
+                .expect("handshake");
+            session
+                .start_thread(&restricted_options(None), Arc::clone(&tools))
+                .await
+                .expect("thread");
+            let error = session
+                .run_turn(
+                    command,
+                    allowing_context(
+                        tools,
+                        TurnLimits {
+                            idle_timeout: Duration::from_secs(600),
+                            max_duration: Duration::from_secs(4),
+                            approval_timeout: Duration::from_secs(30),
+                            ..TurnLimits::default()
+                        },
+                    ),
+                )
+                .await
+                .expect_err("a total budget shorter than the work must cut the turn off");
+            assert!(
+                matches!(
+                    error,
+                    AgentError::TurnTimeout {
+                        reason: TurnTimeoutReason::MaxDuration,
+                        ..
+                    }
+                ),
+                "expected the ceiling to fire, got {error:?}"
+            );
+            let _ = session.shutdown().await;
+        }
+
+        // (b) The new instrument: idleness, with the ceiling far away.
+        {
+            let tools = Arc::new(ToolRegistry::new());
+            let mut session = AgentSession::connect(fast_config(program))
+                .await
+                .expect("handshake");
+            session
+                .start_thread(&restricted_options(None), Arc::clone(&tools))
+                .await
+                .expect("thread");
+            let started = std::time::Instant::now();
+            let outcome = session
+                .run_turn(
+                    command,
+                    allowing_context(
+                        tools,
+                        TurnLimits {
+                            idle_timeout: Duration::from_secs(3),
+                            max_duration: Duration::from_secs(600),
+                            approval_timeout: Duration::from_secs(30),
+                            ..TurnLimits::default()
+                        },
+                    ),
+                )
+                .await
+                .expect("a turn that keeps reporting must not be called stuck");
+            let elapsed = started.elapsed();
+            assert!(outcome.succeeded(), "status was {:?}", outcome.status);
+            assert!(
+                elapsed > Duration::from_secs(5),
+                "the turn must have outlived the idle limit to prove the point: {elapsed:?}"
+            );
+            let _ = session.shutdown().await;
+        }
+    }
+
+    /// The other half: a turn that goes silent *is* stopped, and the reason says
+    /// which limit fired.
+    #[tokio::test]
+    async fn a_silent_turn_is_interrupted_and_says_why() {
+        let Some(program) = codex_program() else {
+            eprintln!("skipping: codex is not installed on PATH");
+            return;
+        };
+        let tools = Arc::new(ToolRegistry::new());
+        let mut session = AgentSession::connect(fast_config(program))
+            .await
+            .expect("handshake must succeed");
+        session
+            .start_thread(&restricted_options(None), Arc::clone(&tools))
+            .await
+            .expect("thread must start");
+
+        // `sleep` with no output: the runtime reports nothing while it runs.
+        let error = session
+            .run_turn(
+                "Run exactly this shell command: sleep 60. Then say done.",
+                allowing_context(
+                    Arc::clone(&tools),
+                    TurnLimits {
+                        idle_timeout: Duration::from_secs(3),
+                        max_duration: Duration::from_secs(300),
+                        approval_timeout: Duration::from_secs(30),
+                        ..TurnLimits::default()
+                    },
+                ),
+            )
+            .await
+            .expect_err("a silent turn must be stopped");
+
+        match &error {
+            AgentError::TurnTimeout { reason, .. } => {
+                assert_eq!(*reason, TurnTimeoutReason::Idle);
+            }
+            other => panic!("expected an idle timeout, got {other:?}"),
+        }
+        // The message must say it was interrupted, not merely abandoned.
+        assert!(error.to_string().contains("interrupted"), "{error}");
+
+        // And the thread must be usable again: measured, a thread left mid-turn
+        // silently ignores the next `turn/start` and re-reports the running
+        // turn.
+        let next = session
+            .run_turn(
+                "Reply with the single word: ok",
+                allowing_context(
+                    tools,
+                    TurnLimits {
+                        idle_timeout: Duration::from_secs(30),
+                        max_duration: Duration::from_secs(120),
+                        ..TurnLimits::default()
+                    },
+                ),
+            )
+            .await
+            .expect("the thread must accept a new turn after the interrupt");
+        assert_ne!(next.turn_id, "unset", "a fresh turn must have been started");
+
+        session.shutdown().await.expect("shutdown must succeed");
+    }
+
+    /// The ceiling fires even while the turn is still reporting.
+    ///
+    /// A short ceiling and a long idle limit isolate the two: only the ceiling
+    /// can end this turn.
+    #[tokio::test]
+    async fn the_ceiling_ends_a_turn_that_is_still_working() {
+        let Some(program) = codex_program() else {
+            eprintln!("skipping: codex is not installed on PATH");
+            return;
+        };
+        let tools = Arc::new(ToolRegistry::new());
+        let mut session = AgentSession::connect(fast_config(program))
+            .await
+            .expect("handshake must succeed");
+        session
+            .start_thread(&restricted_options(None), Arc::clone(&tools))
+            .await
+            .expect("thread must start");
+
+        let error = session
+            .run_turn(
+                "Run exactly this shell command: for i in $(seq 1 40); do echo tick-$i; sleep 1; done. Then say done.",
+                allowing_context(
+                    tools,
+                    TurnLimits {
+                        // Long idle: the turn is chatty, so idleness never fires.
+                        idle_timeout: Duration::from_secs(60),
+                        // Short ceiling: this is the only limit that can end it.
+                        max_duration: Duration::from_secs(6),
+                        approval_timeout: Duration::from_secs(30),
+                        ..TurnLimits::default()
+                    },
+                ),
+            )
+            .await
+            .expect_err("the ceiling must end the turn");
+
+        match &error {
+            AgentError::TurnTimeout { reason, .. } => {
+                assert_eq!(*reason, TurnTimeoutReason::MaxDuration, "{error}");
+            }
+            other => panic!("expected a ceiling timeout, got {other:?}"),
+        }
 
         session.shutdown().await.expect("shutdown must succeed");
     }
