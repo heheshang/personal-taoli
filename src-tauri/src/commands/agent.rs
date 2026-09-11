@@ -796,6 +796,7 @@ async fn run_agent(
                         tool_calls: Vec::new(),
                         approvals: Vec::new(),
                         refused_requests: Vec::new(),
+                        items: Vec::new(),
                         messages: Vec::new(),
                         report: None,
                         report_error: None,
@@ -846,21 +847,24 @@ async fn run_agent(
                         ),
                     };
 
-                // 落回本轮记录。seq 由本任务独占递增，因此按 seq 定位比按下标
-                // 更稳。
+                // 取走实时视图里的步骤**放进记录**：`tool_calls` 只含宿主工具，
+                // 运行时自己执行的命令不在其中，若不留存，轮次一结束这些步骤连同
+                // 输出就消失了（实测：完成后对话里一行步骤都不剩）。
+                // `take()` 同时完成了「清空实时视图」，无需再显式置 None。
+                let steps = guard.live.take().map(|live| live.items).unwrap_or_default();
+
+                // 落回本轮记录。seq 由本任务独占递增，因此按 seq 定位比按下标更稳。
                 if let Some(turn) = guard.turns.iter_mut().find(|turn| turn.seq == seq) {
                     turn.tool_calls = tool_calls;
                     turn.approvals = approvals;
                     turn.refused_requests = refused;
+                    turn.items = steps;
                     turn.messages = messages;
                     turn.report = report;
                     turn.report_error = report_error;
                     turn.error = error;
                     turn.finished_at_ms = Some(now_ms());
                 }
-                // The record is now authoritative; keeping the live copy would
-                // render the same work twice.
-                guard.live = None;
                 guard.phase = "ready";
             }
             AgentCommand::Stop { done } => {

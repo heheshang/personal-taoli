@@ -271,6 +271,13 @@ pub struct AgentTurn {
     pub tool_calls: Vec<AgentToolCall>,
     pub approvals: Vec<AgentApprovalDecision>,
     pub refused_requests: Vec<String>,
+    /// 本轮**执行过的步骤**：命令、工具调用、文件变更、推理，均含其输出。
+    ///
+    /// 与 `tool_calls` 的区别是关键的：`tool_calls` 只记录**宿主工具**的分发
+    /// （`item/tool/call`），而运行时自己执行的命令从不进入它。此前步骤只存在于
+    /// 实时视图里，轮次一结束就被清空——实测完成后对话里**一行步骤都不剩**，
+    /// 执行过的命令与输出全部消失。故在轮次结束时把实时步骤移入记录。
+    pub items: Vec<AgentLiveItem>,
     /// 本轮全部 agent 消息，按时间顺序。
     ///
     /// 不是只留最后一条：分析类 skill 会边跑边汇报（stage 进度等），最后才给

@@ -26,13 +26,12 @@ import {
 } from '../commands'
 import MarkdownBlock from './MarkdownBlock.vue'
 import ReportView from './ReportView.vue'
-import StepIcon from './StepIcon.vue'
+import StepRow from './StepRow.vue'
 import { AGENT_DECISION_LABEL } from '../commands'
 import type {
   AgentAccessLevel,
   AgentDecision,
   AgentLive,
-  AgentLiveItem,
   AgentReady,
   AgentStatus,
   AgentTurn,
@@ -48,21 +47,24 @@ const ready = ref<AgentReady | null>(null)
 const status = ref<AgentStatus | null>(null)
 const prompt = ref('')
 const busy = ref(false)
-/** 展开的工具调用卡（key = `${turn.seq}:${call.call_id}`）。 */
-const expanded = ref<Set<string>>(new Set())
 const thread = ref<HTMLElement | null>(null)
 const composer = ref<HTMLTextAreaElement | null>(null)
 const levels = ref<AgentAccessLevel[]>([])
-/** 展开的实时步骤（运行中输出会变，默认折叠只显示一行预览）。 */
-const expandedLive = ref<Set<string>>(new Set())
-function toggleLiveItem(itemId: string) {
-  const next = new Set(expandedLive.value)
+/**
+ * 已展开的步骤（实时与已完成共用）。
+ *
+ * 按 `item_id` 键控，而 id 在一条会话里唯一，故一张表即可服务两个来源；
+ * 默认折叠，因为一轮可以产出兆字节输出，而对话是用来读的。
+ */
+const expandedSteps = ref<Set<string>>(new Set())
+function toggleStep(itemId: string) {
+  const next = new Set(expandedSteps.value)
   if (next.has(itemId)) {
     next.delete(itemId)
   } else {
     next.add(itemId)
   }
-  expandedLive.value = next
+  expandedSteps.value = next
 }
 
 /**
@@ -89,29 +91,6 @@ const approvalBypassed = computed(
 /** 进行中轮次的实时视图。 */
 const live = computed<AgentLive | null>(() => status.value?.live ?? null)
 
-/** 实时步骤的中文标签与配色。 */
-const ITEM_LABEL: Record<string, string> = {
-  reasoning: '推理',
-  command: '命令',
-  file_change: '文件变更',
-  tool_call: '工具',
-  message: '回复',
-  other: '步骤',
-}
-function itemLabel(kind: string): string {
-  return ITEM_LABEL[kind] ?? kind
-}
-
-const ITEM_STATE: Record<string, { label: string; tone: string }> = {
-  running: { label: '进行中', tone: 'warn' },
-  completed: { label: '完成', tone: 'ok' },
-  failed: { label: '失败', tone: 'bad' },
-  declined: { label: '已拒绝', tone: '' },
-}
-function itemState(state: string): { label: string; tone: string } {
-  return ITEM_STATE[state] ?? { label: state, tone: '' }
-}
-
 /** 实时阶段的中文说明。 */
 const STAGE_LABEL: Record<string, string> = {
   thinking: '思考中',
@@ -133,12 +112,6 @@ const liveTokens = computed(() => {
     ? `${tokens.total_tokens.toLocaleString()} / ${window.toLocaleString()} tokens`
     : `${tokens.total_tokens.toLocaleString()} tokens`
 })
-
-/** 单步的输出预览（首行），streaming 时足够看出在跑什么。 */
-function livePreview(item: AgentLiveItem): string {
-  const first = (item.output.split('\n').find(line => line.trim()) ?? '').trim()
-  return first.length > 96 ? `${first.slice(0, 96)}…` : first
-}
 
 const POLL_MS = 1000
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -192,31 +165,6 @@ const openTurnSeq = computed(() => {
   const last = turns.value.at(-1)
   return last && isTurnOpen(last) ? last.seq : null
 })
-
-function toolKey(turn: AgentTurn, callId: string): string {
-  return `${turn.seq}:${callId}`
-}
-
-function toggleTool(turn: AgentTurn, callId: string) {
-  const key = toolKey(turn, callId)
-  const next = new Set(expanded.value)
-  if (next.has(key)) {
-    next.delete(key)
-  } else {
-    next.add(key)
-  }
-  expanded.value = next
-}
-
-function isExpanded(turn: AgentTurn, callId: string): boolean {
-  return expanded.value.has(toolKey(turn, callId))
-}
-
-/** 工具输出对齐 codex：默认折叠，只把首行作为预览露出。 */
-function preview(output: string): string {
-  const first = output.split('\n')[0] ?? ''
-  return first.length > 96 ? `${first.slice(0, 96)}…` : first
-}
 
 function stopPolling() {
   if (pollTimer !== null) {
@@ -526,42 +474,14 @@ onUnmounted(stopPolling)
           <!-- 推理摘要流式文本 -->
           <div v-if="live.reasoning" class="codex-live-reasoning">{{ live.reasoning }}</div>
 
-          <!-- 步骤流：命令 / 工具 / 文件变更，含运行状态与增量输出。
-               图标承担「这是什么步骤」，颜色承担「当前什么状态」，
-               于是这一行不必再挤一个文字标签。 -->
-          <div v-for="item in live.items" :key="item.item_id" class="codex-tool">
-            <button
-              class="codex-tool-head"
-              type="button"
-              :aria-label="`${itemLabel(item.kind)}：${item.title}（${itemState(item.state).label}）`"
-              @click="toggleLiveItem(item.item_id)"
-            >
-              <svg
-                class="codex-caret"
-                :class="{ open: expandedLive.has(item.item_id) }"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M9 5l7 7-7 7" />
-              </svg>
-              <span class="codex-step-icon" :class="itemState(item.state).tone">
-                <StepIcon :kind="item.kind" :title="item.title" :label="itemLabel(item.kind)" />
-              </span>
-              <span class="codex-tool-name">{{ item.title }}</span>
-              <span class="codex-tool-status">
-                <template v-if="item.state === 'running'">进行中…</template>
-                <template v-else-if="item.exit_code !== null">退出码 {{ item.exit_code }}</template>
-                <template v-else>{{ itemState(item.state).label }}</template>
-                <template v-if="item.duration_ms !== null"> · {{ item.duration_ms }} ms</template>
-                <template v-else-if="livePreview(item)"> · {{ livePreview(item) }}</template>
-              </span>
-            </button>
-            <pre
-              v-if="expandedLive.has(item.item_id) && item.output"
-              class="codex-tool-body"
-            >{{ item.output }}</pre>
-          </div>
+          <!-- 步骤流：命令 / 工具 / 文件变更，含运行状态与增量输出。 -->
+          <StepRow
+            v-for="item in live.items"
+            :key="item.item_id"
+            :item="item"
+            :expanded="expandedSteps.has(item.item_id)"
+            @toggle="toggleStep(item.item_id)"
+          />
 
           <!-- 正文字流式文本：同样按 Markdown 渲染，否则末尾会看到源码 -->
           <MarkdownBlock
@@ -575,33 +495,15 @@ onUnmounted(stopPolling)
           <!-- 用户消息 -->
           <div class="codex-user">{{ turn.prompt }}</div>
 
-          <!-- 工具执行块：宿主工具调用（当前宿主不注册工具，机制保留）。 -->
-          <div v-for="call in turn.tool_calls" :key="call.call_id" class="codex-tool">
-            <button
-              class="codex-tool-head"
-              type="button"
-              :aria-label="`工具调用：${call.tool}（${call.success ? '成功' : '失败'}）`"
-              @click="toggleTool(turn, call.call_id)"
-            >
-              <svg
-                class="codex-caret"
-                :class="{ open: isExpanded(turn, call.call_id) }"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M9 5l7 7-7 7" />
-              </svg>
-              <span class="codex-step-icon" :class="call.success ? 'ok' : 'bad'">
-                <StepIcon kind="tool_call" :title="call.tool" label="工具调用" />
-              </span>
-              <span class="codex-tool-name">{{ call.tool }}</span>
-              <span class="codex-tool-status">
-                {{ call.success ? preview(call.output) : '失败' }}
-              </span>
-            </button>
-            <pre v-if="isExpanded(turn, call.call_id)" class="codex-tool-body">{{ call.output }}</pre>
-          </div>
+          <!-- 本轮执行过的步骤，含输出。这是对话里能看到「跑过什么」的主来源：
+               它来自运行时上报的 item，命令、工具、文件变更都在其中。 -->
+          <StepRow
+            v-for="item in turn.items"
+            :key="item.item_id"
+            :item="item"
+            :expanded="expandedSteps.has(item.item_id)"
+            @toggle="toggleStep(item.item_id)"
+          />
 
           <!-- 审批记录（已裁决）。拒绝用中性色、「无条件放行」的三档用成功色，
                让长期授权比一次性授权更显眼。 -->

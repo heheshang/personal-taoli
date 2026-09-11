@@ -408,6 +408,14 @@ export interface AgentTurn {
   tool_calls: AgentToolCall[]
   approvals: AgentApprovalDecision[]
   refused_requests: string[]
+  /**
+   * 本轮**执行过的步骤**（命令 / 工具 / 文件变更 / 推理），含各自输出。
+   *
+   * 与 `tool_calls` 的关键区别：后者只记录**宿主工具**的分发，运行时自己执行的命令
+   * 不在其中。步骤此前只存在于实时视图，轮次一结束就被清空，对话里便一行不剩；
+   * 现在在轮次结束时移入本记录，故步骤与输出在完成后仍然可见。
+   */
+  items: AgentLiveItem[]
   /** 本轮全部 agent 消息，按时间顺序；最后一条是其结论。 */
   messages: string[]
   /**
