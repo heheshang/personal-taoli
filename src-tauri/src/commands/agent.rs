@@ -36,8 +36,8 @@ use crate::error::{ApiResponse, ErrorCode};
 
 use super::{
     dto::{
-        AgentApprovalDecision, AgentApprovalRequest, AgentReady, AgentStatus, AgentToolCall,
-        AgentTurn,
+        AgentApprovalDecision, AgentApprovalRequest, AgentReady, AgentSkill, AgentStatus,
+        AgentToolCall, AgentTurn,
     },
     support::{api_fail, api_map, load_config},
 };
@@ -60,6 +60,75 @@ const MAX_TOOL_CALLS: usize = 16;
 /// `sandbox::SandboxPolicy` 直接拒绝（这是刻意的——按某个进程的 cwd 去解释
 /// 相对路径，会授权一个调用方从未指名的目录）。
 const TRACE_DIR_REL: &str = "data/agent-traces";
+
+/// 额外 skill 目录，取自环境变量（`:` 分隔）。
+///
+/// 形如 `/path/to/UZI-Skill`。之所以用环境变量而非硬编码：skill 仓库不在本项目
+/// 内，其位置因机器而异，硬编码会在别人机器上静默失效——而「skill 没被加载」这
+/// 件事本身是无声的，模型只是慢一点、笨一点，不会报错。
+///
+/// 只接受**绝对路径且实际存在**的目录：运行时拒绝相对根，不存在的根则会让注册
+/// 变成一次看起来成功、实际什么都没加载的调用。
+const SKILL_ROOTS_ENV: &str = "TAOLI_AGENT_SKILL_ROOTS";
+const PATH_SEPARATOR: char = ':';
+
+/// 子进程的额外可写根，取自环境变量（`:` 分隔）。
+///
+/// 与 `TAOLI_AGENT_SKILL_ROOTS` **正交且刻意分开**：可见性（能读到 skill）与写权限
+/// 是两件事，绑在同一个变量上会让「我只是想让它读到这个 skill」顺手变成「我授权
+/// 它写这个目录」。
+///
+/// 为什么需要它：skill 的指令通常是「跑某个脚本」，而脚本会写自己的仓库——本机的
+/// UZI-Skill 要写 `.cache/` 与 `reports/`。缺少这项授权时，模型会读完 SKILL.md、
+/// 发起命令、拿到批准，然后在**写入时**被沙箱拒绝，表现为一个难以归因的失败。
+const WRITE_ROOTS_ENV: &str = "TAOLI_AGENT_WRITE_ROOTS";
+
+fn skill_roots() -> Vec<PathBuf> {
+    extra_roots(SKILL_ROOTS_ENV)
+}
+
+/// 解析并校验一个「绝对且存在」的根列表（纯函数，便于测试）。
+fn parse_roots(raw: &str, variable: &str) -> Vec<PathBuf> {
+    raw.split(PATH_SEPARATOR)
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| {
+            if !path.is_absolute() {
+                tracing::warn!(
+                    target: "agent",
+                    variable,
+                    path = %path.display(),
+                    "ignoring a relative root: the runtime and the sandbox both require absolute paths"
+                );
+                return false;
+            }
+            if !path.is_dir() {
+                tracing::warn!(
+                    target: "agent",
+                    variable,
+                    path = %path.display(),
+                    "ignoring a root that is not a directory"
+                );
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+/// 读取环境变量并解析。环境是进程级状态，故测试只覆盖其上的纯函数
+/// [`parse_roots`]，外加少量加锁的端到端断言。
+fn extra_roots(variable: &str) -> Vec<PathBuf> {
+    match std::env::var(variable) {
+        Ok(raw) => parse_roots(&raw, variable),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn write_roots() -> Vec<PathBuf> {
+    extra_roots(WRITE_ROOTS_ENV)
+}
 
 /// 项目根：由领域指令文档的位置确定（就绪检查已要求该文件存在）。
 fn project_root() -> Result<PathBuf, anyhow::Error> {
@@ -190,7 +259,11 @@ fn tool_registry(archive: &Path) -> Arc<ToolRegistry> {
 /// 只授予运行时可证必需的可写位置：它自己的 home（会话与状态存储——实测缺少
 /// 该授权会启动失败）与 trace 目录。**工作区不在其中**：本接入的边界是只读。
 fn codex_confinement(codex_home: &Path, trace_dir: &Path) -> SandboxPolicy {
-    sandbox::codex_child_policy(codex_home, Some(trace_dir))
+    let mut policy = sandbox::codex_child_policy(codex_home, Some(trace_dir));
+    // 额外可写根：skill 的脚本会写自己的仓库（.cache / reports）。这是显式授权，
+    // 由 TAOLI_AGENT_WRITE_ROOTS 提供，不由 skill 根自动推导。
+    policy.writable_roots.extend(write_roots());
+    policy
 }
 
 /// 归档路径：优先观察配置，其次默认搜索。
@@ -253,6 +326,14 @@ fn readiness(config_path: Option<String>) -> AgentReady {
             .as_ref()
             .ok()
             .map(|text| format!("{} 字节", text.len())),
+        skill_roots: skill_roots()
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        write_roots: write_roots()
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
         reason,
     }
 }
@@ -265,6 +346,7 @@ fn stopped_status(program: Option<String>) -> AgentStatus {
         trace_path: None,
         pending_approval: None,
         turns: Vec::new(),
+        skills: Vec::new(),
         error: None,
     }
 }
@@ -352,6 +434,7 @@ impl AgentController {
             trace_path: None,
             pending_approval: None,
             turns: Vec::new(),
+            skills: Vec::new(),
             error: None,
         }));
 
@@ -502,6 +585,7 @@ async fn run_agent(
         cwd: root.to_string_lossy().into_owned(),
         ephemeral: false,
         developer_instructions: Some(developer_instructions),
+        skill_roots: skill_roots(),
         trace_dir: Some(trace),
         ..ThreadOptions::default()
     };
@@ -514,6 +598,16 @@ async fn run_agent(
         guard.phase = "ready";
         guard.thread_id = Some(thread_id);
         guard.trace_path = trace_path;
+        // 报告运行时**实际**认可的 skill，而非我们请求注册的：注册是否生效由
+        // 它说了算。
+        guard.skills = session
+            .skills()
+            .iter()
+            .map(|skill| AgentSkill {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+            })
+            .collect();
     }
 
     while let Some(command) = commands.recv().await {
@@ -726,5 +820,121 @@ mod tests {
             "the root must contain the instruction document: {}",
             root.display()
         );
+    }
+}
+
+#[cfg(test)]
+mod root_env_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Env vars are process-global, so any test that touches them must not run
+    /// concurrently with another that does. Serialised explicitly rather than
+    /// relying on `--test-threads=1`, which a plain `cargo test` does not pass.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn locked<F: FnOnce()>(body: F) {
+        let guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        body();
+        drop(guard);
+    }
+
+    // ── 解析规则（纯函数，无环境依赖）────────────────────────────────
+
+    #[test]
+    fn blank_and_empty_inputs_yield_nothing() {
+        assert!(parse_roots("", "V").is_empty());
+        assert!(parse_roots("   ", "V").is_empty());
+        assert!(parse_roots(":::", "V").is_empty());
+    }
+
+    #[test]
+    fn a_relative_root_is_dropped() {
+        // The runtime and the sandbox both reject relative roots, so handing
+        // one over would turn a configuration mistake into a failed start.
+        assert!(parse_roots("skills/uzi", "V").is_empty());
+    }
+
+    #[test]
+    fn a_root_that_does_not_exist_is_dropped() {
+        // Registering a nonexistent root looks like it worked and loads
+        // nothing, which is exactly the silent failure this filter prevents.
+        assert!(parse_roots("/nonexistent/uzi-skill", "V").is_empty());
+    }
+
+    #[test]
+    fn existing_absolute_roots_are_kept_in_order_with_blanks_ignored() {
+        let temp = std::env::temp_dir();
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let raw = format!(":{}::{}:", temp.display(), home.display());
+        let roots = parse_roots(&raw, "V");
+        assert_eq!(roots, vec![temp, home], "order preserved, blanks dropped");
+    }
+
+    // ── 环境接线（加锁）──────────────────────────────────────────────
+
+    #[test]
+    fn the_env_var_is_read_and_its_validation_applies() {
+        locked(|| {
+            // SAFETY: guarded by ENV_LOCK; no other test touches this var.
+            unsafe { std::env::set_var(SKILL_ROOTS_ENV, "/nonexistent/skill-root") };
+            assert!(
+                skill_roots().is_empty(),
+                "validation must apply to whatever the env supplies"
+            );
+            unsafe { std::env::remove_var(SKILL_ROOTS_ENV) };
+            assert!(
+                skill_roots().is_empty(),
+                "unset means the runtime's own only"
+            );
+        });
+    }
+
+    /// The pairing this exists for: a skill repository becomes writable, which
+    /// is what its scripts need, and the confinement carries it.
+    #[test]
+    fn an_authorised_write_root_reaches_the_confinement() {
+        locked(|| {
+            let dir = std::env::temp_dir();
+            // SAFETY: guarded by ENV_LOCK.
+            unsafe { std::env::set_var(WRITE_ROOTS_ENV, dir.to_string_lossy().into_owned()) };
+
+            let codex_home =
+                PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex");
+            let trace = dir.join("agent-traces-roots-test");
+            let policy = codex_confinement(&codex_home, &trace);
+
+            assert!(
+                policy.writable_roots.contains(&dir),
+                "the authorised root must reach the policy: {:?}",
+                policy.writable_roots
+            );
+            assert!(policy.writable_roots.contains(&codex_home));
+            assert!(policy.writable_roots.contains(&trace));
+
+            unsafe { std::env::remove_var(WRITE_ROOTS_ENV) };
+        });
+    }
+
+    #[test]
+    fn skill_and_write_roots_are_independent() {
+        // Reading a skill and letting it write its checkout are separate
+        // grants; setting one must not imply the other.
+        locked(|| {
+            let dir = std::env::temp_dir();
+            // SAFETY: guarded by ENV_LOCK.
+            unsafe {
+                std::env::set_var(SKILL_ROOTS_ENV, dir.to_string_lossy().into_owned());
+                std::env::remove_var(WRITE_ROOTS_ENV);
+            }
+            assert!(!skill_roots().is_empty());
+            assert!(
+                write_roots().is_empty(),
+                "a skill root must not silently grant write access"
+            );
+            unsafe { std::env::remove_var(SKILL_ROOTS_ENV) };
+        });
     }
 }

@@ -161,6 +161,12 @@ pub struct AgentReady {
     pub sandbox: String,
     /// 领域指令的规模描述（来自受版本控制的 `docs/agent/instructions.md`）。
     pub instructions: Option<String>,
+    /// 已配置的额外 skill 目录（来自 `TAOLI_AGENT_SKILL_ROOTS`）。
+    pub skill_roots: Vec<String>,
+    /// 已授权的额外可写根（来自 `TAOLI_AGENT_WRITE_ROOTS`）。
+    ///
+    /// 与 skill 根分开：能读到 skill 与允许它写自己的仓库是两件事。
+    pub write_roots: Vec<String>,
     pub reason: Option<String>,
 }
 
@@ -214,6 +220,14 @@ pub struct AgentTurn {
     pub finished_at_ms: Option<u64>,
 }
 
+/// 运行时报告可用的一个 skill。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentSkill {
+    /// 可能带命名空间前缀，如 `stock-deep-analyzer:uzi`——前缀标识来源。
+    pub name: String,
+    pub description: String,
+}
+
 /// agent 会话生命周期快照。
 ///
 /// `phase` 取值：`stopped` | `starting` | `ready` | `running` |
@@ -227,6 +241,8 @@ pub struct AgentStatus {
     pub pending_approval: Option<AgentApprovalRequest>,
     /// 已完成与进行中的轮次，按时间升序；最后一条可能是进行中的那一轮。
     pub turns: Vec<AgentTurn>,
+    /// 运行时报告可用的 skill。
+    pub skills: Vec<AgentSkill>,
     /// 会话级致命错误（运行时启动失败或退出）。轮次内的失败记在该轮的 `error`。
     pub error: Option<String>,
 }

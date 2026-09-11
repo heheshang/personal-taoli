@@ -19,6 +19,7 @@
 | PORT-01-E | 前端接入：一个可用的只读分析页 | D | **`verified`**（见下） |
 | PORT-01-F | macOS 沙箱下沉为自有组件 | 决策 ④ | **`verified`**（见下） |
 | PORT-01-G | 领域指令注入随版本管理 | B | **`verified`**（见下） |
+| PORT-01-H | 外部 skill 接入（注册根 + 可写根） | G | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -545,6 +546,58 @@ VERDICT: instructions reached the model
 
 - **未在真实 `agent_start` 链路上端到端实跑指令注入**：命令层已加载并传入，编译与核心层实测覆盖；「界面点击 → IPC → 指令生效」整条链路仍未实跑（与轮次 E/F 同一缺口）。
 - 未验证约束的**遵守率**（如模型是否仍会编造数字）。本轮只证明指令**抵达**且模型能按其作答；约束效力属评测范畴（对应《Agent 评测白皮书》的评测集与归因），不在本迭代。
+
+---
+
+## PORT-01-H 外部 skill 接入（2026-09-10）
+
+**背景**：所有者反馈「codex 中我已经安装的 uzi skill，项目中并没有进行调用」。
+
+**取证结论（先于改动，全部实测）**：
+
+| 问题 | 事实 |
+|---|---|
+| codex 里有 uzi skill 吗？ | **没有。** `skills/list` 实测只返回 6 个内置 `.system` skill（imagegen / openai-docs / plugin-creator / review-agent / skill-creator / skill-installer） |
+| 那它装在哪？ | 装在 **Claude Code**：`~/.claude/plugins/cache/uzi-skill/…`；源码在 `~/Documents/workspace/personal/ai/stock/UZI-Skill` |
+| codex 能发现它吗？ | **能。** `skills/extraRoots/set` 指向该仓库后，多出 5 个 `stock-deep-analyzer:*` skill（uzi / deep-analysis / investor-panel / lhb-analyzer / trap-detector），名字带来源命名空间 |
+| 模型会用吗？ | **会。** 实测模型点名「分析一只 A 股时我会使用 `stock-deep-analyzer:uzi`」 |
+| 项目为什么没调用？ | 我们 `thread/start` 的 `cwd` 是项目根，且**从未注册 extraRoots**——skill 在另一个目录，运行时不被告知就不会去找 |
+
+**实现**：
+- core：`AppServerConfig`/`AgentSession` 新增 `set_skill_roots`（`skills/extraRoots/set`，根须绝对）与 `list_skills`（`skills/list`，按名去重排序）；`ThreadOptions.skill_roots`；`AgentSession::skills()` 报告**运行时实际认可**的 skill；trace 记录本次会话注册的根。
+- 配置（两个**正交**环境变量，刻意不合并）：
+  - `TAOLI_AGENT_SKILL_ROOTS`：模型可**读**的 skill 目录
+  - `TAOLI_AGENT_WRITE_ROOTS`：额外授权子进程**写**的目录
+  分卡的理由：可见性与写权限是两件事，绑一起会让「只是想让模型读到这个 skill」顺手变成「授权它写这个目录」。二者都只接受绝对且存在的目录。
+- 就绪检查与界面：显示 skill 根、可写根，以及运行时实际发现的 skill 数量与清单（hover）。
+
+**为什么还需要可写根（实测缺口）**：skill 的指令是「跑脚本」，而脚本写自己的仓库。仅注册 skill 根时，模型会读完 `SKILL.md`、发起命令、拿到批准，然后**卡在写入**——
+```
+mkdir: .../UZI-Skill/.cache: Operation not permitted     ← 未授权可写根
+rc=0，写入成功                                            ← 授权后
+写 HOME 根仍被拒                                          ← 负向对照
+```
+这一组合（配了 skill 根、没配可写根）看起来正常却在写入时才失败，故界面在此时显式提示「缺可写根」。
+
+**验收（可复现）**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 未注册根时看不到外部 skill | ✅ | `registering_a_skill_root_makes_its_skills_visible` 先断言基线不含 `:uzi` |
+| 注册后可见且带来源命名空间 | ✅ | 同上，断言出现 `*:uzi` 且含 `:`；并断言每个 skill 的 `path` 真实存在、`description` 非空 |
+| 不可用的根不拖垮会话 | ✅ | `an_unusable_skill_root_does_not_break_the_session` |
+| 相对/不存在的根被丢弃 | ✅ | `parse_roots` 的 4 个纯函数测试 + 加锁的 env 接线测试 |
+| skill 根不隐含写权限 | ✅ | `skill_and_write_roots_are_independent` |
+| 可写根进入沙箱策略 | ✅ | `an_authorised_write_root_reaches_the_confinement` + 实跑写权限对照 |
+| `cargo fmt/clippy(-D warnings)/test` | ✅ | clean / 0 / **292 core + 17 tauri** |
+| `npm run build` | ✅ | 零错误 |
+
+**修掉的三处自身缺陷**：
+1. 批量插入 `skill_roots` 字段时误伤枚举与结构体定义（已从 HEAD 恢复后精确重做）。
+2. 两个新函数被追加到 `mod tests` 之后，clippy 报 `items after a test module`。
+3. **env 变量测试并行竞态**：`cargo test` 默认多线程，多个测试同时读写同一环境变量导致失败（`--test-threads=1` 才通过，这不是修复）。改为「解析逻辑抽成纯函数 `parse_roots` + 少量 env 测试显式加锁」，使测试不再依赖调用方式。
+
+**未验证**：未端到端跑完整 UZI 流水线（需数分钟 + 联网写 `reports/`）；已验证到「脚本可启动、可写入自己的仓库」这一层。
 
 ---
 

@@ -91,6 +91,24 @@ impl ServerMessage {
     }
 }
 
+/// One skill the runtime reports as available to the model.
+///
+/// The name may be namespaced (e.g. `stock-deep-analyzer:uzi`) when it came from
+/// a registered extra root rather than the runtime's own skill directory: the
+/// prefix identifies the source, which is what makes it possible to tell a
+/// project skill from a built-in one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
 /// How to launch the child, and how long to wait at each boundary.
 #[derive(Debug, Clone)]
 pub struct AppServerConfig {
@@ -372,6 +390,76 @@ impl CodexAppServer {
                 method: "turn/start".to_string(),
                 detail: format!("no result.turn.id in {result}"),
             })
+    }
+
+    /// Registers `roots` as extra skill directories.
+    ///
+    /// The runtime discovers skills under `<root>/SKILL.md` and
+    /// `<root>/*/SKILL.md`, which is the layout a skill repository uses. Roots
+    /// are per-runtime-process, so this must be called on every session; a
+    /// registered root also survives until the process exits, which is why the
+    /// call is idempotent-by-replacement rather than additive.
+    pub async fn set_skill_roots(&mut self, roots: &[PathBuf]) -> Result<(), AgentError> {
+        let roots: Vec<String> = roots
+            .iter()
+            .map(|root| root.to_string_lossy().into_owned())
+            .collect();
+        self.request(
+            "skills/extraRoots/set",
+            super::protocol::skill_roots_params(&roots),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Lists the skills the runtime will offer the model in `cwds`.
+    ///
+    /// `force_reload` bypasses the runtime's own cache: without it a list
+    /// cached before [`Self::set_skill_roots`] would not show the new roots.
+    pub async fn list_skills(
+        &mut self,
+        cwds: &[String],
+        force_reload: bool,
+    ) -> Result<Vec<SkillInfo>, AgentError> {
+        let result = self
+            .request(
+                "skills/list",
+                super::protocol::skills_list_params(cwds, force_reload),
+            )
+            .await?;
+
+        // The reply is `{data: [{cwd, skills, errors}]}`. Skills are flattened
+        // across cwds and deduplicated by name: the same skill can be reachable
+        // from several working directories, and listing it twice would overstate
+        // what the model has.
+        let mut skills: Vec<SkillInfo> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in result
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for skill in entry
+                .get("skills")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Ok(parsed) = serde_json::from_value::<SkillInfo>(skill.clone()) else {
+                    // A skill entry we cannot read is skipped rather than
+                    // failing the whole list: reporting the others is more
+                    // useful than reporting none.
+                    tracing::debug!(target: "agent", entry = %skill, "unreadable skill entry");
+                    continue;
+                };
+                if seen.insert(parsed.name.clone()) {
+                    skills.push(parsed);
+                }
+            }
+        }
+        skills.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(skills)
     }
 
     /// Returns the retained stderr tail, newest last.

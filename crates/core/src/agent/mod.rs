@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use app_server::{AppServerConfig, CodexAppServer, ServerMessage};
+use app_server::{AppServerConfig, CodexAppServer, ServerMessage, SkillInfo};
 use approval::{
     ApprovalDecider, ApprovalKind, ApprovalLog, ApprovalRecord, ApprovalRequest, Decision,
     DecisionSource, advertised_decisions, response_payload, summarise,
@@ -281,6 +281,8 @@ pub struct AgentSession {
     /// Owned by the session rather than passed per turn: it is one file per
     /// thread, and every turn of that thread appends to the same one.
     trace: Option<TraceWriter>,
+    /// Skills the runtime reported for this thread's working directory.
+    skills: Vec<SkillInfo>,
 }
 
 impl AgentSession {
@@ -293,6 +295,7 @@ impl AgentSession {
             handshake,
             thread_id: None,
             trace: None,
+            skills: Vec::new(),
         })
     }
 
@@ -335,6 +338,13 @@ impl AgentSession {
         options: &ThreadOptions,
         tools: Arc<ToolRegistry>,
     ) -> Result<String, AgentError> {
+        // Roots must be registered before the thread starts: the skill list is
+        // resolved when the thread is created, so a later registration would
+        // not reach this thread's prompt.
+        if !options.skill_roots.is_empty() {
+            self.server.set_skill_roots(&options.skill_roots).await?;
+        }
+
         let thread_id = self
             .server
             .start_thread(
@@ -347,6 +357,22 @@ impl AgentSession {
             )
             .await?;
         self.thread_id = Some(thread_id.clone());
+
+        // What the model will actually be offered, asked rather than assumed:
+        // the runtime decides which roots are usable, and it namespaces skills
+        // from extra roots. Listing is best-effort — a session without its skill
+        // list is still usable, so a failure here must not abort the start.
+        match self
+            .server
+            .list_skills(std::slice::from_ref(&options.cwd), true)
+            .await
+        {
+            Ok(skills) => self.skills = skills,
+            Err(error) => {
+                tracing::warn!(target: "agent", %error, "could not list skills");
+                self.skills = Vec::new();
+            }
+        }
 
         // Open the trace before the session_started event so a failure to open
         // is reported here, not silently mid-turn.
@@ -363,6 +389,11 @@ impl AgentSession {
                     cwd: options.cwd.clone(),
                     sandbox: options.sandbox,
                     approval_policy: options.approval_policy,
+                    skill_roots: options
+                        .skill_roots
+                        .iter()
+                        .map(|root| root.to_string_lossy().into_owned())
+                        .collect(),
                     developer_instructions: options
                         .developer_instructions
                         .as_deref()
@@ -375,6 +406,14 @@ impl AgentSession {
         };
 
         Ok(thread_id)
+    }
+
+    /// Skills the runtime will offer the model in this thread.
+    ///
+    /// Empty when the runtime reported none, or when the listing failed — a
+    /// missing skill list must not fail a session that is otherwise usable.
+    pub fn skills(&self) -> &[SkillInfo] {
+        &self.skills
     }
 
     /// Path of the session trace, when tracing is enabled.
@@ -1550,5 +1589,101 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// Acceptance: a skill repository outside this project becomes visible to
+    /// the model once it is registered as an extra root.
+    ///
+    /// Before this, a session saw only the runtime's own skills — which is why
+    /// an installed skill repository was never invoked: it was in another
+    /// directory, and nothing told the runtime to look there.
+    #[tokio::test]
+    async fn registering_a_skill_root_makes_its_skills_visible() {
+        let Some(program) = codex_program() else {
+            eprintln!("skipping: codex is not installed on PATH");
+            return;
+        };
+        // Point at a repository with a skill layout. Absent means skip rather
+        // than fail: the root is machine-specific, like the codex binary.
+        let Some(root) = std::env::var_os("TAOLI_TEST_SKILL_ROOT").map(PathBuf::from) else {
+            eprintln!("skipping: TAOLI_TEST_SKILL_ROOT is not set");
+            return;
+        };
+        if !root.is_dir() {
+            eprintln!("skipping: {} is not a directory", root.display());
+            return;
+        }
+
+        let tools = Arc::new(ToolRegistry::new());
+        let mut session = AgentSession::connect(fast_config(program))
+            .await
+            .expect("handshake must succeed");
+
+        // Baseline: without a root, the repository's skills are invisible.
+        session
+            .start_thread(&ThreadOptions::default(), Arc::clone(&tools))
+            .await
+            .expect("thread must start");
+        let without: Vec<String> = session.skills().iter().map(|s| s.name.clone()).collect();
+        assert!(
+            !without.iter().any(|name| name.ends_with(":uzi")),
+            "the baseline must not already see the registered skill: {without:?}"
+        );
+
+        // With the root registered, they appear — namespaced by source.
+        let options = ThreadOptions {
+            skill_roots: vec![root.clone()],
+            ..ThreadOptions::default()
+        };
+        session
+            .start_thread(&options, Arc::clone(&tools))
+            .await
+            .expect("thread must start");
+        let with: Vec<String> = session.skills().iter().map(|s| s.name.clone()).collect();
+        assert!(
+            with.iter().any(|name| name.ends_with(":uzi")),
+            "registering {} must surface its skills, got {with:?}",
+            root.display()
+        );
+        // The name is namespaced, which is how a project skill is told apart
+        // from a built-in one.
+        assert!(
+            with.iter().any(|name| name.contains(':')),
+            "extra-root skills carry a namespace: {with:?}"
+        );
+        // Every reported skill must carry a path we could open; a skill the
+        // model cannot read is not really available.
+        for skill in session.skills() {
+            assert!(skill.path.is_file(), "{skill:?}");
+            assert!(!skill.description.is_empty(), "{skill:?}");
+        }
+
+        session.shutdown().await.expect("shutdown must succeed");
+    }
+
+    /// A root that does not exist must not take the session down with it.
+    #[tokio::test]
+    async fn an_unusable_skill_root_does_not_break_the_session() {
+        let Some(program) = codex_program() else {
+            eprintln!("skipping: codex is not installed on PATH");
+            return;
+        };
+        let tools = Arc::new(ToolRegistry::new());
+        let mut session = AgentSession::connect(fast_config(program))
+            .await
+            .expect("handshake must succeed");
+
+        let options = ThreadOptions {
+            skill_roots: vec![PathBuf::from("/nonexistent/taoli-skill-root")],
+            ..ThreadOptions::default()
+        };
+        session
+            .start_thread(&options, Arc::clone(&tools))
+            .await
+            .expect("an irrelevant skill root must not prevent the session");
+        // Whatever the runtime decides about the root, the session is usable.
+        assert!(session.thread_id().is_some());
+
+        session.shutdown().await.expect("shutdown must succeed");
     }
 }

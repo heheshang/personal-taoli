@@ -22,6 +22,8 @@ import {
 } from '../commands'
 import type { AgentReady, AgentStatus, AgentTurn } from '../commands'
 
+/** 运行时报告可用的 skill 列表，用于工具栏提示。 */
+
 const props = defineProps<{
   active: boolean
 }>()
@@ -248,6 +250,24 @@ onUnmounted(stopPolling)
           <span v-if="ready.instructions" :title="`领域指令 ${ready.instructions}`">
             指令 {{ ready.instructions }}
           </span>
+          <!-- skill 是运行时认可的，不是我们请求注册的：名字带前缀（如
+               stock-deep-analyzer:uzi）说明它来自额外 skill 根。 -->
+          <span
+            v-if="status?.skills.length"
+            :title="status.skills.map(s => `${s.name} — ${s.description}`).join('\n\n')"
+          >
+            skill {{ status.skills.length }}
+          </span>
+          <!-- skill 通常靠「跑脚本」工作，而脚本会写自己的仓库。配了 skill 根却
+               没配可写根时，模型会读完 SKILL.md、拿到批准、然后卡在写入上——
+               这组合看起来正常，所以在这里显式提示。 -->
+          <span
+            v-if="ready.skill_roots.length && !ready.write_roots.length"
+            class="codex-chip warn"
+            title="已配置 skill 根但未授权任何可写根：skill 的脚本若需写自己的仓库将失败"
+          >
+            <i class="codex-dot" />缺可写根
+          </span>
         </template>
       </div>
     </header>
@@ -268,6 +288,14 @@ onUnmounted(stopPolling)
         </div>
         <div class="codex-check">
           <span>沙箱</span><code>{{ ready.sandbox }}</code>
+        </div>
+        <div class="codex-check">
+          <span>skill 根</span>
+          <code>{{ ready.skill_roots.length ? ready.skill_roots.join(' , ') : '未配置' }}</code>
+        </div>
+        <div class="codex-check">
+          <span>可写根</span>
+          <code>{{ ready.write_roots.length ? ready.write_roots.join(' , ') : '仅 codex home 与 trace' }}</code>
         </div>
       </div>
     </section>

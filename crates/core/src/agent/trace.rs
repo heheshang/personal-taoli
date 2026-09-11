@@ -105,6 +105,17 @@ pub enum TraceEvent {
         cwd: String,
         sandbox: SandboxMode,
         approval_policy: ApprovalPolicy,
+        /// Skill roots registered for this session, in order.
+        ///
+        /// Recorded because the reachable skill set is a property of the
+        /// session: two traces with different roots were not running the same
+        /// agent, and a replay should show what was reachable.
+        ///
+        /// `default` so that a trace written before this field existed still
+        /// replays: old events describe sessions that had no extra roots, which
+        /// is exactly what the default says.
+        #[serde(default)]
+        skill_roots: Vec<String>,
         /// Whether domain instructions were injected.
         ///
         /// Recorded as a flag plus a fingerprint rather than the full text: the
@@ -249,6 +260,8 @@ pub struct SessionTrace {
     pub cwd: String,
     pub sandbox: SandboxMode,
     pub approval_policy: ApprovalPolicy,
+    /// Skill roots registered for this session, in order.
+    pub skill_roots: Vec<String>,
     /// Which revision of the domain instructions was in force, when any.
     pub instructions: Option<InstructionsFingerprint>,
     pub turns: Vec<TurnTrace>,
@@ -275,6 +288,19 @@ impl SessionTrace {
         counts
     }
 }
+
+/// What a recorded session started with, accumulated during replay.
+///
+/// Aliased rather than repeated inline: it appears in both the replayer and the
+/// helper that guards ordering, and a tuple this wide is easy to transpose.
+type SessionStart = (
+    String,
+    String,
+    SandboxMode,
+    ApprovalPolicy,
+    Vec<String>,
+    Option<InstructionsFingerprint>,
+);
 
 /// Why a trace could not be replayed.
 ///
@@ -332,13 +358,7 @@ pub fn replay(path: impl AsRef<Path>) -> Result<SessionTrace, TraceError> {
 
 /// Replays trace text. Split out so tests can build traces inline.
 pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
-    let mut started: Option<(
-        String,
-        String,
-        SandboxMode,
-        ApprovalPolicy,
-        Option<InstructionsFingerprint>,
-    )> = None;
+    let mut started: Option<SessionStart> = None;
     let mut finished = false;
     let mut last_at_ms = 0;
 
@@ -373,6 +393,7 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
                 cwd,
                 sandbox,
                 approval_policy,
+                skill_roots,
                 developer_instructions,
                 at_ms,
             } => {
@@ -388,6 +409,7 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
                     cwd,
                     sandbox,
                     approval_policy,
+                    skill_roots,
                     developer_instructions,
                 ));
             }
@@ -496,7 +518,8 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
         turns.push(turn);
     }
 
-    let Some((thread_id, cwd, sandbox, approval_policy, instructions)) = started else {
+    let Some((thread_id, cwd, sandbox, approval_policy, skill_roots, instructions)) = started
+    else {
         return Err(TraceError::Empty);
     };
 
@@ -505,22 +528,14 @@ pub fn replay_str(contents: &str) -> Result<SessionTrace, TraceError> {
         cwd,
         sandbox,
         approval_policy,
+        skill_roots,
         instructions,
         turns,
         finished,
     })
 }
 
-fn require_started(
-    started: &Option<(
-        String,
-        String,
-        SandboxMode,
-        ApprovalPolicy,
-        Option<InstructionsFingerprint>,
-    )>,
-    line: usize,
-) -> Result<(), TraceError> {
+fn require_started(started: &Option<SessionStart>, line: usize) -> Result<(), TraceError> {
     if started.is_none() {
         return Err(TraceError::Unordered {
             line,
@@ -588,6 +603,14 @@ pub struct ThreadOptions {
     /// [`super::instructions`]. `None` is for sessions that intentionally run
     /// without them (tests), not a default a production caller should pick.
     pub developer_instructions: Option<String>,
+    /// Extra skill directories, registered with the runtime as
+    /// `skills/extraRoots/set`.
+    ///
+    /// Must be absolute: the runtime rejects relative roots for the same reason
+    /// the sandbox does. Empty keeps the previous behaviour — the runtime's own
+    /// skills only — which means a skill repository checked out elsewhere is
+    /// invisible to the model unless it is named here.
+    pub skill_roots: Vec<PathBuf>,
     /// Directory for the host trace. `None` disables tracing.
     pub trace_dir: Option<PathBuf>,
 }
@@ -600,6 +623,7 @@ impl Default for ThreadOptions {
             sandbox: SandboxMode::ReadOnly,
             approval_policy: ApprovalPolicy::UnlessTrusted,
             developer_instructions: None,
+            skill_roots: Vec::new(),
             trace_dir: None,
         }
     }
@@ -644,6 +668,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 sandbox: SandboxMode::ReadOnly,
                 approval_policy: ApprovalPolicy::UnlessTrusted,
+                skill_roots: Vec::new(),
                 developer_instructions: None,
                 at_ms: 100,
             },
@@ -750,6 +775,7 @@ mod tests {
             cwd: ".".to_string(),
             sandbox: SandboxMode::WorkspaceWrite,
             approval_policy: ApprovalPolicy::OnRequest,
+            skill_roots: Vec::new(),
             developer_instructions: None,
             at_ms: 1,
         }];
@@ -820,6 +846,7 @@ mod tests {
                     cwd: ".".to_string(),
                     sandbox: SandboxMode::ReadOnly,
                     approval_policy: ApprovalPolicy::UnlessTrusted,
+                    skill_roots: Vec::new(),
                     developer_instructions: None,
                     at_ms: 1,
                 },
@@ -934,6 +961,7 @@ mod tests {
                     cwd: ".".to_string(),
                     sandbox: SandboxMode::ReadOnly,
                     approval_policy: ApprovalPolicy::UnlessTrusted,
+                    skill_roots: Vec::new(),
                     developer_instructions: None,
                     at_ms: 1,
                 },
@@ -984,6 +1012,7 @@ mod tests {
                     cwd: ".".to_string(),
                     sandbox: SandboxMode::ReadOnly,
                     approval_policy: ApprovalPolicy::UnlessTrusted,
+                    skill_roots: Vec::new(),
                     developer_instructions: None,
                     at_ms: 100,
                 },

@@ -221,6 +221,24 @@ pub fn turn_start_params(thread_id: &str, text: &str) -> Value {
     })
 }
 
+/// Parameters for `skills/extraRoots/set`.
+///
+/// Roots must be absolute: the runtime rejects relative ones, for the same
+/// reason the sandbox does — a relative root resolves against some process's
+/// working directory rather than the directory the caller named.
+pub fn skill_roots_params(roots: &[String]) -> Value {
+    serde_json::json!({ "extraRoots": roots })
+}
+
+/// Parameters for `skills/list`.
+///
+/// `cwds` scopes the scan to the given working directories; `forceReload`
+/// bypasses the runtime's cache, which matters because a root registered in this
+/// process must not be hidden by a list cached before it was set.
+pub fn skills_list_params(cwds: &[String], force_reload: bool) -> Value {
+    serde_json::json!({ "cwds": cwds, "forceReload": force_reload })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

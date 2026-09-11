@@ -322,7 +322,17 @@ export interface AgentReady {
   sandbox: string
   /** 领域指令的规模描述（来自受版本控制的 `docs/agent/instructions.md`）。 */
   instructions: string | null
+  /** 已配置的额外 skill 目录（来自 `TAOLI_AGENT_SKILL_ROOTS`）。 */
+  skill_roots: string[]
+  /** 已授权的额外可写根（来自 `TAOLI_AGENT_WRITE_ROOTS`）。 */
+  write_roots: string[]
   reason: string | null
+}
+
+/** 运行时报告可用的一个 skill。名称可能带命名空间前缀，如 `stock-deep-analyzer:uzi`。 */
+export interface AgentSkill {
+  name: string
+  description: string
 }
 
 /** 待裁决的审批请求。 */
@@ -373,6 +383,8 @@ export interface AgentStatus {
   pending_approval: AgentApprovalRequest | null
   /** 已完成与进行中的轮次，按时间升序。 */
   turns: AgentTurn[]
+  /** 运行时报告可用的 skill（注册生效与否由运行时说了算）。 */
+  skills: AgentSkill[]
   /** 会话级致命错误；轮次内的失败记在该轮的 `error`。 */
   error: string | null
 }
