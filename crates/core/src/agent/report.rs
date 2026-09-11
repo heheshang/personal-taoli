@@ -216,6 +216,26 @@ pub fn context_fragment(schema: &Value) -> (String, String) {
     ("taoli://report-schema".to_string(), value)
 }
 
+/// The structure a report-requesting turn produced, and whether it conformed.
+///
+/// One object rather than a value plus a separate "conformed" flag, because those
+/// two can disagree: a flag with no value would claim a report exists, and a value
+/// with no flag would leave the renderer guessing. Here the only states are "no
+/// report" (`None`) and "this report, conforming or not".
+///
+/// A **non-conforming** report is kept rather than dropped, and the interface shows
+/// it as raw metadata. Measured, a model that ignores the schema still returns
+/// *something* structured — with its own field names — and a turn that took minutes
+/// to produce it should not have that thrown away because three key names differ.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnReport {
+    /// The object the model returned, exactly as received.
+    pub value: Value,
+    /// Whether it satisfied the schema. `false` means the field names or shapes are
+    /// the model's own invention and must not be rendered as a report.
+    pub conforms: bool,
+}
+
 /// Checks that `value` is a report the interface can render.
 ///
 /// Validation is shallow by design — an object carrying the three properties the

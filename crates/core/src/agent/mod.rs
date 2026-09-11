@@ -315,13 +315,13 @@ pub struct TurnOutcome {
     pub messages: Vec<String>,
     /// The last of [`Self::messages`]; `None` when the turn produced none.
     pub final_message: Option<String>,
-    /// The final message parsed as JSON, when the turn was asked for structure and
-    /// the result satisfied it.
+    /// What a report-requesting turn produced: the object the model returned and
+    /// whether it satisfied the schema.
     ///
-    /// Kept alongside the raw text, not instead of it: the interface renders this
-    /// as a report but falls back to the prose when parsing fails, so a model that
-    /// ignored the schema degrades to Markdown rather than to an empty panel.
-    pub report: Option<Value>,
+    /// `None` means the turn produced no JSON at all, in which case the answer is
+    /// the prose in [`Self::messages`]. A non-conforming report is kept so the
+    /// interface can show the structure as raw metadata instead of discarding it.
+    pub report: Option<crate::agent::report::TurnReport>,
     /// Why a requested report was rejected, when one was asked for and did not
     /// satisfy the schema.
     ///
@@ -783,26 +783,41 @@ impl AgentSession {
                                 }
                                 if wants_report {
                                     // Two ways a requested report fails to arrive, and
-                                    // both are worth telling the reader about: the model
-                                    // produced no JSON at all, or it produced JSON that
-                                    // does not satisfy the schema. The second was
-                                    // measured — it invented its own field names.
+                                    // they are worth telling apart: the model produced
+                                    // no JSON at all, or it produced JSON that does not
+                                    // satisfy the schema. The second was measured — it
+                                    // invented its own field names.
                                     match serde_json::from_str::<Value>(&text) {
-                                        Ok(report) => {
-                                            match crate::agent::report::validate(&report) {
-                                                Ok(()) => outcome.report = Some(report),
-                                                Err(reason) => {
-                                                    tracing::warn!(
-                                                        target: "agent",
-                                                        %reason,
-                                                        "final message did not satisfy the report schema; \
-                                                         keeping the prose instead"
-                                                    );
-                                                    outcome.report_error = Some(reason);
-                                                }
-                                            }
+                                        Ok(value) => {
+                                            // Kept either way. A non-conforming object is
+                                            // not a report, but it is still what the
+                                            // model spent the turn producing; the
+                                            // interface shows it as raw metadata rather
+                                            // than discarding minutes of work over three
+                                            // differing key names.
+                                            let conforms =
+                                                match crate::agent::report::validate(&value) {
+                                                    Ok(()) => true,
+                                                    Err(reason) => {
+                                                        tracing::warn!(
+                                                            target: "agent",
+                                                            %reason,
+                                                            "report did not satisfy the schema; \
+                                                             keeping what arrived"
+                                                        );
+                                                        outcome.report_error = Some(reason);
+                                                        false
+                                                    }
+                                                };
+                                            outcome.report =
+                                                Some(crate::agent::report::TurnReport {
+                                                    value,
+                                                    conforms,
+                                                });
                                         }
                                         Err(error) => {
+                                            // Nothing structured to keep: the message is
+                                            // prose, and prose is already in `messages`.
                                             let reason = format!("最终回复不是 JSON（{error}）");
                                             tracing::warn!(
                                                 target: "agent",
@@ -2410,18 +2425,27 @@ mod tests {
 
         let report = outcome.report.as_ref().unwrap_or_else(|| {
             panic!(
-                "a turn asked for structure must yield a parsed report; status={:?} messages={:?}",
+                "a turn asked for structure must yield what arrived; status={:?} messages={:?}",
                 outcome.status, outcome.messages
             )
         });
+        // This turn was given the schema **and** the context fragment that states
+        // the requirement, so it must have conformed. A `false` here would mean the
+        // instructions stopped being enough.
+        assert!(
+            report.conforms,
+            "the model did not satisfy the schema; it returned: {}",
+            report.value
+        );
         // The three properties the interface keys on.
         for key in crate::agent::report::REQUIRED_PROPERTIES {
             assert!(
-                report.get(key).is_some(),
-                "report is missing `{key}`: {report}"
+                report.value.get(key).is_some(),
+                "report is missing `{key}`: {}",
+                report.value
             );
         }
-        assert_eq!(report["ticker"], serde_json::json!("002600.SZ"));
+        assert_eq!(report.value["ticker"], serde_json::json!("002600.SZ"));
         // And the raw text is kept alongside, so a rendering failure cannot lose
         // the answer.
         assert!(

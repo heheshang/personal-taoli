@@ -40,7 +40,7 @@ use super::{
     agent_live::LiveTracker,
     dto::{
         AgentAccessLevel, AgentApprovalDecision, AgentApprovalRequest, AgentLive, AgentReady,
-        AgentSkill, AgentStatus, AgentToolCall, AgentTurn,
+        AgentReport, AgentSkill, AgentStatus, AgentToolCall, AgentTurn,
     },
     support::{api_fail, api_map},
 };
@@ -829,7 +829,10 @@ async fn run_agent(
                             outcome.approvals.iter().map(approval_dto).collect(),
                             outcome.refused_requests.clone(),
                             outcome.messages.clone(),
-                            outcome.report.clone(),
+                            outcome.report.as_ref().map(|report| AgentReport {
+                                value: report.value.clone(),
+                                conforms: report.conforms,
+                            }),
                             outcome.report_error.clone(),
                             None,
                         ),

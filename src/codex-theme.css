@@ -901,3 +901,58 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ── 未按结构定义时的原样展示 ─────────────────────────────────────── */
+
+.report-raw {
+  border-color: color-mix(in srgb, var(--cx-orange) 30%, transparent);
+  background: color-mix(in srgb, var(--cx-orange) 4%, transparent);
+}
+
+.report-raw-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--cx-text-2);
+}
+
+/* 字段名用等宽字体：它是要被逐字比对的字符串，不是给人读的词。 */
+.report-raw-key {
+  width: 1%;
+  white-space: nowrap;
+  background: var(--cx-gray-50);
+  font-family: var(--cx-mono);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.report-raw-details {
+  border-top: 1px solid var(--cx-gray-100);
+  padding-top: 10px;
+}
+
+.report-raw-details summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--cx-text);
+}
+
+.report-raw-details summary code {
+  font-family: var(--cx-mono);
+  font-size: 11px;
+}
+
+.report-raw-kind {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--cx-text-3);
+}
+
+.report-raw-details pre {
+  margin: 8px 0 0;
+  border: 1px solid var(--cx-gray-150);
+  border-radius: var(--cx-radius-lg);
+}

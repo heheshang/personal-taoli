@@ -25,6 +25,7 @@ import {
   agentSetAccessLevel,
 } from '../commands'
 import MarkdownBlock from './MarkdownBlock.vue'
+import ReportMetadata from './ReportMetadata.vue'
 import ReportView from './ReportView.vue'
 import StepRow from './StepRow.vue'
 import { AGENT_DECISION_LABEL } from '../commands'
@@ -529,8 +530,16 @@ onUnmounted(stopPolling)
             <template v-if="record.source === 'timeout'"> · 超时未裁决</template>
           </div>
 
-          <!-- 结构化报告：本轮按 schema 输出并通过校验时才渲染。 -->
-          <ReportView v-if="turn.report" :report="turn.report" />
+          <!-- 符合 schema：按报告版式渲染。 -->
+          <ReportView v-if="turn.report?.conforms" :report="turn.report.value" />
+          <!-- 不符合 schema：**仍然展示**，以通用元数据原样呈现。一次数分钟的调用
+               不该因为三个键名不同就把结果丢掉；字段名保留原样，因为「它把 ticker
+               写成了 stock_code」正是这里要传达的诊断。 -->
+          <ReportMetadata
+            v-else-if="turn.report"
+            :value="turn.report.value"
+            :reason="turn.report_error"
+          />
 
           <!-- 助手正文：本轮**全部**消息，按 Markdown 渲染。
                分析类 skill 会边跑边汇报，只显示最后一条会把中间结果丢掉。
@@ -542,17 +551,17 @@ onUnmounted(stopPolling)
             :source="message"
           />
 
-          <!-- 要求了结构化输出但未通过校验：**显示原因**。
-               只给结论而不给依据，会让「模型没按结构」与「模型写错了字段」无法区分——
-               二者要做的事完全不同（改指示 vs 记录模型能力）。故原因既可见也在 title 里。 -->
-          <div v-if="turn.report_error" class="report-error">
+          <!-- 要求了结构化输出但**没能产出任何 JSON**：这才是「回退为正文」。
+               结构与原因都已由上面的面板承担的情况不在此列——那时说「回退为正文」是错的，
+               因为正文并没有取代结构，两者并有。 -->
+          <div v-if="turn.report_error && !turn.report" class="report-error">
             <div class="codex-chip warn">
-              <i class="codex-dot" />未按结构输出，已回退为正文
+              <i class="codex-dot" />未按结构输出，回复不是 JSON，已按正文显示
             </div>
             <p class="report-error-detail" :title="turn.report_error">{{ turn.report_error }}</p>
           </div>
           <div
-            v-else-if="turn.report === null && turn.messages.length && !turn.error"
+            v-else-if="!turn.report && !turn.report_error && turn.messages.length && !turn.error"
             class="codex-chip"
           >
             本轮无结构化报告

@@ -401,6 +401,14 @@ export interface AgentToolCall {
   output: string
 }
 
+/** 模型返回的结构，以及它是否符合 schema。 */
+export interface AgentReport {
+  /** 模型返回的对象，原样。 */
+  value: Record<string, unknown>
+  /** 是否符合 schema。为 false 时字段名是模型自创的，不得当作报告渲染。 */
+  conforms: boolean
+}
+
 /** 一轮分析的完整记录。 */
 export interface AgentTurn {
   seq: number
@@ -419,13 +427,15 @@ export interface AgentTurn {
   /** 本轮全部 agent 消息，按时间顺序；最后一条是其结论。 */
   messages: string[]
   /**
-   * 本轮的结构化报告；仅当本轮被要求按 schema 输出**且**结果通过校验时才有。
+   * 本轮被要求结构化输出时，模型实际返回的结构及其是否符合 schema。
    *
-   * 字段形状见 `docs/agent/report-schema.json`。注意该 schema 在本运行时是
-   * **建议性**的（实测模型有时会用自己的字段名），因此后端会校验，不通过时
-   * 此字段为 null，界面回退到 `messages`。
+   * 字段形状见 `docs/agent/report-schema.json`。该 schema 在本运行时是**建议性**的
+   * （实测模型有时会用自己的字段名），故 `conforms` 由后端校验得出：
+   * `true` 按报告版式渲染；`false` 以通用元数据**原样**展示，不丢弃。
+   *
+   * `null` 表示本轮压根没产出 JSON——回复是散文，见 `messages`。
    */
-  report: Record<string, unknown> | null
+  report: AgentReport | null
   /** 要求了结构化输出却未通过校验的原因。 */
   report_error: string | null
   /** 本轮失败原因；`null` 表示本轮正常结束。 */

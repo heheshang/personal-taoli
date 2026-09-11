@@ -261,6 +261,18 @@ pub struct AgentLive {
     pub tokens: Option<AgentTokens>,
 }
 
+/// 模型返回的结构，以及它是否符合 schema。
+///
+/// 「值 + 是否符合」放在同一个对象里，而不是两个可空字段：后者会容许「有标志却没值」
+/// 这种不可能状态。此处只有两种可能——没有报告，或「这份报告，符合或不符合」。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentReport {
+    /// 模型返回的对象，原样。
+    pub value: serde_json::Value,
+    /// 是否符合 schema。为 `false` 时字段名是模型自创的，**不得**当作报告渲染。
+    pub conforms: bool,
+}
+
 /// 一轮分析的完整记录。
 ///
 /// 每轮独立成条，使界面能像 codex 桌面版那样把会话呈现为**消息流**，而不是只
@@ -284,12 +296,15 @@ pub struct AgentTurn {
     /// 不是只留最后一条：分析类 skill 会边跑边汇报（stage 进度等），最后才给
     /// 结论——只留最后一条会把中间结果全丢掉，而那正是读者要在对话里看到的内容。
     pub messages: Vec<String>,
-    /// 本轮的结构化报告，当本轮被要求按 schema 输出**且**结果通过校验时才有。
+    /// 本轮被要求结构化输出时，模型实际返回的结构，以及它是否符合 schema。
     ///
     /// 直接透传 JSON：schema 是前后端共同遵循的契约（`docs/agent/report-schema.json`），
     /// 在这里再定义一遍 Rust 结构只会有两处需要同步。
-    /// 与 `messages` 并存——校验不通过时界面回退到 Markdown 正文，而不是显示空面板。
-    pub report: Option<serde_json::Value>,
+    ///
+    /// `None` 表示本轮压根没产出 JSON（回复是散文，见 `messages`）。**不符合 schema
+    /// 的对象也会保留**：模型忽略 schema 时仍会返回「某种」结构化内容，只是字段名自创；
+    /// 一次数分钟的调用不该因为三个键名不同就被丢掉，界面以通用元数据原样呈现。
+    pub report: Option<AgentReport>,
     /// 要求了结构化输出却未通过校验时的原因；
     /// 界面据此说明「为什么这里显示的是正文而非报告」。
     pub report_error: Option<String>,
