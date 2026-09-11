@@ -155,7 +155,6 @@ impl From<personal_taoli_core::simulation::SimulationSmokeReport> for Simulation
 pub struct AgentReady {
     pub ready: bool,
     pub program: Option<String>,
-    pub archive_path: Option<String>,
     pub trace_dir: Option<String>,
     /// 沙箱可用性的人类可读描述（不可用时界面同时给出 `reason`）。
     pub sandbox: String,

@@ -5,12 +5,14 @@
 //! 不必长时间挂起。
 //!
 //! 三条边界由本层保证：
-//! - **只读**：只注册 `taoli_shadow_report`（读归档）。不提供任何写操作工具，
+//! - **不注册宿主工具**：agent 的能力来自运行时的内置工具与已配置的 skill，
+//!   两者产生的副作用动作都要过审批。本层不额外注册任何工具（原
+//!   `taoli_shadow_report` 汇报的是套利观察归档，与个股分析无关，已移除）。
 //!   也不引用 `order`/`execution`/`account`。
 //! - **人工门禁**：审批一律经界面裁决，默认拒绝；超时由 `AgentSession` 侧按
 //!   失败关闭处理。
-//! - **不可用时失败关闭**：运行时缺失、归档缺失、trace 目录不可写都在开跑之
-//!   前判明，不在中途降级。
+//! - **不可用时失败关闭**：运行时缺失、trace 目录不可写、沙箱不可用、领域指令
+//!   缺失都在开跑之前判明，不在中途降级。
 
 use std::{
     path::{Path, PathBuf},
@@ -27,7 +29,6 @@ use personal_taoli_core::agent::{
     approval::{ApprovalDecider, ApprovalRequest, Decision},
     discover_program, instructions,
     sandbox::{self, SandboxPolicy},
-    shadow_tool::ShadowReportTool,
     tools::ToolRegistry,
     trace::ThreadOptions,
 };
@@ -39,15 +40,8 @@ use super::{
         AgentApprovalDecision, AgentApprovalRequest, AgentReady, AgentSkill, AgentStatus,
         AgentToolCall, AgentTurn,
     },
-    support::{api_fail, api_map, load_config},
+    support::{api_fail, api_map},
 };
-
-/// 归档新鲜度容差：宿主策略，不是模型入参。
-///
-/// 24 小时是「分析连续影子窗口」这一用途的取值——窗口本身是历史数据，过紧的
-/// 阈值只会让工具恒失败。真正防的是把很久以前的窗口当成现状：界面上同时展示
-/// `observation_age_ms`，且超过该阈值时工具**拒绝返回**。
-const ARCHIVE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// 单轮上限：总时长、工具调用数、审批等待时长。
 const TURN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -150,9 +144,9 @@ fn trace_dir() -> Result<PathBuf, anyhow::Error> {
 
 /// 默认分析提示词。
 ///
-/// 写死一句话而非让用户从零输入，是因为本页的用途固定为「读只读工具并复述结
-/// 论」；用户仍可改写。
-const DEFAULT_PROMPT: &str = "调用 taoli_shadow_report 工具，然后说明归档中有多少条记录、观察时长是多少、有多少条被接受的套利机会。不要编造工具未返回的数字。";
+/// 写死一句话而非让用户从零输入，是因为本页用途固定为「让 agent 分析一只个股」；
+/// 用户仍可改写。提示里不再点名任何宿主工具——本层不注册工具。
+const DEFAULT_PROMPT: &str = "分析 600519.SH。先说明你打算用哪个 skill、按什么步骤做，再给出结论与依据；数字只能来自你实际读取到的数据，不要编造。";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -244,16 +238,6 @@ impl Default for AgentController {
     }
 }
 
-/// 只读工具集：归档统计。绝不注册写操作。
-fn tool_registry(archive: &Path) -> Arc<ToolRegistry> {
-    let mut registry = ToolRegistry::new();
-    registry.register(Box::new(ShadowReportTool::new(
-        archive.to_path_buf(),
-        ARCHIVE_MAX_AGE_MS,
-    )));
-    Arc::new(registry)
-}
-
 /// 施加于 codex 子进程的沙箱策略。
 ///
 /// 只授予运行时可证必需的可写位置：它自己的 home（会话与状态存储——实测缺少
@@ -266,18 +250,13 @@ fn codex_confinement(codex_home: &Path, trace_dir: &Path) -> SandboxPolicy {
     policy
 }
 
-/// 归档路径：优先观察配置，其次默认搜索。
-fn archive_path(config_path: Option<String>) -> Result<PathBuf, anyhow::Error> {
-    let (_, config) = load_config(config_path)?;
-    Ok(config.archive.path.clone())
-}
-
-/// 就绪检查：运行时、归档、trace 目录、沙箱四项都必须可用。
+/// 就绪检查：运行时、trace 目录、沙箱、领域指令四项都必须可用。
 ///
-/// 结果同时给出各项的实际取值，便于界面显示「在哪跑、读哪、写哪、是否受限」。
+/// 归档**不再**是就绪前提：需要归档的是已移除的那个套利工具，留下这道门只会让
+/// 缺归档时无故拒绝启动。`config_path` 仍保留在签名里，供后续需要配置的能力使用。
 fn readiness(config_path: Option<String>) -> AgentReady {
+    let _ = config_path;
     let program = discover_program().map(|path| path.to_string_lossy().into_owned());
-    let archive = archive_path(config_path).ok();
     // 绝对路径：既用于创建，也用于沙箱可写根。
     let traces = trace_dir().ok();
     let trace_writable = traces.is_some();
@@ -300,8 +279,6 @@ fn readiness(config_path: Option<String>) -> AgentReady {
 
     let reason = if program.is_none() {
         Some("未找到 codex 可执行文件。请先安装 codex 并确保它在 PATH 上。".to_string())
-    } else if archive.as_ref().is_none_or(|path| !path.is_file()) {
-        Some("未找到观察归档。请先在控制台跑一次观测，或检查配置中的 archive.path。".to_string())
     } else if !trace_writable {
         Some(format!(
             "无法创建 trace 目录 {TRACE_DIR_REL}（相对项目根）。"
@@ -319,7 +296,6 @@ fn readiness(config_path: Option<String>) -> AgentReady {
     AgentReady {
         ready: reason.is_none(),
         program,
-        archive_path: archive.map(|path| path.to_string_lossy().into_owned()),
         trace_dir,
         sandbox: confinement.to_string(),
         instructions: domain_instructions
@@ -410,10 +386,6 @@ impl AgentController {
         if !ready.ready {
             anyhow::bail!(ready.reason.unwrap_or_else(|| "agent 未就绪".to_string()));
         }
-        let archive = ready
-            .archive_path
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("未找到归档路径"))?;
         let program = ready.program.clone();
 
         {
@@ -441,14 +413,8 @@ impl AgentController {
         let task_status = Arc::clone(&status);
         let task_slot = Arc::clone(&slot);
         tauri::async_runtime::spawn(async move {
-            let outcome = run_agent(
-                program,
-                PathBuf::from(archive),
-                commands_rx,
-                Arc::clone(&task_status),
-                task_slot,
-            )
-            .await;
+            let outcome =
+                run_agent(program, commands_rx, Arc::clone(&task_status), task_slot).await;
             let mut guard = lock(&task_status);
             if let Err(error) = outcome {
                 guard.phase = "error";
@@ -550,7 +516,6 @@ impl AgentController {
 /// 后台任务主体：拥有 `AgentSession`，串行处理命令。
 async fn run_agent(
     program: Option<String>,
-    archive: PathBuf,
     mut commands: mpsc::Receiver<AgentCommand>,
     status: Arc<Mutex<AgentStatus>>,
     slot: Arc<Mutex<Option<PendingApproval>>>,
@@ -580,7 +545,9 @@ async fn run_agent(
     };
     let mut session = AgentSession::connect(config).await?;
 
-    let tools = tool_registry(&archive);
+    // 本层不注册宿主工具：能力来自运行时内置工具与已配置的 skill，副作用动作
+    // 一律过审批。注册表留在这里，是给将来一个作用域正确的工具留位置。
+    let tools = Arc::new(ToolRegistry::new());
     let options = ThreadOptions {
         cwd: root.to_string_lossy().into_owned(),
         ephemeral: false,
@@ -936,5 +903,49 @@ mod root_env_tests {
             );
             unsafe { std::env::remove_var(SKILL_ROOTS_ENV) };
         });
+    }
+}
+
+#[cfg(test)]
+mod readiness_gate_tests {
+    use super::*;
+
+    /// Regression: the archive must not gate readiness.
+    ///
+    /// It was a prerequisite only because the removed tool read it. Left in
+    /// place, the gate would refuse to start a session over a file nothing
+    /// reads — and the message would point the operator at the wrong thing.
+    #[test]
+    fn readiness_does_not_gate_on_the_archive() {
+        if discover_program().is_none()
+            || !personal_taoli_core::agent::sandbox::probe().is_available()
+        {
+            eprintln!("skipping: codex or the seatbelt sandbox is unavailable here");
+            return;
+        }
+        let ready = readiness(None);
+        assert!(
+            ready.ready,
+            "readiness must not depend on the archive; reason was {:?}",
+            ready.reason
+        );
+        // And nothing in the reported state should mention it either.
+        assert!(
+            !ready.reason.unwrap_or_default().contains("归档"),
+            "the archive must not appear in the readiness reason"
+        );
+    }
+
+    /// The host ships no tools, deliberately: the removal was about scope, and
+    /// the registry is still the single place a correctly-scoped tool would go.
+    #[test]
+    fn the_host_registers_no_tools() {
+        let registry = ToolRegistry::new();
+        assert!(
+            registry.is_empty(),
+            "expected no host tools, got {:?}",
+            registry.names()
+        );
+        assert!(registry.specs().is_empty(), "nothing may be advertised");
     }
 }

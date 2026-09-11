@@ -154,7 +154,6 @@ crates/core/src/agent/          ← 新增子模块（只读边界内）
   app_server.rs                 ← codex app-server 子进程 + JSON-RPC 客户端（stdio）
   protocol.rs                   ← JSON-RPC 信封、能力协商、thread/turn 参数
   tools.rs                      ← 工具机制：spec/注册表/唯一路由点
-  shadow_tool.rs                ← 具体只读工具 + 新鲜度策略
   approval.rs                   ← 审批归类、裁决、审计日志
   trace.rs                      ← 会话 trace：append-only 落盘 + 结构校验回放
   instructions.rs               ← 领域指令加载（内容来自仓库文件，缺失/为空即失败关闭）
@@ -204,13 +203,14 @@ docs/agent/instructions.md      ← 已实现：领域约束文档（受版本�
 
 分帧为**换行分隔 JSON**（`app-server-transport/src/transport/stdio.rs`：stdin 逐行读、stdout 每条追加 `\n`）。
 
-### 3.3 工具集（轮次 B 已实现，全部只读）
+### 3.3 工具集（轮次 B 实现，轮次 I 清空）
 
-| 工具名 | 数据来源 | 边界 |
-|---|---|---|
-| `taoli_shadow_report` | `archive::replay_archive`（`crates/core/src/archive/reader.rs:27`）——与 `replay_observations` 同一条核心只读路径 | 只读；无参数；**陈旧数据失败关闭**（见下） |
+**当前宿主不注册任何自定义工具。** agent 的能力来自运行时的内置工具与已配置的
+skill，两者产生的副作用动作都要过审批。
 
-**陈旧数据失败关闭**：以归档中最新事件时间戳为准，超过宿主配置的容差即**拒绝返回**，而不是把旧数据当现状给出。容差是**宿主策略**（非模型入参），模型无法通过提问放宽。
+原本注册的 `taoli_shadow_report` 汇报**跨交易所套利观察归档**，与个股分析无关，
+已移除（见任务文档 PORT-01-I）。`tools.rs` 的机制与唯一路由点保留：将来一个作用域
+正确的工具（如行情快照、财报读取）注册到同一处即可，无需改动会话循环。
 
 **未注册工具的处置**：在 `ToolRegistry::dispatch` 这唯一路由点拒绝，回 `success:false` 并把可用工具名一并告知模型；**无任何回退路径**（不会静默改用 codex 内置工具）。
 

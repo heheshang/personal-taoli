@@ -316,7 +316,6 @@ export async function getSimulationRunDetail(
 export interface AgentReady {
   ready: boolean
   program: string | null
-  archive_path: string | null
   trace_dir: string | null
   /** 沙箱可用性的人类可读描述。不可用时 `reason` 同时给出说明。 */
   sandbox: string

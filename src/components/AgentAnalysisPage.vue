@@ -281,9 +281,6 @@ onUnmounted(stopPolling)
           <span>运行时</span><code>{{ ready.program ?? '未找到' }}</code>
         </div>
         <div class="codex-check">
-          <span>归档</span><code>{{ ready.archive_path ?? '未找到' }}</code>
-        </div>
-        <div class="codex-check">
           <span>trace</span><code>{{ ready.trace_dir ?? '不可写' }}</code>
         </div>
         <div class="codex-check">
@@ -305,7 +302,7 @@ onUnmounted(stopPolling)
       <div ref="thread" class="codex-thread">
         <div v-if="!turns.length" class="codex-empty">
           <div>尚未发起分析。</div>
-          <div>本页只提供只读工具：读取观察归档并汇总结论。</div>
+          <div>说明要分析哪只个股即可；能力来自可用的 skill 与运行时工具。</div>
         </div>
 
         <article v-for="turn in turns" :key="turn.seq" class="codex-turn">
@@ -403,7 +400,7 @@ onUnmounted(stopPolling)
             v-model="prompt"
             rows="3"
             :disabled="running"
-            placeholder="让 agent 分析观察归档，例如：总结当前的套利机会与拒绝原因"
+            placeholder="例如：分析 600519.SH，先说明用哪个 skill，再给结论与依据"
             @keydown="onComposerKeydown"
             @input="resizeComposer"
           />
@@ -432,7 +429,7 @@ onUnmounted(stopPolling)
           </template>
         </div>
         <div class="codex-composer-hint">
-          Enter 发送 · Shift+Enter 换行 · 只读工具（读取观察归档） · 副作用动作需审批
+          Enter 发送 · Shift+Enter 换行 · 宿主不注册工具 · 副作用动作需审批
         </div>
       </div>
     </template>

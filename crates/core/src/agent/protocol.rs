@@ -252,7 +252,7 @@ mod tests {
         let request = json!({
             "id": 42,
             "method": "item/tool/call",
-            "params": { "tool": "taoli_shadow_report", "callId": "c1" }
+            "params": { "tool": "taoli_test_echo", "callId": "c1" }
         });
         match classify(&request) {
             Some(Incoming::Request { id, method, params }) => {
@@ -260,7 +260,7 @@ mod tests {
                 assert_eq!(method, "item/tool/call");
                 assert_eq!(
                     params.expect("params present")["tool"],
-                    json!("taoli_shadow_report")
+                    json!("taoli_test_echo")
                 );
             }
             other => panic!("expected Request, got {other:?}"),

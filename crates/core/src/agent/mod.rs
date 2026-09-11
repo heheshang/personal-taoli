@@ -27,7 +27,6 @@ pub mod approval;
 pub mod instructions;
 pub mod protocol;
 pub mod sandbox;
-pub mod shadow_tool;
 pub mod tools;
 pub mod trace;
 
@@ -779,8 +778,7 @@ mod tests {
         self, ApprovalDecider, ApprovalKind, ApprovalLog, ApprovalRequest, Decision, DecisionSource,
     };
     use crate::agent::protocol::ApprovalPolicy;
-    use crate::agent::shadow_tool::ShadowReportTool;
-    use crate::agent::tools::ToolOutcome;
+    use crate::agent::tools::{AgentTool, ToolOutcome};
     use crate::agent::trace::{RecordedTurnStatus, SandboxMode};
     use serde_json::json;
     use std::path::PathBuf;
@@ -803,13 +801,41 @@ mod tests {
         }
     }
 
-    /// A registry holding the real read-only tool, with freshness tolerance wide
-    /// enough for the committed archive.
-    fn shadow_registry() -> Arc<ToolRegistry> {
-        let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../data/archive/observations.ndjson");
+    /// A tool that exists only to exercise the mechanism.
+    ///
+    /// The host deliberately ships **no** tools. The one it had
+    /// (`taoli_shadow_report`) reported the arbitrage observation archive, which
+    /// is the wrong scope for stock analysis — an analysis of a listed company
+    /// has nothing to do with cross-venue arbitrage bookkeeping. The mechanism
+    /// stays, and stays tested, so a correctly-scoped tool has somewhere to go.
+    struct EchoTool;
+
+    impl AgentTool for EchoTool {
+        fn name(&self) -> &'static str {
+            "taoli_test_echo"
+        }
+
+        fn description(&self) -> &'static str {
+            "Return a fixed marker. Exists only for tests."
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false,
+            })
+        }
+
+        fn call(&self, _arguments: &serde_json::Value) -> ToolOutcome {
+            ToolOutcome::text("MARKER-42")
+        }
+    }
+
+    fn echo_registry() -> Arc<ToolRegistry> {
         let mut registry = ToolRegistry::new();
-        registry.register(Box::new(ShadowReportTool::new(archive, u64::MAX)));
+        registry.register(Box::new(EchoTool));
         Arc::new(registry)
     }
 
@@ -967,12 +993,12 @@ mod tests {
 
     /// Acceptance (round B): the model calls a host tool and the host answers.
     #[tokio::test]
-    async fn turn_calls_the_registered_read_only_tool() {
+    async fn turn_calls_the_registered_tool() {
         let Some(program) = codex_program() else {
             eprintln!("skipping: codex is not installed on PATH");
             return;
         };
-        let tools = shadow_registry();
+        let tools = echo_registry();
         let mut session = AgentSession::connect(fast_config(program))
             .await
             .expect("handshake must succeed");
@@ -983,7 +1009,7 @@ mod tests {
 
         let outcome = session
             .run_turn(
-                "Call the taoli_shadow_report tool and then state how many records it reports.",
+                "Call the taoli_test_echo tool and report exactly what it returns.",
                 deny_context(tools),
             )
             .await
@@ -997,13 +1023,12 @@ mod tests {
             outcome.tool_calls
         );
         let call = &outcome.tool_calls[0];
-        assert_eq!(call.tool, "taoli_shadow_report");
+        assert_eq!(call.tool, "taoli_test_echo");
         assert!(call.success, "tool {call:?} must succeed");
-        // The payload the model received is the summary produced by the core
-        // read path, so it parses as one.
-        let summary: crate::agent::shadow_tool::Summary =
-            serde_json::from_str(&call.output).expect("tool output is the summary JSON");
-        assert!(summary.records > 0, "archive has records: {summary:?}");
+        assert_eq!(
+            call.output, "MARKER-42",
+            "the host's answer must reach the model"
+        );
         assert!(
             outcome.final_message.is_some(),
             "the model must produce a final message"
@@ -1027,7 +1052,7 @@ mod tests {
             return;
         };
         // Advertised to the runtime...
-        let advertised = shadow_registry();
+        let advertised = echo_registry();
         // ...but nothing is dispatchable.
         let dispensable = Arc::new(ToolRegistry::new());
 
@@ -1041,7 +1066,7 @@ mod tests {
 
         let outcome = session
             .run_turn(
-                "Call the taoli_shadow_report tool and report exactly what it returns.",
+                "Call the taoli_test_echo tool and report exactly what it returns.",
                 deny_context(dispensable),
             )
             .await
@@ -1055,7 +1080,7 @@ mod tests {
             outcome.tool_calls
         );
         let call = &outcome.tool_calls[0];
-        assert_eq!(call.tool, "taoli_shadow_report");
+        assert_eq!(call.tool, "taoli_test_echo");
         assert!(!call.success, "an unknown tool must be refused: {call:?}");
         assert!(
             call.output.contains("unknown tool"),
@@ -1298,15 +1323,8 @@ mod tests {
             eprintln!("skipping: codex is not installed on PATH");
             return;
         };
-        let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../data/archive/observations.ndjson");
-        if !archive.is_file() {
-            eprintln!("skipping: {} is absent", archive.display());
-            return;
-        }
-
         let scratch = scratch_dir("trace-live");
-        let tools = shadow_registry();
+        let tools = echo_registry();
         let mut session = AgentSession::connect(fast_config(program))
             .await
             .expect("handshake must succeed");
@@ -1322,7 +1340,7 @@ mod tests {
 
         let outcome = session
             .run_turn(
-                "Call the taoli_shadow_report tool and then say how many records it reports.",
+                "Call the taoli_test_echo tool and then repeat what it returned.",
                 deny_context(tools),
             )
             .await
@@ -1363,7 +1381,7 @@ mod tests {
         assert_eq!(turn.approvals, outcome.approvals);
         assert_eq!(turn.refused_requests, outcome.refused_requests);
         assert_eq!(
-            trace.tool_call_counts().get("taoli_shadow_report"),
+            trace.tool_call_counts().get("taoli_test_echo"),
             Some(&1),
             "the tool call must be attributable by name"
         );

@@ -28,7 +28,6 @@ use serde::{Deserialize, Serialize};
 
 use super::approval::ApprovalRecord;
 use super::protocol::ApprovalPolicy;
-use super::tools::ContentItem;
 
 /// Which sandbox the runtime is asked to apply.
 ///
@@ -569,20 +568,6 @@ fn open_turn(current: &mut Option<TurnTrace>, line: usize) -> Result<&mut TurnTr
     }
 }
 
-/// Renders a tool outcome's text for recording.
-///
-/// Kept here so the trace and the wire payload cannot drift: both read the same
-/// content items.
-pub fn outcome_text(items: &[ContentItem]) -> String {
-    items
-        .iter()
-        .map(|item| match item {
-            ContentItem::Text(text) => text.as_str(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Parameters for starting a thread.
 ///
 /// Bundled because round D adds a sixth concern; positional parameters at that
@@ -685,7 +670,7 @@ mod tests {
             },
             TraceEvent::ToolCall {
                 call_id: "call-1".to_string(),
-                tool: "taoli_shadow_report".to_string(),
+                tool: "taoli_test_echo".to_string(),
                 arguments: json!({}),
                 success: true,
                 output: "{\"records\":284}".to_string(),
@@ -733,7 +718,7 @@ mod tests {
         assert_eq!(turn.turn_id, "turn-1");
         assert_eq!(turn.prompt, "do the thing");
         assert_eq!(turn.tool_calls.len(), 1);
-        assert_eq!(turn.tool_calls[0].tool, "taoli_shadow_report");
+        assert_eq!(turn.tool_calls[0].tool, "taoli_test_echo");
         assert_eq!(turn.tool_calls[0].output, "{\"records\":284}");
         assert_eq!(turn.approvals.len(), 1);
         assert_eq!(turn.approvals[0].request_id, 7);
@@ -745,10 +730,7 @@ mod tests {
         assert_eq!(turn.status, Some(RecordedTurnStatus::Completed));
         assert_eq!(turn.final_message.as_deref(), Some("done"));
 
-        assert_eq!(
-            trace.tool_call_counts().get("taoli_shadow_report"),
-            Some(&1)
-        );
+        assert_eq!(trace.tool_call_counts().get("taoli_test_echo"), Some(&1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -788,7 +770,7 @@ mod tests {
             });
             events.push(TraceEvent::ToolCall {
                 call_id: format!("c-{turn_id}"),
-                tool: "taoli_shadow_report".to_string(),
+                tool: "taoli_test_echo".to_string(),
                 arguments: json!({}),
                 success: true,
                 output: "ok".to_string(),
@@ -810,10 +792,7 @@ mod tests {
         // A tool call must not leak into the wrong turn.
         assert_eq!(trace.turns[0].tool_calls[0].call_id, "c-turn-a");
         assert_eq!(trace.turns[1].tool_calls[0].call_id, "c-turn-b");
-        assert_eq!(
-            trace.tool_call_counts().get("taoli_shadow_report"),
-            Some(&2)
-        );
+        assert_eq!(trace.tool_call_counts().get("taoli_test_echo"), Some(&2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -978,7 +957,7 @@ mod tests {
                 },
                 TraceEvent::ToolCall {
                     call_id: "c".to_string(),
-                    tool: "taoli_shadow_report".to_string(),
+                    tool: "taoli_test_echo".to_string(),
                     arguments: json!({}),
                     success: true,
                     output: "ok".to_string(),
@@ -1067,17 +1046,5 @@ mod tests {
         // The safe default is the one that actually raises approvals.
         assert_eq!(options.approval_policy, ApprovalPolicy::UnlessTrusted);
         assert!(options.trace_dir.is_none(), "tracing is opt-in");
-    }
-
-    #[test]
-    fn outcome_text_joins_the_content_items_in_order() {
-        assert_eq!(
-            outcome_text(&[
-                ContentItem::Text("a".to_string()),
-                ContentItem::Text("b".to_string())
-            ]),
-            "a\nb"
-        );
-        assert_eq!(outcome_text(&[]), "");
     }
 }
