@@ -345,8 +345,10 @@ export interface AgentApprovalRequest {
 }
 
 /**
- * 裁决 token，与 Codex 桌面版审批卡的四个动作一一对应：
- * 允许一次 / 允许此对话 / 始终允许 / 拒绝。
+ * 裁决 token，对应 Codex 桌面版审批卡的动作：允许一次 / 允许此对话 / 始终允许 / 拒绝。
+ *
+ * `allow_always` 只在宿主允许运行时写自己的规则目录时才会出现。本页的宿主不允许
+ * （否则一次点击会改掉这台机器上所有 codex 会话的行为），故实际只会收到三个值。
  */
 export type AgentDecision = 'allow_once' | 'allow_for_session' | 'allow_always' | 'deny'
 

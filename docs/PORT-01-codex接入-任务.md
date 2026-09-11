@@ -22,6 +22,7 @@
 | PORT-01-H | 外部 skill 接入（注册根 + 可写根） | G | **`verified`**（见下） |
 | PORT-01-I | 移除作用域错误的宿主工具 | H | **`verified`**（见下） |
 | PORT-01-J | 审批动作对齐 Codex 桌面版（四档） | C | **`verified`**（见下） |
+| PORT-01-K | 禁止长期放行（carve-out + 不提供第四档） | J | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -722,6 +723,64 @@ deny              -> {"decision":"decline"}                       命令 decline
 
 ---
 
+## PORT-01-K 禁止长期放行（2026-09-10）
+
+**背景**：所有者指令——「（长期放行落盘的问题）需要做」。
+
+**这暴露了 J 轮次里一个真实的矛盾**，必须先讲清楚，因为它决定了取舍：
+
+| 诉求 | 来源 | 与另一条的关系 |
+|---|---|---|
+| 审批四档与 codex app 一致（含**始终允许**） | J 轮次（所有者） | — |
+| 不让「始终允许」在本机**长期生效** | K 轮次（所有者） | **与上一条在第四项上互斥**：第四项的全部含义就是写下一条长期规则 |
+
+不能既保留一个承诺永久的按钮、又让它不生效 —— 那是我在 C 轮次就明确拒绝做的假话。因此 K 的实现是：
+**保留四档机制，但在本页禁用第四档并说明原因**。
+
+**测量（先于取舍）**：给沙箱子进程加上「规则目录不可写」后，`acceptWithExecpolicyAmendment` 的真实行为——
+
+```
+approval -> {"decision":{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","taoli-repeat-…"]}}}
+approvals raised : 3          ← 第二条同样的命令仍被门禁拦住（还额外触发了一次）
+command items    : ["declined/\"\"", "completed/\"\"", "declined/\"\""]
+rule persisted   : false
+VERDICT: allow_always left no effect
+```
+
+即：**被接受、然后什么都不做**。用它当「允许一次」是误导；用它当按钮则承诺无法兑现。
+
+**实现**：
+- 沙箱新增 `deny_write_subpaths`（`(deny file-write* (subpath …))`），**排在所有 allow 之后**——Seatbelt 后者胜出，deny 若排在前面会被后续 allow 悄悄重新打开。
+- `codex_child_policy` 恒定 carve out `<codex_home>/rules`（`RULES_SUBDIR` 单点命名）。这样「接受然后无效果」不会再发生：规则根本写不进去。
+- `SandboxPolicy::blocks_rule_persistence()` 把「沙箱是否禁止写规则」变成可询问的事实；命令层据此选择 `approval::Persistence::{Allowed, Blocked}`，`available_decisions` 在 `Blocked` 时不提供 `AllowAlways`。
+- 界面按 options 渲染；第四项缺席时给出说明，而不是让使用者对着 codex app 少一个按钮发愣。
+
+**绑定防漂移**：`the_child_policy_reports_that_rule_persistence_is_blocked` 断言子进程策略确实禁止写规则，
+`the_permanent_grant_is_not_offered_when_persistence_is_blocked` 断言该状态下不提供第四档。若有人移除
+carve-out，前者失败，而不是让一个「始终允许」按钮悄悄回来继续被沙箱忽略。
+
+**验收**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 子进程无法写运行时的规则目录 | ✅ | 实测：`allow_always` 下 `default.rules` 字节数不变、marker 不在其中；`the_codex_child_policy_denies_writes_to_the_rules_directory` |
+| carve-out 排在所有 allow 之后 | ✅ | `a_carve_out_is_emitted_after_every_allowance`（含 platform defaults 之后） |
+| 无法兑现的第四档不被提供 | ✅ | `the_permanent_grant_is_not_offered_when_persistence_is_blocked`；渲染断言按钮 = `["允许一次","允许此对话","拒绝"]` |
+| 越权守卫拦截绕过界面的调用 | ✅ | `a_verdict_outside_the_offered_set_is_refused` |
+| 界面说明第四项缺席原因 | ✅ | 渲染断言含「本页没有「始终允许」：运行时的规则目录被设为不可写」 |
+| 机制未被删死（宿主若允许持久化仍给四档） | ✅ | 渲染断言：options 含 `allow_always` 时按钮为四个 |
+| 相对 carve-out 被拒 | ✅ | `a_relative_carve_out_is_refused` |
+| `cargo fmt/clippy(-D warnings)/test` | ✅ | clean / 0 / **297 core + 22 tauri** |
+| `npm run build` | ✅ | 零错误 |
+
+**实测确认无副作用**：测量期间 `~/.codex/rules/default.rules` 由探针快照并在结束时比对，两次测量均未发生变化；
+此前 J 轮次探针写入的 3 条已删除。你现有的规则条数未受影响。
+
+**仍未验证**：未在真实 Tauri 宿主里跑（沿用 mock IPC）；未测 carve-out 是否影响 codex 的其他功能
+（它只在写规则目录时会失败，读取不受限）。
+
+---
+
 ## 风险与依赖登记
 
 | 风险 | 影响 | 处置 |
@@ -736,7 +795,7 @@ deny              -> {"decision":"decline"}                       命令 decline
 | **策略 idiom 选错会整体失效** | 用 `(allow default)` + 过滤 deny 时所有写入被放行，看起来「沙箱无用」 | 采用上游的 `(deny default)` + 显式 allow；测试断言策略含 `(deny default)` 且无无条件的写授权 |
 | 本机 codex 经本地代理（`deepseek-flash`） | 会话结果受代理影响 | 验证阶段记录实际 provider/model；不以单次结果作能力断言 |
 | 接入被误用为交易路径 | 违反架构文档 §1.2 | 宿主不注册工具 + 环境变量白名单 + 沙箱不授予工作区写；在验收中逐条证明 |
-| **「始终允许」写入持久规则** | 一次点击即长期放行，且落在 `~/.codex/rules/default.rules`，影响该机器上所有 codex 会话 | 该动作**只在运行时提出具体规则时**才出现；文案明示「追加一条长期规则」；`ensure_offered` 防止越权选用；审计记录每次裁决。**注意：这是所有者的选择，带来的持久放行不在本项目的沙箱边界内** |
+| ~~「始终允许」写入持久规则~~ **已由 K 轮次消除** | — | 沙箱 carve out `<codex_home>/rules`，子进程无法写规则；该动作随之不再提供（实测：被接受但无效果）。剩余风险是**该目录被改回可写**——由 `the_child_policy_reports_that_rule_persistence_is_blocked` 挡住 |
 | **审批审计格式变化** | 裁决值由 `allow`/`deny` 变为四值 | 已记入本文档；审计为本地 append-only，无兼容承诺 |
 | 与 A-05 影子窗口门禁的关系 | 可能影响当前 `pending` 状态 | **已确认无影响**（见下） |
 | **领域指令被抽空或误删** | agent 仍能运行，但失去只读边界与「数字以工具返回为准」等约束，且外观上无法察觉 | 文件缺失/为空即拒绝启动；测试断言 6 条关键表述仍在；trace 记录指令指纹，可比对两个 run 是否同一修订 |

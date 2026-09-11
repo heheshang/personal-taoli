@@ -202,6 +202,12 @@ pub struct TurnContext {
     pub approvals: Arc<dyn ApprovalDecider>,
     /// Optional audit sink for approval decisions.
     pub audit: Option<Arc<ApprovalLog>>,
+    /// Whether a permanent approval can take effect in this session.
+    ///
+    /// Callers pass [`approval::Persistence::Blocked`] whenever the runtime is
+    /// confined away from its rule store, which is the default here: a permanent
+    /// verdict then silently does nothing, so the option must not be offered.
+    pub persistence: approval::Persistence,
     pub limits: TurnLimits,
 }
 
@@ -437,6 +443,7 @@ impl AgentSession {
             tools,
             approvals,
             audit,
+            persistence,
             limits,
         } = context;
 
@@ -468,7 +475,15 @@ impl AgentSession {
 
         let deadline = tokio::time::Instant::now() + limits.timeout;
         let result = self
-            .drive_turn(&mut outcome, &tools, &*approvals, &audit, &limits, deadline)
+            .drive_turn(
+                &mut outcome,
+                &tools,
+                &*approvals,
+                &audit,
+                persistence,
+                &limits,
+                deadline,
+            )
             .await;
 
         // Exactly one turn_finished per turn, on every exit path: a trace with a
@@ -503,6 +518,7 @@ impl AgentSession {
         tools: &Arc<ToolRegistry>,
         approvals: &dyn ApprovalDecider,
         audit: &Option<Arc<ApprovalLog>>,
+        persistence: approval::Persistence,
         limits: &TurnLimits,
         deadline: tokio::time::Instant,
     ) -> Result<(), AgentError> {
@@ -549,7 +565,14 @@ impl AgentSession {
                         // A side-effecting action: the owner decides, and a
                         // missing verdict is a refusal.
                         let (record, payload) = decide_approval(
-                            approvals, id, kind, &method, &params, limits, deadline,
+                            approvals,
+                            id,
+                            kind,
+                            &method,
+                            &params,
+                            persistence,
+                            limits,
+                            deadline,
                         )
                         .await;
                         if let Some(trace) = &self.trace {
@@ -650,12 +673,14 @@ fn now_ms() -> u64 {
 /// runtime waiting. The deadline is applied **here** rather than inside the
 /// decider, so the fail-closed guarantee does not depend on implementers
 /// remembering to honour it.
+#[allow(clippy::too_many_arguments)]
 async fn decide_approval(
     decider: &dyn ApprovalDecider,
     id: i64,
     kind: ApprovalKind,
     method: &str,
     params: &Value,
+    persistence: approval::Persistence,
     limits: &TurnLimits,
     turn_deadline: tokio::time::Instant,
 ) -> (ApprovalRecord, Value) {
@@ -666,7 +691,7 @@ async fn decide_approval(
         summary: summarise(kind, params),
         details: params.clone(),
         advertised: advertised_decisions(params),
-        options: approval::available_decisions(kind, params),
+        options: approval::available_decisions(kind, params, persistence),
     };
 
     let started = tokio::time::Instant::now();
@@ -859,6 +884,9 @@ mod tests {
             tools,
             approvals: Arc::new(approval::DenyAll),
             audit: None,
+            // Tests default to the confined state, which is what the command
+            // layer uses: permanent grants are unavailable.
+            persistence: approval::Persistence::Blocked,
             limits: TurnLimits::default(),
         }
     }
@@ -1134,6 +1162,7 @@ mod tests {
                     tools,
                     approvals: Arc::new(approval::DenyAll),
                     audit: Some(Arc::clone(&audit)),
+                    persistence: approval::Persistence::Blocked,
                     limits: TurnLimits::default(),
                 },
             )
@@ -1208,6 +1237,7 @@ mod tests {
                     tools,
                     approvals: Arc::new(NeverAnswers),
                     audit: Some(Arc::clone(&audit)),
+                    persistence: approval::Persistence::Blocked,
                     limits: TurnLimits {
                         // Short enough to keep the suite quick, long enough for
                         // the runtime to raise the request.
@@ -1288,6 +1318,7 @@ mod tests {
                     tools,
                     approvals: Arc::clone(&decider) as Arc<dyn ApprovalDecider>,
                     audit: None,
+                    persistence: approval::Persistence::Blocked,
                     limits: TurnLimits::default(),
                 },
             )

@@ -49,6 +49,18 @@ const running = computed(
 )
 const sessionAlive = computed(() => phase.value !== 'stopped' && phase.value !== 'error')
 
+/**
+ * 永久放行在本页不可用。
+ *
+ * 后端把运行时的规则目录设为不可写（否则一次点击会改掉这台机器上**所有** codex
+ * 会话的行为），而「始终允许」的全部意义就是写下那条规则。实测：规则写不进去时
+ * 该裁决会被接受但**毫无效果**——下一条同样的命令仍会被拦。因此后端不再提供它，
+ * 界面要说明这一点，而不是让使用者对着 codex app 少一个按钮发愣。
+ */
+const permanentGrantMissing = computed(
+  () => !!pending.value && !pending.value.options.includes('allow_always'),
+)
+
 const PHASE: Record<string, { label: string; tone: string }> = {
   stopped: { label: '未启动', tone: '' },
   starting: { label: '启动中', tone: 'warn' },
@@ -392,8 +404,10 @@ onUnmounted(stopPolling)
               </button>
             </div>
             <div class="codex-approval-hint">
-              「允许一次」不记住；「允许此对话」在本会话内不再询问；「始终允许」会追加一条长期规则。
-              未裁决将按失败关闭。
+              「允许一次」只批准本次；「允许此对话」在本会话内不再询问。未裁决将按失败关闭。
+            </div>
+            <div v-if="permanentGrantMissing" class="codex-approval-hint">
+              本页没有「始终允许」：运行时的规则目录被设为不可写，永久放行无法生效。
             </div>
             <div v-if="pending.advertised.length" class="codex-approval-advertised">
               运行时提供：{{ pending.advertised.join(' / ') }}

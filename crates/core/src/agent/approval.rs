@@ -139,19 +139,38 @@ impl Decision {
     }
 }
 
+/// Whether a permanent ("始终允许") verdict can mean anything here.
+///
+/// It cannot when the runtime is prevented from writing its rule store: the
+/// verdict is then accepted and **silently does nothing** — measured, the next
+/// identical command is gated again. Offering it anyway would be a button whose
+/// label promises more than it can deliver, so it is not offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Persistence {
+    /// The runtime's rule store is writable; a permanent verdict persists.
+    Allowed,
+    /// The rule store is confined; permanent verdicts have no lasting effect.
+    Blocked,
+}
+
 /// The verdicts this request can actually be answered with.
 ///
 /// Computed from the request rather than taken from the runtime's
 /// `availableDecisions`: that field is optional, was observed to omit `decline`
 /// (which the runtime nonetheless accepts), and varies per kind. Deciding here
 /// keeps one place that knows what each kind supports, and keeps the interface
-/// from offering a button whose answer cannot be expressed.
-pub fn available_decisions(kind: ApprovalKind, params: &Value) -> Vec<Decision> {
+/// from offering a button whose answer cannot be expressed — or, in the case of
+/// [`Persistence::Blocked`], whose answer cannot take effect.
+pub fn available_decisions(
+    kind: ApprovalKind,
+    params: &Value,
+    persistence: Persistence,
+) -> Vec<Decision> {
     let mut decisions = vec![Decision::AllowOnce];
     if supports_session_scope(kind) {
         decisions.push(Decision::AllowForSession);
     }
-    if proposed_amendment(kind, params).is_some() {
+    if persistence == Persistence::Allowed && proposed_amendment(kind, params).is_some() {
         decisions.push(Decision::AllowAlways);
     }
     decisions.push(Decision::Deny);
@@ -644,8 +663,12 @@ mod tests {
         );
         // And it must not be offered either.
         assert!(
-            !available_decisions(ApprovalKind::CommandExecution, &json!({}))
-                .contains(&Decision::AllowAlways)
+            !available_decisions(
+                ApprovalKind::CommandExecution,
+                &json!({}),
+                Persistence::Allowed
+            )
+            .contains(&Decision::AllowAlways)
         );
     }
 
@@ -654,8 +677,11 @@ mod tests {
     #[test]
     fn kinds_without_a_rule_proposal_do_not_offer_a_permanent_grant() {
         for kind in [ApprovalKind::FileChange, ApprovalKind::Permissions] {
-            let options =
-                available_decisions(kind, &json!({ "proposedExecpolicyAmendment": ["echo"] }));
+            let options = available_decisions(
+                kind,
+                &json!({ "proposedExecpolicyAmendment": ["echo"] }),
+                Persistence::Allowed,
+            );
             assert!(
                 !options.contains(&Decision::AllowAlways),
                 "{kind:?} must not offer 始终允许: {options:?}"
@@ -685,7 +711,7 @@ mod tests {
             (ApprovalKind::ApplyPatch, json!({})),
         ];
         for (kind, params) in cases {
-            for decision in available_decisions(kind, &params) {
+            for decision in available_decisions(kind, &params, Persistence::Allowed) {
                 assert!(
                     response_payload(kind, decision, &params).is_ok(),
                     "{kind:?} offers {decision:?} but cannot express it"
@@ -693,7 +719,7 @@ mod tests {
             }
             // And every offered set ends with the refusal, so the operator can
             // always say no.
-            let options = available_decisions(kind, &params);
+            let options = available_decisions(kind, &params, Persistence::Allowed);
             assert_eq!(
                 options.last(),
                 Some(&Decision::Deny),
@@ -843,7 +869,11 @@ mod tests {
             summary: "rm -rf /".to_string(),
             details: json!({}),
             advertised: Vec::new(),
-            options: available_decisions(ApprovalKind::CommandExecution, &json!({})),
+            options: available_decisions(
+                ApprovalKind::CommandExecution,
+                &json!({}),
+                Persistence::Allowed,
+            ),
         };
         let decision = runtime.block_on(DenyAll.decide(&request));
         assert_eq!(decision, Decision::Deny);
@@ -915,6 +945,45 @@ mod tests {
                 payload["decision"]["denied"]["rejection"].is_string(),
                 "{method} must carry a rejection: {payload}"
             );
+        }
+    }
+
+    /// A permanent verdict must not be offered when it cannot take effect.
+    ///
+    /// Measured: with the rule store confined, `acceptWithExecpolicyAmendment`
+    /// is accepted and then does nothing — a second identical command is gated
+    /// again. Offering it would promise permanence the session cannot deliver.
+    #[test]
+    fn the_permanent_grant_is_not_offered_when_persistence_is_blocked() {
+        let params = json!({ "proposedExecpolicyAmendment": ["echo", "hi"] });
+        for kind in [
+            ApprovalKind::CommandExecution,
+            ApprovalKind::ExecCommand,
+            ApprovalKind::ApplyPatch,
+        ] {
+            let blocked = available_decisions(kind, &params, Persistence::Blocked);
+            assert!(
+                !blocked.contains(&Decision::AllowAlways),
+                "{kind:?} offered 始终允许 while persistence is confined: {blocked:?}"
+            );
+            assert!(
+                blocked.contains(&Decision::AllowOnce),
+                "{kind:?}: {blocked:?}"
+            );
+            assert!(
+                blocked.contains(&Decision::AllowForSession),
+                "{kind:?}: {blocked:?}"
+            );
+            assert_eq!(
+                blocked.last(),
+                Some(&Decision::Deny),
+                "{kind:?}: {blocked:?}"
+            );
+
+            // And nothing left the door open: the option is the only route, so
+            // the request cannot be answered permanently either.
+            let allowed = available_decisions(kind, &params, Persistence::Allowed);
+            assert!(allowed.contains(&Decision::AllowAlways), "{kind:?}");
         }
     }
 }

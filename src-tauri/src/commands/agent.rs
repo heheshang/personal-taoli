@@ -26,7 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use personal_taoli_core::agent::{
     AgentSession, TurnContext, TurnLimits,
     app_server::AppServerConfig,
-    approval::{ApprovalDecider, ApprovalRequest, Decision},
+    approval::{self, ApprovalDecider, ApprovalRequest, Decision},
     discover_program, instructions,
     sandbox::{self, SandboxPolicy},
     tools::ToolRegistry,
@@ -571,6 +571,14 @@ async fn run_agent(
     let root = project_root()?;
     let trace = trace_dir()?;
     let confinement = codex_confinement(&codex_home, &trace);
+    // A permanent approval is only meaningful if the runtime can write its rule
+    // store. The confinement denies that directory, so the fourth approval
+    // action is withheld rather than shown and silently ignored.
+    let persistence = if confinement.blocks_rule_persistence() {
+        approval::Persistence::Blocked
+    } else {
+        approval::Persistence::Allowed
+    };
     // Re-read rather than carrying the readiness result: the document is read
     // once per session, and a failure here must stop the launch.
     let developer_instructions =
@@ -645,6 +653,7 @@ async fn run_agent(
                     tools: Arc::clone(&tools),
                     approvals: Arc::new(UiApprovalDecider::new(Arc::clone(&slot))),
                     audit: None,
+                    persistence,
                     limits: TurnLimits {
                         timeout: TURN_TIMEOUT,
                         max_tool_calls: MAX_TOOL_CALLS,

@@ -243,6 +243,14 @@ pub fn confined_argv(
 /// the platform scratch directories its runtime expects, and the trace
 /// directory. **The workspace is deliberately absent**: this integration's
 /// boundary is read-only, so no workspace write is granted.
+///
+/// One carve-out is intrinsic to the child: `<codex_home>/rules` is denied
+/// write access. The runtime persists an "approve forever" verdict there as a
+/// `prefix_rule`, which changes behaviour for **every later Codex session on
+/// this machine** — outside the scope of one analysis session and outside what
+/// this project's confinement is meant to control. Denying the write keeps the
+/// rule local to the session that asked for it: the approval still takes effect
+/// for the command at hand, it just cannot outlive the process.
 pub fn codex_child_policy(codex_home: &Path, trace_dir: Option<&Path>) -> SandboxPolicy {
     let mut writable_roots = vec![codex_home.to_path_buf()];
     if let Some(trace_dir) = trace_dir {
@@ -254,8 +262,30 @@ pub fn codex_child_policy(codex_home: &Path, trace_dir: Option<&Path>) -> Sandbo
         // The child must reach a model endpoint; this project runs no proxy.
         network: true,
         platform_defaults: true,
+        deny_write_subpaths: vec![codex_home.join(RULES_SUBDIR)],
     }
 }
+
+impl SandboxPolicy {
+    /// Whether this policy stops the runtime from persisting execpolicy rules.
+    ///
+    /// Asked rather than assumed: the answer decides whether a **permanent**
+    /// approval can mean anything. If the rules directory is not writable, a
+    /// "forever" verdict grants only the current action and is therefore not a
+    /// verdict the interface may offer — see
+    /// `approval::available_decisions`.
+    pub fn blocks_rule_persistence(&self) -> bool {
+        self.deny_write_subpaths
+            .iter()
+            .any(|path| path.ends_with(RULES_SUBDIR))
+    }
+}
+
+/// Where the runtime persists execpolicy rules, relative to its home.
+///
+/// Named once because two places depend on the same layout: the carve-out above,
+/// and the verification that the carve-out actually prevents a write.
+pub const RULES_SUBDIR: &str = "rules";
 
 #[cfg(test)]
 mod tests {
@@ -307,6 +337,7 @@ mod tests {
             full_disk_read: true,
             network: false,
             platform_defaults: true,
+            deny_write_subpaths: Vec::new(),
         };
         let command = vec![
             "/bin/sh".to_string(),
@@ -363,5 +394,45 @@ mod tests {
     fn a_missing_trace_directory_still_yields_a_policy() {
         let policy = codex_child_policy(Path::new("/tmp/taoli-home"), None);
         assert_eq!(policy.writable_roots.len(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_codex_child_policy_denies_writes_to_the_rules_directory() {
+        let home = PathBuf::from("/tmp/taoli-home");
+        let policy = codex_child_policy(&home, None);
+        assert_eq!(
+            policy.deny_write_subpaths,
+            vec![home.join(RULES_SUBDIR)],
+            "the rules directory must be carved out of the writable home"
+        );
+        // The home itself stays writable: the runtime stores session and state
+        // there and fails to start without it (measured).
+        assert!(policy.writable_roots.contains(&home));
+    }
+
+    /// The tie that keeps honesty intact: the policy used for the codex child
+    /// blocks rule persistence, and that is what the approval layer keys on when
+    /// deciding whether a permanent verdict may be offered.
+    ///
+    /// If someone removes the carve-out, this fails — rather than a "始终允许"
+    /// button quietly reappearing while the sandbox still ignores it.
+    #[test]
+    fn the_child_policy_reports_that_rule_persistence_is_blocked() {
+        let policy = codex_child_policy(Path::new("/tmp/taoli-home"), None);
+        assert!(
+            policy.blocks_rule_persistence(),
+            "the child must not be able to write the runtime's rule store: {:?}",
+            policy.deny_write_subpaths
+        );
+    }
+
+    #[test]
+    fn a_policy_without_the_carve_out_does_not_claim_to_block_persistence() {
+        let policy = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/tmp")],
+            ..SandboxPolicy::default()
+        };
+        assert!(!policy.blocks_rule_persistence());
     }
 }

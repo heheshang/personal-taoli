@@ -200,6 +200,18 @@ pub struct SandboxPolicy {
     /// Needed for an ordinary process: runtimes expect `$TMPDIR` and
     /// `/tmp` to be writable.
     pub platform_defaults: bool,
+    /// Paths carved back out of `writable_roots`, denied writes.
+    ///
+    /// This is the mechanism for "writable, except here": a grant that is
+    /// otherwise correct may contain a directory whose contents outlive the
+    /// session and affect the machine beyond it, and the profile must be able to
+    /// say so.
+    ///
+    /// Emitted as `(deny file-write* …)` **after every allowance**, including
+    /// the platform defaults, because Seatbelt applies the last matching rule.
+    /// A deny placed before any later `allow` would be silently ineffective —
+    /// which is the failure this ordering exists to prevent.
+    pub deny_write_subpaths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -410,7 +422,20 @@ fn build_profile(policy: &SandboxPolicy) -> Result<(String, Vec<(String, PathBuf
         sections.push(PROCESS_PLATFORM_DEFAULTS.to_string());
     }
 
-    Ok((sections.join("\n"), write_params))
+    // Carve-outs go last: Seatbelt's last matching rule wins, so a deny placed
+    // before any allowance above could be reopened by it.
+    let mut all_params = write_params;
+    let mut denies = Vec::new();
+    for (index, excluded) in policy.deny_write_subpaths.iter().enumerate() {
+        let param = format!("DENY_WRITE_{index}");
+        let path = AbsolutePathBuf::from_absolute_path(excluded)
+            .map_err(|_| SandboxError::RelativeRoot(excluded.clone()))?;
+        denies.push(format!("(deny file-write* (subpath (param \"{param}\")))"));
+        all_params.push((param, path.into_path_buf()));
+    }
+    sections.extend(denies);
+
+    Ok((sections.join("\n"), all_params))
 }
 
 /// Wraps `command` so it runs confined by `policy`.
@@ -448,6 +473,7 @@ mod tests {
             full_disk_read: true,
             network: true,
             platform_defaults: true,
+            deny_write_subpaths: Vec::new(),
         }
     }
 
@@ -488,6 +514,7 @@ mod tests {
             full_disk_read: true,
             network: false,
             platform_defaults: false,
+            deny_write_subpaths: Vec::new(),
         };
         let text = profile_text(&policy).expect("builds");
 
@@ -526,6 +553,7 @@ mod tests {
             full_disk_read: true,
             network: false,
             platform_defaults: false,
+            deny_write_subpaths: Vec::new(),
         })
         .expect("builds");
         assert!(!without.contains("(allow network*)"));
@@ -535,6 +563,7 @@ mod tests {
             full_disk_read: true,
             network: true,
             platform_defaults: false,
+            deny_write_subpaths: Vec::new(),
         })
         .expect("builds");
         assert!(with.contains("(allow network*)"));
@@ -547,6 +576,7 @@ mod tests {
             full_disk_read: false,
             network: false,
             platform_defaults: false,
+            deny_write_subpaths: Vec::new(),
         };
         let text = profile_text(&policy).expect("builds");
         assert!(
@@ -574,6 +604,7 @@ mod tests {
             full_disk_read: true,
             network: false,
             platform_defaults: false,
+            deny_write_subpaths: Vec::new(),
         };
         let argv =
             sandbox_command(&["/bin/echo".to_string(), "hi".to_string()], &policy).expect("builds");
@@ -655,5 +686,59 @@ mod tests {
         let policy = macos_policy(vec![PathBuf::from("/tmp")]);
         let text = profile_text(&policy).expect("macOS alias must be accepted");
         assert!(text.contains("(param \"WRITABLE_ROOT_0\")"));
+    }
+
+    #[test]
+    fn a_carve_out_is_emitted_after_every_allowance() {
+        let policy = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/tmp")],
+            full_disk_read: true,
+            network: false,
+            platform_defaults: true,
+            deny_write_subpaths: vec![PathBuf::from("/tmp/keep-out")],
+        };
+        let text = profile_text(&policy).expect("builds");
+
+        let deny = text
+            .find("(deny file-write* (subpath (param \"DENY_WRITE_0\")))")
+            .expect("the carve-out must be present");
+        // Order is the whole point: any allowance after it would reopen the path.
+        for allowance in [
+            "(allow file-write*",
+            "PROCESS_PLATFORM_DEFAULTS_MARKER", // placeholder; replaced below
+        ] {
+            if allowance.starts_with("PROCESS") {
+                continue;
+            }
+            let at = text.find(allowance).expect("write allowance present");
+            assert!(at < deny, "`{allowance}` must precede the carve-out");
+        }
+        // The platform defaults also grant writes to /tmp and must come first.
+        let platform = text
+            .find("(allow file-read* file-test-existence file-write* (subpath \"/tmp\"))")
+            .expect("platform defaults present");
+        assert!(
+            platform < deny,
+            "platform defaults must precede the carve-out"
+        );
+
+        // And the path travels as a parameter, never inlined.
+        assert!(
+            !text.contains("keep-out"),
+            "paths must not enter the policy text"
+        );
+    }
+
+    #[test]
+    fn a_relative_carve_out_is_refused() {
+        let policy = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/tmp")],
+            full_disk_read: true,
+            network: false,
+            platform_defaults: false,
+            deny_write_subpaths: vec![PathBuf::from("rules")],
+        };
+        let error = profile_text(&policy).expect_err("must refuse a relative carve-out");
+        assert!(matches!(error, SandboxError::RelativeRoot(_)), "{error:?}");
     }
 }
