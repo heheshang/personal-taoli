@@ -271,7 +271,11 @@ pub struct AgentTurn {
     pub tool_calls: Vec<AgentToolCall>,
     pub approvals: Vec<AgentApprovalDecision>,
     pub refused_requests: Vec<String>,
-    pub final_message: Option<String>,
+    /// 本轮全部 agent 消息，按时间顺序。
+    ///
+    /// 不是只留最后一条：分析类 skill 会边跑边汇报（stage 进度等），最后才给
+    /// 结论——只留最后一条会把中间结果全丢掉，而那正是读者要在对话里看到的内容。
+    pub messages: Vec<String>,
     /// 本轮失败原因。`None` 表示本轮正常结束。
     pub error: Option<String>,
     pub started_at_ms: u64,

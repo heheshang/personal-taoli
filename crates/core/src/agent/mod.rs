@@ -297,7 +297,15 @@ pub struct TurnOutcome {
     pub tool_calls: Vec<ToolCallRecord>,
     /// Every approval request the host answered, in arrival order.
     pub approvals: Vec<ApprovalRecord>,
-    /// Text of the last completed `agentMessage` item.
+    /// Every completed `agentMessage` item, in order.
+    ///
+    /// All of them, because an analysis is not one message: a skill reports
+    /// progress as it goes ("stage 1 pre-flight done, two of three fetch waves
+    /// complete, …") and then states its conclusion. Keeping only the last threw
+    /// away the intermediate results, which is the bulk of what a reader wants to
+    /// see in the conversation.
+    pub messages: Vec<String>,
+    /// The last of [`Self::messages`]; `None` when the turn produced none.
     pub final_message: Option<String>,
     /// Server requests refused because this client does not implement them.
     ///
@@ -510,6 +518,7 @@ impl AgentSession {
             status: TurnStatus::Completed,
             tool_calls: Vec::new(),
             approvals: Vec::new(),
+            messages: Vec::new(),
             final_message: None,
             refused_requests: Vec::new(),
         };
@@ -721,15 +730,16 @@ impl AgentSession {
                         }
                         "item/completed" => {
                             if let Some(text) = completed_agent_message(params.as_ref()) {
-                                outcome.final_message = Some(text.clone());
                                 if let Some(trace) = &self.trace {
                                     trace.try_record(&TraceEvent::Item {
                                         turn_id: turn_id.clone(),
                                         kind: "agent_message".to_string(),
-                                        text,
+                                        text: text.clone(),
                                         at_ms: now_ms(),
                                     });
                                 }
+                                outcome.final_message = Some(text.clone());
+                                outcome.messages.push(text);
                             }
                         }
                         _ => {}

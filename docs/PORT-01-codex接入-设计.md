@@ -228,6 +228,20 @@ skill，两者产生的副作用动作都要过审批。
 
 **视觉作用域**：Codex 令牌（蓝主色、superellipse 圆角、16px 聊天气泡字号）仅作用于 `.codex-scope`，不覆盖本项目 UI-01 的全局令牌。代价是本页主色与其余页面不同；统一需另立一轮。
 
+### 3.3f 结果呈现与 Markdown（轮次 O）
+
+**一轮保留全部 agent 消息**（`TurnOutcome.messages`）：分析 skill 边跑边汇报，只留最后一条
+会把中间结果丢弃。DTO 不再有 `final_message`——`messages` 是其超集。
+
+**Markdown 渲染是不可信输入的解析**，输入是模型写的任意文本，而落点是一个能触达 Rust 后端的
+webview。净化靠 markdown-it 的两个设置：`html: false`（原始 HTML 转义，从源头消除注入）与
+内置链接校验（拒 `javascript:`/`vbscript:`/`file:`/多数 `data:`）。链接渲染但**不导航**——
+未装外部打开插件，webview 内跳转会把应用页面换成远端文档。
+
+`linkify` 关闭属领域决策：实测它把 `002600.SZ` 变成 `http://002600.SZ`，而本页满屏股票代码。
+
+**结论必须在回复里**（领域指令第 2 节）：不得只写文件再回「已完成」，否则对话里等于没有交付。
+
 ### 3.3e 轮次上限（轮次 N）
 
 **判据是静默，不是时长**。`TurnLimits` 给出 `idle_timeout`（多久没事件算卡死）与

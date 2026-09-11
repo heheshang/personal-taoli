@@ -24,6 +24,7 @@ import {
   agentAccessLevels,
   agentSetAccessLevel,
 } from '../commands'
+import MarkdownBlock from './MarkdownBlock.vue'
 import { AGENT_DECISION_LABEL } from '../commands'
 import StockAnalysisReport from './StockAnalysisReport.vue'
 import type {
@@ -532,8 +533,12 @@ onUnmounted(stopPolling)
             >{{ item.output }}</pre>
           </div>
 
-          <!-- 正文字流式文本 -->
-          <div v-if="live.message" class="codex-assistant">{{ live.message }}</div>
+          <!-- 正文字流式文本：同样按 Markdown 渲染，否则末尾会看到源码 -->
+          <MarkdownBlock
+            v-if="live.message"
+            class="codex-assistant"
+            :source="live.message"
+          />
         </section>
 
         <article v-for="turn in turns" :key="turn.seq" class="codex-turn">
@@ -570,8 +575,14 @@ onUnmounted(stopPolling)
             <template v-if="record.source === 'timeout'"> · 超时未裁决</template>
           </div>
 
-          <!-- 助手正文 -->
-          <div v-if="turn.final_message" class="codex-assistant">{{ turn.final_message }}</div>
+          <!-- 助手正文：本轮**全部**消息，按 Markdown 渲染。
+               分析类 skill 会边跑边汇报，只显示最后一条会把中间结果丢掉。 -->
+          <MarkdownBlock
+            v-for="(message, index) in turn.messages"
+            :key="`m-${index}`"
+            class="codex-assistant"
+            :source="message"
+          />
 
           <!-- 待审批：内联在会话流里 -->
           <div v-if="pending && turn.seq === openTurnSeq" class="codex-approval">

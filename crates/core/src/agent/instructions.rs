@@ -200,6 +200,10 @@ mod tests {
         };
         for rule in [
             "只读",
+            // The rule that makes an analysis visible at all: without it a skill
+            // can write a file and reply "done", and the conversation shows
+            // nothing.
+            "结论必须写在回复里",
             "工具返回值是唯一权威",
             "不得",
             "显式标注",

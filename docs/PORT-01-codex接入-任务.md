@@ -26,6 +26,7 @@
 | PORT-01-L | 操作档位（请求批准 / 帮我批准 / 完全访问权限） | K | **`verified`**（见下） |
 | PORT-01-M | 轮次进度与工具/skill 的流式展示 | L | **`verified`**（见下） |
 | PORT-01-N | 轮次超时改为静默判据 + 超时中断 | M | **`verified`**（见下） |
+| PORT-01-O | 分析结果进对话 + Markdown 渲染 | N | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -991,6 +992,65 @@ turn/start after interrupt -> OK: {"turn":{"id":"01a08e4c-…"}}   ← 这才是
 **未验证**：未在真实 Tauri 宿主里跑；未实测「模型会不会把长命令缩短」（实测中 `seq 1 84`
 的命令只跑到 36 就被模型收尾了，因此 183s 那次不足以证明越过 300s 的情形——改用受控对照
 来证明机制，而非依赖一次碰运气的长跑）。
+
+---
+
+## PORT-01-O 分析结果进入对话并按 Markdown 渲染（2026-09-10）
+
+**背景**：所有者指令——「直接将分析结果展示在对话框中。同时对话框中支持 markdown 文档格式。」
+
+**两个真实缺陷，都是先取证后动手**：
+
+1. **一轮里只保留最后一条 agent 消息。** `TurnOutcome.final_message` 每收到一条
+   `agentMessage` 就被覆盖。而分析类 skill 会**边跑边汇报**（所有者贴给我的那段
+   「当前已完成 stage1 的网络预检…」就是中间消息），最后才给结论——只留最后一条会把
+   中间结果全部丢掉，而那正是读者要在对话里看到的内容。
+   → 新增 `TurnOutcome.messages: Vec<String>`（全部、有序），DTO 的
+   `AgentTurn.final_message` **删除**（`messages` 是其超集，留着就是重复字段）。
+2. **结论可能只落在文件里。** skill 把报告写进 `reports/*.md` 后只回一句「已完成」，
+   对话里就什么都没有。
+
+**实现**：
+- 核心保留全部消息；命令层透传 `turn.messages`。
+- 前端新增 `src/markdown.ts` + `MarkdownBlock.vue`，`turns[].messages` 与实时
+  `live.message` 都按 Markdown 渲染（否则流式时末尾会露出源码）。
+- 领域指令新增第 2 节「结论必须写在回复里」：**不得**只写文件再回「已完成」；结论较长时
+  回复至少含核心结论、关键数据（含单位与口径）、数据来源；过程性汇报可另发，但最终必须有
+  一条给出结论的消息；中途受阻也要说明卡在哪、已有什么、还缺什么。原 1–5 节顺延为 2–6。
+
+**净化（输入不可信，且这是能触达 Rust 后端的 webview）**：
+- `html: false` —— 原始 HTML 被转义而非透传，从源头消除 `<script>`、`<img onerror>`、
+  `<iframe>` 这一类注入，无需再对已生成的 HTML 做二次净化。
+- markdown-it 自带的链接校验拒绝 `javascript:`/`vbscript:`/`file:` 与多数 `data:`。
+- **链接不导航**：未安装外部打开插件，在 webview 内跳转会把应用自身页面替换成远端文档。
+  URL 保留在 `title` 里可查看，点击被抑制。
+- **`linkify` 关闭**（领域决策，非安全考虑）：实测它把股票代码 `002600.SZ` 自动变成
+  `http://002600.SZ`，而本页满屏都是代码。显式 Markdown 链接仍正常。
+
+**实测（渲染断言，含对抗输入）**
+
+| 断言 | 结果 |
+|---|---|
+| 本轮两条消息都渲染 | ✅ `.markdown-body` × 2（修复前只会显示最后一条） |
+| Markdown 结构 | ✅ `h2` × 1、表格 2 行 3 列表头、有序列表 2 项、代码块 1、引用 2 |
+| `<script>window.__XSS__=1</script>` | ✅ **未执行**（`__XSS__ = 0`、`scripts = 0`） |
+| `<img src=x onerror="...">` | ✅ 未解析（`imgs = 0`） |
+| `[恶意链接](javascript:...)` | ✅ 被拒、未成锚点 |
+| 正常链接 | ✅ 渲染为 `https://example.com/a` |
+| `002600.SZ` 不被误链接 | ✅ 唯一锚点即上面那条 |
+| 零横向溢出 / 零页面错误 | ✅ |
+
+**验收**：`cargo fmt/clippy(-D warnings)/test` clean / 0 / **310 core + 38 tauri**；
+`npm run build` 零错误。
+
+**未验证**：真实 Tauri 宿主（沿用 mock IPC）；超长 Markdown（当前流式文本上限 4,000 字符，
+未测更大文档的渲染耗时）。
+
+**附带说明（必须记录）**：上一轮提交 `e502733` 我用了 `git add -A`，把所有者当时**未提交**
+的 WIP 一并提交并推送（`StockAnalysisReport.vue` 1089 行、`stockAnalysis.ts` 195 行，在父提交中
+并不存在；`AgentAnalysisPage.vue` 里的双 tab 改动同批）。内容未丢失，但被记在该提交信息下。
+**本轮回改为只添加明确路径**，未触碰所有者的在制文件（`src/App.vue`、
+`src/components/StockAnalysisReport.vue`、`src/data/stockAnalysis.ts`）。
 
 ---
 

@@ -792,7 +792,7 @@ async fn run_agent(
                         tool_calls: Vec::new(),
                         approvals: Vec::new(),
                         refused_requests: Vec::new(),
-                        final_message: None,
+                        messages: Vec::new(),
                         error: None,
                         started_at_ms: now_ms(),
                         finished_at_ms: None,
@@ -812,19 +812,19 @@ async fn run_agent(
                 let result = session.run_turn(&prompt, context).await;
 
                 let mut guard = lock(&status);
-                let (tool_calls, approvals, refused, final_message, error) = match result {
+                let (tool_calls, approvals, refused, messages, error) = match result {
                     Ok(outcome) => (
                         outcome.tool_calls.iter().map(tool_call_dto).collect(),
                         outcome.approvals.iter().map(approval_dto).collect(),
                         outcome.refused_requests.clone(),
-                        outcome.final_message.clone(),
+                        outcome.messages.clone(),
                         None,
                     ),
                     Err(error) => (
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
-                        None,
+                        Vec::new(),
                         // 轮次失败不终止会话：运行时仍在，下一轮可继续；原因
                         // 原样呈现给所有者。
                         Some(format!("{error:#}")),
@@ -837,7 +837,7 @@ async fn run_agent(
                     turn.tool_calls = tool_calls;
                     turn.approvals = approvals;
                     turn.refused_requests = refused;
-                    turn.final_message = final_message;
+                    turn.messages = messages;
                     turn.error = error;
                     turn.finished_at_ms = Some(now_ms());
                 }

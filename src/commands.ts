@@ -408,7 +408,8 @@ export interface AgentTurn {
   tool_calls: AgentToolCall[]
   approvals: AgentApprovalDecision[]
   refused_requests: string[]
-  final_message: string | null
+  /** 本轮全部 agent 消息，按时间顺序；最后一条是其结论。 */
+  messages: string[]
   /** 本轮失败原因；`null` 表示本轮正常结束。 */
   error: string | null
   started_at_ms: number
