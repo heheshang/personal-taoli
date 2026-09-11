@@ -837,3 +837,31 @@
   color: var(--cx-text-3);
   line-height: 1.6;
 }
+
+/* 结构化输出失败时的原因：与 chip 同组，字号更小、可换行，
+   因为它常含 JSON 解析器的报错或实际字段名列表。 */
+.report-error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: stretch;
+}
+
+.report-error-detail {
+  margin: 0;
+  font-family: var(--cx-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--cx-text-2);
+  background: var(--cx-gray-50);
+  border-left: 3px solid var(--cx-orange);
+  border-radius: var(--cx-radius-sm);
+  padding: 8px 10px;
+  word-break: break-all;
+  /* 原因可能很长（解析错误带位置、或实际字段名列表）；两行后截断，
+     完整内容在 title 中。这里是诊断线索，不是正文。 */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

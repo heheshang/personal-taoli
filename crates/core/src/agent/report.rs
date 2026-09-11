@@ -208,8 +208,10 @@ pub fn context_fragment(schema: &Value) -> (String, String) {
         "本轮**最终**回复必须是一个 JSON 对象，且直接使用下列字段名：\n\
          - 必须有：{required}\n\
          - 可选分节：{sections}\n\
-         不要输出任何额外文字、解释或代码围栏；不要自创字段名。\n\
-         取不到的数据请省略该字段或留空，不要编造。"
+         整条回复就是这一个 JSON：不要用 ``` 代码围栏包裹，不要在前后添加任何说明文字。\n\
+         本轮要求了结构化输出，因此领域指令中「正文必须出现在回复里」由 `summary` 字段承载；\n\
+         该字段内部可以使用 Markdown，但回复整体仍是 JSON。\n\
+         不要自创字段名；取不到的数据请省略该字段或留空，不要编造。"
     );
     ("taoli://report-schema".to_string(), value)
 }

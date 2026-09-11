@@ -561,11 +561,19 @@ onUnmounted(stopPolling)
             :source="message"
           />
 
-          <!-- 要求了结构化输出但未通过校验：说明为何显示的是正文而非报告。 -->
-          <div v-if="turn.report_error" class="codex-chip warn">
-            <i class="codex-dot" />未按结构输出，已回退为正文
+          <!-- 要求了结构化输出但未通过校验：**显示原因**。
+               只给结论而不给依据，会让「模型没按结构」与「模型写错了字段」无法区分——
+               二者要做的事完全不同（改指示 vs 记录模型能力）。故原因既可见也在 title 里。 -->
+          <div v-if="turn.report_error" class="report-error">
+            <div class="codex-chip warn">
+              <i class="codex-dot" />未按结构输出，已回退为正文
+            </div>
+            <p class="report-error-detail" :title="turn.report_error">{{ turn.report_error }}</p>
           </div>
-          <div v-else-if="turn.report === null && turn.messages.length && !turn.error" class="codex-chip">
+          <div
+            v-else-if="turn.report === null && turn.messages.length && !turn.error"
+            class="codex-chip"
+          >
             本轮无结构化报告
           </div>
 
