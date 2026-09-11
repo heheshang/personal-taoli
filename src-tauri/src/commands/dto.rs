@@ -177,6 +177,12 @@ pub struct AgentApprovalRequest {
     pub summary: String,
     /// 运行时当时提供的裁决项，原样呈现，便于察觉上游词汇变化。
     pub advertised: Vec<String>,
+    /// 本请求可用的裁决项，取值 `allow_once` / `allow_for_session` /
+    /// `allow_always` / `deny`，顺序即建议顺序。
+    ///
+    /// 由后端按请求类型与是否附带了具体规则算出，而不是照抄运行时的
+    /// `availableDecisions`——那个字段可选、且实测不含 `decline`。
+    pub options: Vec<String>,
 }
 
 /// 已裁决的审批记录。
@@ -185,7 +191,7 @@ pub struct AgentApprovalDecision {
     pub request_id: i64,
     pub kind: String,
     pub summary: String,
-    /// `allow` / `deny`。
+    /// `allow_once` / `allow_for_session` / `allow_always` / `deny`。
     pub decision: String,
     /// `decider`（所有者裁决）/ `timeout`（超时按失败关闭）/ `unsupported`。
     pub source: String,

@@ -21,6 +21,7 @@
 | PORT-01-G | 领域指令注入随版本管理 | B | **`verified`**（见下） |
 | PORT-01-H | 外部 skill 接入（注册根 + 可写根） | G | **`verified`**（见下） |
 | PORT-01-I | 移除作用域错误的宿主工具 | H | **`verified`**（见下） |
+| PORT-01-J | 审批动作对齐 Codex 桌面版（四档） | C | **`verified`**（见下） |
 
 > 所有者决策（2026-09-10）：**接入方式 ① app-server 进程集成**；**运行边界 = 只读分析**。
 > 后续追加决策（2026-09-10）：**升级为 ④（① + ②，F 轮次）**，移植范围取 **② `.sbpl` 策略文本 + 文件系统策略子集**。
@@ -645,6 +646,82 @@ rc=0，写入成功                                            ← 授权后
 
 ---
 
+## PORT-01-J 审批动作对齐 Codex 桌面版（2026-09-10）
+
+**背景**：所有者指令——「执行门禁只能：仅本次同意，这个需要跟 codex app 中的执行门禁一样」。
+
+即：取消我在轮次 C 按 R08 施加的「单动作」限制。**这是所有者的决定，原 R08 已被取代**
+（改为 R08 新表述：四个动作 + 越权守卫 + 超时仍拒绝）。
+
+**取证（先于改动）**：从本机 Codex 桌面版 `app.asar` 的语言包读到审批卡文案——
+
+```
+approvalRequestCard.allowOnce         : 允许一次
+approvalRequestCard.allowConversation : 允许此对话
+approvalRequestCard.alwaysAllow       : 始终允许
+approvalRequestCard.deny              : 拒绝
+approvalRequestCard.approvalOptions   : 审批选项
+```
+
+对应线缆词汇（`--experimental` schema + 活体实测）：
+
+| 动作 | v2 命令/文件变更 | v1 旧方法 | 权限 |
+|---|---|---|---|
+| 允许一次 | `accept` | `approved` | `{permissions: <请求的>}`（scope 默认 `turn`） |
+| 允许此对话 | `acceptForSession` | `approved_for_session` | 同上 + `scope: "session"` |
+| 始终允许 | `{acceptWithExecpolicyAmendment:{execpolicy_amendment:[…]}}` | `{approved_execpolicy_amendment:{…}}` | 协议无此词，不提供 |
+| 拒绝 | `decline` | **`{denied:{rejection:…}}`** | `{permissions:{}}` |
+
+**实现**：
+- `Decision` 由 `Allow/Deny` 扩为 `AllowOnce/AllowForSession/AllowAlways/Deny`。
+- 新增 `available_decisions(kind, params)`：可用集合由**请求本身**算出，而非照抄运行时的
+  `availableDecisions`（该字段可选、实测不含 `decline`）。未附 `proposedExecpolicyAmendment`
+  时不提供「始终允许」——记不住东西的「始终允许」是假的。
+- 命令层：`agent_decide(request_id, decision)` 收 token；新增 `ensure_offered` 越权守卫
+  （不得选用未提供的选项，例如对未附规则的请求要求永久授权）。
+- 界面：审批卡按 `options` 渲染四个动作，中文文案取自 codex app 同一组词；按钮 title
+  说明各自的作用范围。
+- 超时与无裁决通道仍是 **拒绝**（`DenyAll` 未变）：问不到人时不得假定同意。
+
+**顺带修掉一个既有错误**：legacy（`execCommandApproval` / `applyPatchApproval`）的拒绝我原先
+发的是字符串 `"decision":"denied"`，而 schema 要求 `{"denied":{"rejection":…}}`（`rejection`
+为必填）。字符串形式会在协议层被拒 —— 即**操作员点「拒绝」反而失败**。已修正，并加防回归测试。
+
+**实测（活体运行时，用本模块的 `response_payload` 构造回复）**：
+
+```
+allow_once        -> {"decision":"accept"}                        命令 completed
+allow_for_session -> {"decision":"acceptForSession"}              命令 completed
+allow_always      -> {"decision":{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["echo","verdict"]}}}   命令 completed
+deny              -> {"decision":"decline"}                       命令 declined
+```
+
+**「始终允许」是持久的——实测确认并已清理副作用**：它会把 `prefix_rule` 写入
+`~/.codex/rules/default.rules`。探针期间写入的 3 条（`echo amend-probe` / `echo verdict-probe`
+/ `echo verdict`）**已从你的配置中删除**（备份 `/tmp/default.rules.bak`，当前 56 条为你原有规则）。
+因果也已闭环验证：规则存在时该命令不再询问、直接执行；删除规则后重新询问且拒绝生效
+（命令状态 `declined`）。
+
+**验收**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 四个动作可点且文案与 codex app 一致 | ✅ | 渲染断言：按钮 = `["允许一次","允许此对话","始终允许","拒绝"]` |
+| 每个动作映射正确且被运行时接受 | ✅ | 上表四条活体实测（completed / declined） |
+| 未附规则时不出现也不接受「始终允许」 | ✅ | 渲染断言（3 个按钮）；`a_verdict_outside_the_offered_set_is_refused` |
+| token 往返与互异 | ✅ | `every_decision_round_trips_through_its_token`（4 个 token 互异） |
+| 未知 token 被拒而非默认 | ✅ | `an_unknown_token_is_refused_rather_than_defaulted` |
+| legacy 拒绝带 `rejection` 且不是裸字符串 | ✅ | `the_legacy_refusal_carries_its_rejection_field`、`the_legacy_refusal_is_never_the_bare_string` |
+| 已裁决记录显示中文标签 | ✅ | 渲染断言含「始终允许 · command_execution」 |
+| `cargo fmt/clippy(-D warnings)/test` | ✅ | clean / 0 / **292 core + 22 tauri** |
+| `npm run build` | ✅ | 零错误 |
+
+**审计格式变化**：`ApprovalRecord.decision` 的序列化值由 `allow`/`deny` 变为
+`allow_once`/`allow_for_session`/`allow_always`/`deny`。审计为本地 append-only 记录，
+无兼容承诺；旧记录仍可读（枚举新增变体不影响既有值得解析）。
+
+---
+
 ## 风险与依赖登记
 
 | 风险 | 影响 | 处置 |
@@ -658,7 +735,9 @@ rc=0，写入成功                                            ← 授权后
 | **路径别名使授权静默失效** | Seatbelt 按解析后路径匹配，`/tmp`、`/var` 是符号链接；字面别名永不命中且不报错 | 已移植上游 `normalize_top_level_alias` 并实测（`/tmp/...` → `-D…=/private/tmp/...`）；测试覆盖符号链接可写根被拒 |
 | **策略 idiom 选错会整体失效** | 用 `(allow default)` + 过滤 deny 时所有写入被放行，看起来「沙箱无用」 | 采用上游的 `(deny default)` + 显式 allow；测试断言策略含 `(deny default)` 且无无条件的写授权 |
 | 本机 codex 经本地代理（`deepseek-flash`） | 会话结果受代理影响 | 验证阶段记录实际 provider/model；不以单次结果作能力断言 |
-| 接入被误用为交易路径 | 违反架构文档 §1.2 | 只读工具集 + 环境变量白名单 + 不注册任何写工具；在验收中逐条证明 |
+| 接入被误用为交易路径 | 违反架构文档 §1.2 | 宿主不注册工具 + 环境变量白名单 + 沙箱不授予工作区写；在验收中逐条证明 |
+| **「始终允许」写入持久规则** | 一次点击即长期放行，且落在 `~/.codex/rules/default.rules`，影响该机器上所有 codex 会话 | 该动作**只在运行时提出具体规则时**才出现；文案明示「追加一条长期规则」；`ensure_offered` 防止越权选用；审计记录每次裁决。**注意：这是所有者的选择，带来的持久放行不在本项目的沙箱边界内** |
+| **审批审计格式变化** | 裁决值由 `allow`/`deny` 变为四值 | 已记入本文档；审计为本地 append-only，无兼容承诺 |
 | 与 A-05 影子窗口门禁的关系 | 可能影响当前 `pending` 状态 | **已确认无影响**（见下） |
 | **领域指令被抽空或误删** | agent 仍能运行，但失去只读边界与「数字以工具返回为准」等约束，且外观上无法察觉 | 文件缺失/为空即拒绝启动；测试断言 6 条关键表述仍在；trace 记录指令指纹，可比对两个 run 是否同一修订 |
 | `data/` 不随仓库分发 | 依赖归档的测试在新克隆上跳过而非失败 | 已在文档标注依赖；这些测试的绿在本机为实证，CI 需先产出归档 |

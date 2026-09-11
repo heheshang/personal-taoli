@@ -340,6 +340,22 @@ export interface AgentApprovalRequest {
   kind: string
   summary: string
   advertised: string[]
+  /** 本请求可用的裁决项，顺序即建议顺序。 */
+  options: AgentDecision[]
+}
+
+/**
+ * 裁决 token，与 Codex 桌面版审批卡的四个动作一一对应：
+ * 允许一次 / 允许此对话 / 始终允许 / 拒绝。
+ */
+export type AgentDecision = 'allow_once' | 'allow_for_session' | 'allow_always' | 'deny'
+
+/** 裁决的中文标签，取自 Codex 桌面版语言包的同一组文案。 */
+export const AGENT_DECISION_LABEL: Record<AgentDecision, string> = {
+  allow_once: '允许一次',
+  allow_for_session: '允许此对话',
+  allow_always: '始终允许',
+  deny: '拒绝',
 }
 
 /** 已裁决的审批记录。 */
@@ -347,7 +363,7 @@ export interface AgentApprovalDecision {
   request_id: number
   kind: string
   summary: string
-  decision: 'allow' | 'deny'
+  decision: AgentDecision
   source: 'decider' | 'timeout' | 'unsupported'
   waited_ms: number
 }
@@ -403,12 +419,12 @@ export async function agentAsk(prompt: string): Promise<AgentStatus | undefined>
   return invokeCommand<AgentStatus>(COMMANDS.agentAsk, { prompt })
 }
 
-/** 裁决待审批动作。 */
+/** 裁决待审批动作。`decision` 必须是该请求 `options` 中的一项。 */
 export async function agentDecide(
   requestId: number,
-  allow: boolean,
+  decision: AgentDecision,
 ): Promise<AgentStatus | undefined> {
-  return invokeCommand<AgentStatus>(COMMANDS.agentDecide, { requestId, allow })
+  return invokeCommand<AgentStatus>(COMMANDS.agentDecide, { requestId, decision })
 }
 
 export async function agentStatus(): Promise<AgentStatus | undefined> {

@@ -206,6 +206,11 @@ impl ApprovalDecider for UiApprovalDecider {
                     kind: request.kind.as_str().to_string(),
                     summary: request.summary.clone(),
                     advertised: request.advertised.clone(),
+                    options: request
+                        .options
+                        .iter()
+                        .map(|decision| decision_token(*decision).to_string())
+                        .collect(),
                 },
                 reply: reply_tx,
                 decided: false,
@@ -338,6 +343,42 @@ fn tool_call_dto(call: &personal_taoli_core::agent::ToolCallRecord) -> AgentTool
 }
 
 /// 把一次审批记录转成 DTO。
+/// 把裁决转成与前端约定的稳定 token。
+///
+/// 用字符串而非 Rust 枚举名：界面按它对上按钮，改这里等于改前后端契约。
+fn decision_token(decision: Decision) -> &'static str {
+    match decision {
+        Decision::AllowOnce => "allow_once",
+        Decision::AllowForSession => "allow_for_session",
+        Decision::AllowAlways => "allow_always",
+        Decision::Deny => "deny",
+    }
+}
+
+/// 校验裁决确实在本请求提供的选项里。
+///
+/// 这是防越权的那一道：界面之外的调用方（脚本、将来的自动化）不得对一个未附规则的
+/// 请求要求「始终允许」，也不得对一个文件变更要求协议里不存在的永久授权。选项集合
+/// 由 `approval::available_decisions` 依请求类型与运行时的提议算出，这里只做成员检查。
+fn ensure_offered(options: &[String], decision: Decision) -> Result<(), anyhow::Error> {
+    let token = decision_token(decision);
+    if options.iter().any(|option| option == token) {
+        return Ok(());
+    }
+    anyhow::bail!("裁决 `{token}` 不在本请求提供的选项中：{options:?}")
+}
+
+/// 解析界面传来的裁决 token。未知取值失败，不猜、也不降级为放行。
+fn parse_decision(token: &str) -> Result<Decision, anyhow::Error> {
+    match token {
+        "allow_once" => Ok(Decision::AllowOnce),
+        "allow_for_session" => Ok(Decision::AllowForSession),
+        "allow_always" => Ok(Decision::AllowAlways),
+        "deny" => Ok(Decision::Deny),
+        other => anyhow::bail!("unknown approval decision `{other}`"),
+    }
+}
+
 fn approval_dto(
     record: &personal_taoli_core::agent::approval::ApprovalRecord,
 ) -> AgentApprovalDecision {
@@ -346,10 +387,7 @@ fn approval_dto(
         request_id: record.request_id,
         kind: record.kind.as_str().to_string(),
         summary: record.summary.clone(),
-        decision: match record.decision {
-            Decision::Allow => "allow".to_string(),
-            Decision::Deny => "deny".to_string(),
-        },
+        decision: decision_token(record.decision).to_string(),
         source: match record.source {
             DecisionSource::Decider => "decider",
             DecisionSource::Timeout => "timeout",
@@ -455,7 +493,11 @@ impl AgentController {
     }
 
     /// 所有者裁决待审批动作。无待裁决项时失败（不猜、不默认放行）。
-    fn decide(&self, request_id: i64, allow: bool) -> Result<AgentStatus, anyhow::Error> {
+    ///
+    /// `decision` 是 [`decision_token`] 的取值之一。仅接受该请求**实际提供**
+    /// 的选项：界面之外的调用方不得凭空升级授权范围（例如对一个未附规则的
+    /// 请求要求「始终允许」）。
+    fn decide(&self, request_id: i64, decision: Decision) -> Result<AgentStatus, anyhow::Error> {
         let guard = lock(&self.inner);
         let agent = guard
             .as_ref()
@@ -474,12 +516,9 @@ impl AgentController {
             if pending.decided {
                 anyhow::bail!("审批 {request_id} 已裁决");
             }
+            ensure_offered(&pending.request.options, decision)?;
             pending.decided = true;
-            if allow {
-                Decision::Allow
-            } else {
-                Decision::Deny
-            }
+            decision
         };
         // 取出的是发送端；发送失败表示等待方已消失（如停止会话），此时裁决自
         // 然失效，按失败上报而非静默吞掉。
@@ -682,14 +721,21 @@ pub fn agent_ask(app: AppHandle, prompt: String) -> ApiResponse<AgentStatus> {
     api_map(state.ask(prompt), ErrorCode::InvalidRequest, false)
 }
 
+/// 裁决一次审批。
+///
+/// `decision` ∈ `allow_once` / `allow_for_session` / `allow_always` / `deny`，
+/// 与 Codex 桌面版审批卡的四个动作一一对应。
 #[tauri::command]
-pub fn agent_decide(app: AppHandle, request_id: i64, allow: bool) -> ApiResponse<AgentStatus> {
+pub fn agent_decide(app: AppHandle, request_id: i64, decision: String) -> ApiResponse<AgentStatus> {
     let state = app.state::<AgentController>();
-    api_map(
-        state.decide(request_id, allow),
-        ErrorCode::InvalidRequest,
-        false,
-    )
+    match parse_decision(&decision) {
+        Ok(decision) => api_map(
+            state.decide(request_id, decision),
+            ErrorCode::InvalidRequest,
+            false,
+        ),
+        Err(error) => api_fail(ErrorCode::InvalidRequest, error, false),
+    }
 }
 
 #[tauri::command]
@@ -947,5 +993,78 @@ mod readiness_gate_tests {
             registry.names()
         );
         assert!(registry.specs().is_empty(), "nothing may be advertised");
+    }
+}
+
+#[cfg(test)]
+mod decision_token_tests {
+    use super::*;
+
+    /// Every verdict the runtime understands round-trips through the token the
+    /// interface sends. A miss here would silently send the wrong grant.
+    #[test]
+    fn every_decision_round_trips_through_its_token() {
+        for decision in [
+            Decision::AllowOnce,
+            Decision::AllowForSession,
+            Decision::AllowAlways,
+            Decision::Deny,
+        ] {
+            let token = decision_token(decision);
+            assert_eq!(
+                parse_decision(token).expect("known token"),
+                decision,
+                "{token}"
+            );
+        }
+        // And the tokens are distinct: two verdicts sharing one token would
+        // collapse 允许一次 and 始终允许 into the same grant.
+        let mut tokens: Vec<&str> = [
+            Decision::AllowOnce,
+            Decision::AllowForSession,
+            Decision::AllowAlways,
+            Decision::Deny,
+        ]
+        .iter()
+        .map(|decision| decision_token(*decision))
+        .collect();
+        tokens.sort_unstable();
+        tokens.dedup();
+        assert_eq!(tokens.len(), 4);
+    }
+
+    #[test]
+    fn an_unknown_token_is_refused_rather_than_defaulted() {
+        for bad in ["", "allow", "ALLOW_ONCE", "accept", "yes"] {
+            assert!(parse_decision(bad).is_err(), "`{bad}` must not be accepted");
+        }
+    }
+
+    /// The escalation guard: a caller cannot pick a verdict the request did not
+    /// offer — in particular it cannot ask for a permanent grant when the
+    /// runtime proposed no rule to remember.
+    #[test]
+    fn a_verdict_outside_the_offered_set_is_refused() {
+        let without_rule = vec![
+            "allow_once".to_string(),
+            "allow_for_session".to_string(),
+            "deny".to_string(),
+        ];
+        assert!(ensure_offered(&without_rule, Decision::AllowOnce).is_ok());
+        assert!(ensure_offered(&without_rule, Decision::AllowForSession).is_ok());
+        assert!(ensure_offered(&without_rule, Decision::Deny).is_ok());
+
+        let error = ensure_offered(&without_rule, Decision::AllowAlways)
+            .expect_err("no rule was proposed, so 始终允许 is not available");
+        assert!(error.to_string().contains("allow_always"), "{error}");
+
+        // And with a rule proposed, it is.
+        let with_rule = vec![
+            "allow_once".to_string(),
+            "allow_for_session".to_string(),
+            "allow_always".to_string(),
+            "deny".to_string(),
+        ];
+        assert!(ensure_offered(&with_rule, Decision::AllowAlways).is_ok());
     }
 }

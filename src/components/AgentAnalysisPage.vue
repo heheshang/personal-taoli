@@ -20,7 +20,8 @@ import {
   agentStatus,
   agentStop,
 } from '../commands'
-import type { AgentReady, AgentStatus, AgentTurn } from '../commands'
+import { AGENT_DECISION_LABEL } from '../commands'
+import type { AgentDecision, AgentReady, AgentStatus, AgentTurn } from '../commands'
 
 /** 运行时报告可用的 skill 列表，用于工具栏提示。 */
 
@@ -166,15 +167,40 @@ async function doAsk() {
   }
 }
 
-async function doDecide(allow: boolean) {
+async function doDecide(decision: AgentDecision) {
   const request = pending.value
   if (!request) return
   busy.value = true
   try {
-    status.value = (await agentDecide(request.request_id, allow)) ?? status.value
+    status.value = (await agentDecide(request.request_id, decision)) ?? status.value
   } finally {
     busy.value = false
   }
+}
+
+/**
+ * 单个裁决按钮的语义。
+ *
+ * 三个「允许」的区别只在**授权范围**，所以按钮必须把范围说清楚，而不是都叫
+ * 「同意」：一次 / 本会话 / 永久（写入 execpolicy）。
+ */
+function decisionHint(decision: AgentDecision): string {
+  switch (decision) {
+    case 'allow_once':
+      return '只批准本次，不记住'
+    case 'allow_for_session':
+      return '本会话内同类动作不再询问'
+    case 'allow_always':
+      return '追加一条长期规则，此后同类动作不再询问'
+    case 'deny':
+      return '拒绝本次，不记住'
+  }
+}
+
+function decisionClass(decision: AgentDecision): string {
+  if (decision === 'deny') return 'codex-btn danger'
+  if (decision === 'allow_once') return 'codex-btn primary'
+  return 'codex-btn ghost'
 }
 
 /**
@@ -325,14 +351,15 @@ onUnmounted(stopPolling)
             <pre v-if="isExpanded(turn, call.call_id)" class="codex-tool-body">{{ call.output }}</pre>
           </div>
 
-          <!-- 审批记录（已裁决） -->
+          <!-- 审批记录（已裁决）。拒绝用中性色、「无条件放行」的三档用成功色，
+               让长期授权比一次性授权更显眼。 -->
           <div
             v-for="record in turn.approvals"
             :key="`a-${record.request_id}`"
             class="codex-chip"
-            :class="record.decision === 'allow' ? 'ok' : ''"
+            :class="record.decision === 'deny' ? '' : 'ok'"
           >
-            {{ record.decision === 'allow' ? '已同意' : '已拒绝' }} ·
+            {{ AGENT_DECISION_LABEL[record.decision] }} ·
             {{ record.kind }} ·
             <code>{{ record.summary }}</code>
             <template v-if="record.source === 'timeout'"> · 超时未裁决</template>
@@ -348,16 +375,25 @@ onUnmounted(stopPolling)
               需要审批后才会执行
             </div>
             <div class="codex-approval-cmd">{{ pending.summary }}</div>
+            <!-- 四个动作与 Codex 桌面版审批卡一致：允许一次 / 允许此对话 /
+                 始终允许 / 拒绝。选项由后端按请求类型给出（例如未附带具体规则
+                 时不会出现「始终允许」），界面只负责呈现与回传。 -->
             <div class="codex-approval-actions">
-              <button class="codex-btn danger" type="button" :disabled="busy" @click="doDecide(false)">
-                拒绝
-              </button>
-              <button class="codex-btn primary" type="button" :disabled="busy" @click="doDecide(true)">
-                仅本次同意
+              <button
+                v-for="option in pending.options"
+                :key="option"
+                :class="decisionClass(option)"
+                type="button"
+                :disabled="busy"
+                :title="decisionHint(option)"
+                @click="doDecide(option)"
+              >
+                {{ AGENT_DECISION_LABEL[option] }}
               </button>
             </div>
             <div class="codex-approval-hint">
-              同意只覆盖本次动作，不产生会话级放行，也不修改任何策略。未裁决将按失败关闭。
+              「允许一次」不记住；「允许此对话」在本会话内不再询问；「始终允许」会追加一条长期规则。
+              未裁决将按失败关闭。
             </div>
             <div v-if="pending.advertised.length" class="codex-approval-advertised">
               运行时提供：{{ pending.advertised.join(' / ') }}

@@ -304,6 +304,8 @@
 .codex-approval-actions {
   display: flex;
   gap: 8px;
+  /* 最多四个动作（允许一次 / 允许此对话 / 始终允许 / 拒绝），窄屏需换行而不是挤压。 */
+  flex-wrap: wrap;
 }
 
 .codex-approval-hint {

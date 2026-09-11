@@ -90,16 +90,109 @@ pub struct ApprovalRequest {
     /// Recorded for audit: the runtime does not always offer an explicit
     /// refusal token, and a future protocol change would show up here.
     pub advertised: Vec<String>,
+    /// The verdicts this request can be answered with, in offer order.
+    ///
+    /// The owner channel renders these; see [`available_decisions`].
+    pub options: Vec<Decision>,
 }
 
-/// The owner's verdict. Deliberately binary.
+/// The owner's verdict.
+///
+/// These four mirror the Codex desktop app's approval card, which offers
+/// **允许一次 / 允许此对话 / 始终允许 / 拒绝**
+/// (`approvalRequestCard.{allowOnce,allowConversation,alwaysAllow,deny}` in its
+/// bundled `zh-CN` locale). Parity is deliberate: an owner moving between the
+/// app and this page sees the same choices, and the wire vocabulary behind each
+/// one is the runtime's own (`accept` / `acceptForSession` /
+/// `acceptWithExecpolicyAmendment` / `decline`, verified against the live
+/// runtime).
+///
+/// The distinction between them is *scope of the grant*, so the wording matters:
+///
+/// * `AllowOnce` — this action, now. Nothing is remembered.
+/// * `AllowForSession` — this action, and equivalent ones for the rest of this
+///   session, without prompting again.
+/// * `AllowAlways` — this action, and equivalent ones permanently, by adding a
+///   rule to the runtime's execpolicy. Only offered when the runtime proposed a
+///   concrete rule to add.
+/// * `Deny` — this action, now. Nothing is remembered.
+///
+/// The default when nothing is wired, and when a verdict does not arrive, is
+/// [`Decision::Deny`]: a session that cannot ask must not assume consent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
-    /// Approve this action, once.
-    Allow,
-    /// Refuse this action.
+    /// 允许一次 — this action, nothing remembered.
+    AllowOnce,
+    /// 允许此对话 — this action and equivalents, for this session.
+    AllowForSession,
+    /// 始终允许 — this action and equivalents, permanently, via a proposed rule.
+    AllowAlways,
+    /// 拒绝 — refuse this action.
     Deny,
+}
+
+impl Decision {
+    /// Whether this verdict grants anything.
+    pub fn is_grant(self) -> bool {
+        !matches!(self, Self::Deny)
+    }
+}
+
+/// The verdicts this request can actually be answered with.
+///
+/// Computed from the request rather than taken from the runtime's
+/// `availableDecisions`: that field is optional, was observed to omit `decline`
+/// (which the runtime nonetheless accepts), and varies per kind. Deciding here
+/// keeps one place that knows what each kind supports, and keeps the interface
+/// from offering a button whose answer cannot be expressed.
+pub fn available_decisions(kind: ApprovalKind, params: &Value) -> Vec<Decision> {
+    let mut decisions = vec![Decision::AllowOnce];
+    if supports_session_scope(kind) {
+        decisions.push(Decision::AllowForSession);
+    }
+    if proposed_amendment(kind, params).is_some() {
+        decisions.push(Decision::AllowAlways);
+    }
+    decisions.push(Decision::Deny);
+    decisions
+}
+
+/// Whether the kind's wire vocabulary has a session-scoped variant.
+fn supports_session_scope(kind: ApprovalKind) -> bool {
+    // Every kind does: `acceptForSession`, `approved_for_session`, and for
+    // permissions the `scope: "session"` field.
+    matches!(
+        kind,
+        ApprovalKind::CommandExecution
+            | ApprovalKind::FileChange
+            | ApprovalKind::Permissions
+            | ApprovalKind::ExecCommand
+            | ApprovalKind::ApplyPatch
+    )
+}
+
+/// The rule the runtime proposed adding, when it proposed one.
+///
+/// Only the persistent ("始终允许") verdict needs this, and only some kinds
+/// carry it: the v2 command-execution request and the legacy pair. Without a
+/// concrete proposal there is nothing to remember, so the option is not
+/// offered — an "always allow" that remembered nothing would be a lie.
+fn proposed_amendment(kind: ApprovalKind, params: &Value) -> Option<Vec<String>> {
+    let field = match kind {
+        ApprovalKind::CommandExecution | ApprovalKind::ExecCommand | ApprovalKind::ApplyPatch => {
+            "proposedExecpolicyAmendment"
+        }
+        // Neither the file-change nor the permissions request carries a rule
+        // proposal in this protocol version.
+        ApprovalKind::FileChange | ApprovalKind::Permissions => return None,
+    };
+    let proposal = params.get(field)?.as_array()?;
+    let parts: Vec<String> = proposal
+        .iter()
+        .filter_map(|part| part.as_str().map(str::to_string))
+        .collect();
+    if parts.is_empty() { None } else { Some(parts) }
 }
 
 /// Where a verdict came from. Recorded so a refusal forced by a timeout is
@@ -166,8 +259,9 @@ where
 /// Why an owner verdict could not be expressed on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalError {
-    /// The runtime asked for something this client cannot grant or refuse in a
-    /// single-action form.
+    /// The request cannot be answered with this verdict: either the kind has no
+    /// vocabulary for it (a permanent grant on a file change), or the runtime
+    /// proposed nothing to remember.
     Unrepresentable {
         kind: ApprovalKind,
         decision: Decision,
@@ -179,8 +273,8 @@ impl std::fmt::Display for ApprovalError {
         match self {
             Self::Unrepresentable { kind, decision } => write!(
                 formatter,
-                "cannot express {decision:?} for a {:?} approval in a single-action form",
-                kind
+                "cannot express {decision:?} for a {kind:?} approval: the protocol has no \
+                 vocabulary for it, or the runtime proposed nothing to remember"
             ),
         }
     }
@@ -188,51 +282,83 @@ impl std::fmt::Display for ApprovalError {
 
 impl std::error::Error for ApprovalError {}
 
-/// Builds the response payload for `request` given `decision`.
+/// Builds the response payload for `kind` given `decision`.
 ///
-/// Approvals are single-action by construction: an `Allow` authorises exactly
-/// the action described in `request`, and a `Deny` refuses exactly that action.
-/// Session-wide caches and policy amendments are unreachable here on purpose —
-/// they would widen future authority without a new gate.
+/// Each verdict maps to the runtime's own vocabulary for that kind. Two details
+/// are worth stating because getting them wrong fails silently at the protocol
+/// layer:
+///
+/// * The **legacy** vocabulary expresses refusal as an object
+///   (`{"denied":{"rejection": …}}`), not the string `"denied"` — the schema
+///   requires the `rejection` field.
+/// * The **persistent** verdict must echo the rule the runtime proposed; there
+///   is no way to invent one, so its absence is reported rather than papered
+///   over.
 pub fn response_payload(
     kind: ApprovalKind,
     decision: Decision,
     request_details: &Value,
 ) -> Result<Value, ApprovalError> {
+    let amendment = || {
+        proposed_amendment(kind, request_details)
+            .ok_or(ApprovalError::Unrepresentable { kind, decision })
+    };
+
     match kind {
-        // v2 command/file-change use the same accept/decline vocabulary.
-        ApprovalKind::CommandExecution | ApprovalKind::FileChange => Ok(json!({
-            "decision": match decision {
-                Decision::Allow => "accept",
-                Decision::Deny => "decline",
-            }
-        })),
-        // v1 vocabulary.
-        ApprovalKind::ExecCommand | ApprovalKind::ApplyPatch => Ok(json!({
-            "decision": match decision {
-                Decision::Allow => "approved",
-                Decision::Deny => "denied",
-            }
-        })),
-        // Granting permissions is a *widening*; only the explicit refusal is
-        // representable without echoing back the requested profile, and this
-        // module does not grant for the owner.
-        ApprovalKind::Permissions => match decision {
-            // An empty profile grants nothing, which is the refusal.
-            Decision::Deny => Ok(json!({ "permissions": {} })),
-            Decision::Allow => {
-                // Echoing the requested profile would grant it. That is a
-                // policy decision this module must not make implicitly, so it
-                // is reported rather than guessed: the session refuses and
-                // records the fact.
-                let requested = request_details.get("permissions").cloned();
-                match requested {
-                    Some(permissions) if !permissions.is_null() => {
-                        Ok(json!({ "permissions": permissions }))
-                    }
-                    _ => Err(ApprovalError::Unrepresentable { kind, decision }),
+        // v2 command execution.
+        ApprovalKind::CommandExecution => match decision {
+            Decision::AllowOnce => Ok(json!({ "decision": "accept" })),
+            Decision::AllowForSession => Ok(json!({ "decision": "acceptForSession" })),
+            Decision::AllowAlways => Ok(json!({
+                "decision": {
+                    "acceptWithExecpolicyAmendment": { "execpolicy_amendment": amendment()? }
                 }
+            })),
+            Decision::Deny => Ok(json!({ "decision": "decline" })),
+        },
+        // v2 file change: the type has no amendment variant.
+        ApprovalKind::FileChange => match decision {
+            Decision::AllowOnce => Ok(json!({ "decision": "accept" })),
+            Decision::AllowForSession => Ok(json!({ "decision": "acceptForSession" })),
+            Decision::AllowAlways => Err(ApprovalError::Unrepresentable { kind, decision }),
+            Decision::Deny => Ok(json!({ "decision": "decline" })),
+        },
+        // Legacy pair, whose refusal is an object and whose session variant has
+        // its own token.
+        ApprovalKind::ExecCommand | ApprovalKind::ApplyPatch => match decision {
+            Decision::AllowOnce => Ok(json!({ "decision": "approved" })),
+            Decision::AllowForSession => Ok(json!({ "decision": "approved_for_session" })),
+            Decision::AllowAlways => Ok(json!({
+                "decision": {
+                    "approved_execpolicy_amendment": {
+                        "proposed_execpolicy_amendment": amendment()?
+                    }
+                }
+            })),
+            Decision::Deny => Ok(json!({
+                "decision": { "denied": { "rejection": "declined by the operator" } }
+            })),
+        },
+        // Permissions: consent is the requested profile, scope is how long it
+        // lasts. An empty profile is the refusal.
+        ApprovalKind::Permissions => match decision {
+            Decision::Deny => Ok(json!({ "permissions": {} })),
+            Decision::AllowOnce | Decision::AllowForSession => {
+                let requested = request_details.get("permissions").cloned();
+                let Some(permissions) = requested.filter(|value| !value.is_null()) else {
+                    // Nothing was requested, so there is nothing to grant; the
+                    // caller must not have this option.
+                    return Err(ApprovalError::Unrepresentable { kind, decision });
+                };
+                let mut payload = json!({ "permissions": permissions });
+                if decision == Decision::AllowForSession {
+                    payload["scope"] = Value::String("session".to_string());
+                }
+                Ok(payload)
             }
+            // Widening permissions permanently is a policy change that this
+            // protocol offers no field for.
+            Decision::AllowAlways => Err(ApprovalError::Unrepresentable { kind, decision }),
         },
     }
 }
@@ -407,72 +533,222 @@ mod tests {
     #[test]
     fn each_kind_maps_to_the_vocabulary_of_its_protocol_generation() {
         // Documents, executably, which generation each method belongs to: the
-        // v2 `item/…` methods speak accept/decline, the v1 methods speak
-        // approved/denied. Both directions are asserted so a swapped mapping
-        // cannot pass.
-        for (method, allow, deny) in [
-            ("item/commandExecution/requestApproval", "accept", "decline"),
-            ("item/fileChange/requestApproval", "accept", "decline"),
-            ("execCommandApproval", "approved", "denied"),
-            ("applyPatchApproval", "approved", "denied"),
+        // v2 `item/…` methods speak accept/decline; the v1 pair speaks
+        // approved, and refuses with an **object** rather than a token.
+        for (method, allow) in [
+            ("item/commandExecution/requestApproval", "accept"),
+            ("item/fileChange/requestApproval", "accept"),
+            ("execCommandApproval", "approved"),
+            ("applyPatchApproval", "approved"),
         ] {
             let kind = ApprovalKind::from_method(method).expect("known method");
-            for (decision, expected) in [(Decision::Allow, allow), (Decision::Deny, deny)] {
-                let token = response_payload(kind, decision, &json!({})).expect("representable")
-                    ["decision"]
-                    .as_str()
-                    .expect("token is a string")
-                    .to_string();
-                assert_eq!(
-                    token, expected,
-                    "{method} must answer {decision:?} with `{expected}`"
+            let token = response_payload(kind, Decision::AllowOnce, &json!({}))
+                .expect("representable")["decision"]
+                .as_str()
+                .expect("the affirmative is a token")
+                .to_string();
+            assert_eq!(
+                token, allow,
+                "{method} must answer its affirmative with `{allow}`"
+            );
+        }
+
+        // Refusals, per generation.
+        for (method, expected) in [
+            ("item/commandExecution/requestApproval", json!("decline")),
+            ("item/fileChange/requestApproval", json!("decline")),
+            (
+                "execCommandApproval",
+                json!({ "denied": { "rejection": "declined by the operator" } }),
+            ),
+            (
+                "applyPatchApproval",
+                json!({ "denied": { "rejection": "declined by the operator" } }),
+            ),
+        ] {
+            let kind = ApprovalKind::from_method(method).expect("known method");
+            let payload =
+                response_payload(kind, Decision::Deny, &json!({})).expect("representable");
+            assert_eq!(payload, json!({ "decision": expected }), "{method}");
+        }
+    }
+
+    /// The three affirmatives are distinguishable on the wire: a caller cannot
+    /// accidentally send "forever" when it meant "once".
+    #[test]
+    fn each_verdict_maps_to_its_own_wire_form() {
+        let params = json!({ "proposedExecpolicyAmendment": ["echo", "hi"] });
+
+        let once = response_payload(ApprovalKind::CommandExecution, Decision::AllowOnce, &params)
+            .expect("representable");
+        assert_eq!(once, json!({ "decision": "accept" }));
+
+        let session = response_payload(
+            ApprovalKind::CommandExecution,
+            Decision::AllowForSession,
+            &params,
+        )
+        .expect("representable");
+        assert_eq!(session, json!({ "decision": "acceptForSession" }));
+
+        let always = response_payload(
+            ApprovalKind::CommandExecution,
+            Decision::AllowAlways,
+            &params,
+        )
+        .expect("representable");
+        assert_eq!(
+            always,
+            json!({ "decision": { "acceptWithExecpolicyAmendment": {
+                "execpolicy_amendment": ["echo", "hi"] } } })
+        );
+
+        // All four render differently; a mapping that collapsed two of them
+        // would be a silent privilege change.
+        let rendered: Vec<String> = [
+            Decision::AllowOnce,
+            Decision::AllowForSession,
+            Decision::AllowAlways,
+            Decision::Deny,
+        ]
+        .iter()
+        .map(|d| {
+            response_payload(ApprovalKind::CommandExecution, *d, &params)
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+        let mut unique = rendered.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            rendered.len(),
+            "verdicts collapsed: {rendered:?}"
+        );
+    }
+
+    /// The persistent verdict needs a concrete rule to add. Without one it must
+    /// be reported, not silently turned into a weaker grant.
+    #[test]
+    fn a_permanent_grant_without_a_proposed_rule_is_refused_not_downgraded() {
+        let error = response_payload(
+            ApprovalKind::CommandExecution,
+            Decision::AllowAlways,
+            &json!({}),
+        )
+        .expect_err("nothing to remember");
+        assert!(
+            matches!(error, ApprovalError::Unrepresentable { .. }),
+            "{error:?}"
+        );
+        // And it must not be offered either.
+        assert!(
+            !available_decisions(ApprovalKind::CommandExecution, &json!({}))
+                .contains(&Decision::AllowAlways)
+        );
+    }
+
+    /// A file change has no amendment in its vocabulary, so the option is not
+    /// offered and not representable.
+    #[test]
+    fn kinds_without_a_rule_proposal_do_not_offer_a_permanent_grant() {
+        for kind in [ApprovalKind::FileChange, ApprovalKind::Permissions] {
+            let options =
+                available_decisions(kind, &json!({ "proposedExecpolicyAmendment": ["echo"] }));
+            assert!(
+                !options.contains(&Decision::AllowAlways),
+                "{kind:?} must not offer 始终允许: {options:?}"
+            );
+        }
+    }
+
+    /// Everything offered must be answerable — an offered button that cannot be
+    /// expressed is a dead end for the operator.
+    #[test]
+    fn every_offered_verdict_is_representable() {
+        let cases = [
+            (
+                ApprovalKind::CommandExecution,
+                json!({ "proposedExecpolicyAmendment": ["echo"] }),
+            ),
+            (ApprovalKind::CommandExecution, json!({})),
+            (ApprovalKind::FileChange, json!({})),
+            (
+                ApprovalKind::Permissions,
+                json!({ "permissions": { "network": { "enabled": true } } }),
+            ),
+            (
+                ApprovalKind::ExecCommand,
+                json!({ "proposedExecpolicyAmendment": ["ls"] }),
+            ),
+            (ApprovalKind::ApplyPatch, json!({})),
+        ];
+        for (kind, params) in cases {
+            for decision in available_decisions(kind, &params) {
+                assert!(
+                    response_payload(kind, decision, &params).is_ok(),
+                    "{kind:?} offers {decision:?} but cannot express it"
                 );
             }
+            // And every offered set ends with the refusal, so the operator can
+            // always say no.
+            let options = available_decisions(kind, &params);
+            assert_eq!(
+                options.last(),
+                Some(&Decision::Deny),
+                "{kind:?}: {options:?}"
+            );
+            assert!(
+                options.contains(&Decision::AllowOnce),
+                "{kind:?}: {options:?}"
+            );
         }
     }
 
-    /// The whole point of the gate: only these two verdicts exist. Anything that
-    /// would widen future authority has no representation, so it cannot be sent
-    /// by accident.
+    /// The legacy refusal is an object, not the string `"denied"`: the schema
+    /// requires `rejection`, so the string form would be rejected outright.
     #[test]
-    fn approval_is_single_action_and_never_standing() {
-        for kind in [
-            ApprovalKind::CommandExecution,
-            ApprovalKind::FileChange,
-            ApprovalKind::ExecCommand,
-            ApprovalKind::ApplyPatch,
-        ] {
-            for decision in [Decision::Allow, Decision::Deny] {
-                let payload = response_payload(kind, decision, &json!({})).expect("representable");
-                let rendered = payload.to_string();
-                for widening in [
-                    "acceptForSession",
-                    "approved_for_session",
-                    "execpolicy",
-                    "networkPolicy",
-                    "network_policy",
-                ] {
-                    assert!(
-                        !rendered.contains(widening),
-                        "{kind:?}/{decision:?} must not carry `{widening}`: {rendered}"
-                    );
-                }
-            }
-        }
+    fn the_legacy_refusal_carries_its_rejection_field() {
+        let payload = response_payload(ApprovalKind::ExecCommand, Decision::Deny, &json!({}))
+            .expect("representable");
+        assert_eq!(
+            payload,
+            json!({ "decision": { "denied": { "rejection": "declined by the operator" } } })
+        );
+        assert!(payload["decision"]["denied"]["rejection"].is_string());
     }
 
+    /// Session scope is expressed differently per kind, and must survive.
     #[test]
-    fn denying_permissions_grants_nothing() {
-        // An empty profile is a refusal, not a grant.
+    fn session_scope_is_expressed_per_kind() {
         assert_eq!(
             response_payload(
-                ApprovalKind::Permissions,
-                Decision::Deny,
-                &json!({ "permissions": { "network": { "enabled": true } } })
+                ApprovalKind::ExecCommand,
+                Decision::AllowForSession,
+                &json!({})
             )
             .expect("representable"),
-            json!({ "permissions": {} })
+            json!({ "decision": "approved_for_session" })
         );
+        assert_eq!(
+            response_payload(
+                ApprovalKind::FileChange,
+                Decision::AllowForSession,
+                &json!({})
+            )
+            .expect("representable"),
+            json!({ "decision": "acceptForSession" })
+        );
+        // Permissions carry the scope as a sibling field.
+        let payload = response_payload(
+            ApprovalKind::Permissions,
+            Decision::AllowForSession,
+            &json!({ "permissions": { "network": { "enabled": true } } }),
+        )
+        .expect("representable");
+        assert_eq!(payload["scope"], json!("session"));
+        assert_eq!(payload["permissions"]["network"]["enabled"], json!(true));
     }
 
     #[test]
@@ -480,7 +756,7 @@ mod tests {
         let requested = json!({ "fileSystem": { "entries": [] } });
         let payload = response_payload(
             ApprovalKind::Permissions,
-            Decision::Allow,
+            Decision::AllowOnce,
             &json!({ "permissions": requested }),
         )
         .expect("representable");
@@ -491,7 +767,7 @@ mod tests {
     fn allowing_permissions_without_a_requested_profile_is_refused_not_guessed() {
         // No profile to echo means we cannot express consent; reporting that is
         // safer than inventing a grant.
-        let error = response_payload(ApprovalKind::Permissions, Decision::Allow, &json!({}))
+        let error = response_payload(ApprovalKind::Permissions, Decision::AllowOnce, &json!({}))
             .expect_err("cannot be represented");
         assert!(matches!(error, ApprovalError::Unrepresentable { .. }));
     }
@@ -567,6 +843,7 @@ mod tests {
             summary: "rm -rf /".to_string(),
             details: json!({}),
             advertised: Vec::new(),
+            options: available_decisions(ApprovalKind::CommandExecution, &json!({})),
         };
         let decision = runtime.block_on(DenyAll.decide(&request));
         assert_eq!(decision, Decision::Deny);
@@ -592,7 +869,7 @@ mod tests {
         };
         let mut second = first.clone();
         second.request_id = 2;
-        second.decision = Decision::Allow;
+        second.decision = Decision::AllowForSession;
         second.source = DecisionSource::Timeout;
 
         log.append(&first).expect("append first");
@@ -617,5 +894,27 @@ mod tests {
         assert!(error.to_string().contains("line 1"), "{error}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: the legacy refusal is an object, and `"denied"` as a bare
+    /// string is **not** a valid `ReviewDecision` — the schema requires the
+    /// `denied.rejection` field. Sending the string form would be rejected at
+    /// the protocol layer, i.e. the operator's "refuse" would fail open.
+    #[test]
+    fn the_legacy_refusal_is_never_the_bare_string() {
+        for method in ["execCommandApproval", "applyPatchApproval"] {
+            let kind = ApprovalKind::from_method(method).expect("known method");
+            let payload =
+                response_payload(kind, Decision::Deny, &json!({})).expect("representable");
+            assert_ne!(
+                payload["decision"],
+                json!("denied"),
+                "{method} must not send the bare string"
+            );
+            assert!(
+                payload["decision"]["denied"]["rejection"].is_string(),
+                "{method} must carry a rejection: {payload}"
+            );
+        }
     }
 }

@@ -228,7 +228,16 @@ skill，两者产生的副作用动作都要过审批。
 
 ### 3.4 审批门禁与审计（轮次 C 已实现）
 
-**裁决模型是二元的**：`Decision::{Allow, Deny}`。线缆协议还提供「本会话内不再询问」与 execpolicy/网络策略修订，它们会在**没有新的人工门禁**的情况下扩大未来权限，因此在类型上**不可达**——不是靠约定，是靠没有表示法。已由 `approval_is_single_action_and_never_standing` 遍历断言。
+**裁决模型与 Codex 桌面版一致**（轮次 J，所有者指令）：`Decision::{AllowOnce, AllowForSession, AllowAlways, Deny}`，对应审批卡的 允许一次 / 允许此对话 / 始终允许 / 拒绝。
+
+可用集合由 `available_decisions(kind, params)` 依**请求本身**算出，而不是照抄运行时的 `availableDecisions`（可选、实测不含 `decline`）：
+- 「始终允许」仅在运行时给出具体规则提议（`proposedExecpolicyAmendment`）时提供——记不住东西的永久授权是假的；
+- 文件变更与权限扩张在协议里没有永久授权词汇，故不提供；
+- 「拒绝」恒在末位，确保操作员总能否决。
+
+**「始终允许」是持久的**：实测它会写入 `~/.codex/rules/default.rules` 的 `prefix_rule`，此后同类命令在该机器上不再询问——**这超出了本项目的沙箱边界**（沙箱只管本会话的子进程写入范围）。这是所有者在「与 codex app 一致」与「不放宽授权」之间选择前者的结果，界面文案已明示其后果，`ensure_offered` 防止界面之外越权选用。
+
+**超时与未接线的默认仍是拒绝**（`DenyAll`）：问不到人时不得假定同意。
 
 **超时的保证位置**：截止时间由**会话**施加（`tokio::time::timeout_at` 包住 `decider.decide`），不是在 decider 内部。因此「实现者忘了处理超时」不会让门变成常开——未按时返回裁决 ⇒ 记为 `DecisionSource::Timeout` 且 `Decision::Deny`。
 

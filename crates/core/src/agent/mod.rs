@@ -666,6 +666,7 @@ async fn decide_approval(
         summary: summarise(kind, params),
         details: params.clone(),
         advertised: advertised_decisions(params),
+        options: approval::available_decisions(kind, params),
     };
 
     let started = tokio::time::Instant::now();
