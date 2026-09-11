@@ -26,6 +26,7 @@ import {
 } from '../commands'
 import MarkdownBlock from './MarkdownBlock.vue'
 import ReportView from './ReportView.vue'
+import StepIcon from './StepIcon.vue'
 import { AGENT_DECISION_LABEL } from '../commands'
 import type {
   AgentAccessLevel,
@@ -224,10 +225,40 @@ function stopPolling() {
   }
 }
 
-async function scrollToBottom() {
+/**
+ * 用户是否仍停留在底部。
+ *
+ * 自动跟随的前提。滚离底部后必须**停手**：分析中内容每隔一秒就长一截，若每次都把
+ * 视图拽回底部，用户就再也读不到前面的内容——这正是「不能上划」的成因。
+ */
+const pinnedToBottom = ref(true)
+
+/** 判定「仍在底部」的容差（px）：留一点余量，避免亚像素误差导致误判为已滚离。 */
+const PIN_TOLERANCE_PX = 32
+
+function atBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_TOLERANCE_PX
+}
+
+/** 滚动事件只记录位置；滚回底部即恢复自动跟随。 */
+function onThreadScroll() {
+  const el = thread.value
+  if (el) pinnedToBottom.value = atBottom(el)
+}
+
+/**
+ * 跟随新内容滚到底部，**但仅在用户仍停留在底部时**。
+ *
+ * `force` 用于那些「用户的动作本身就表示要看到结果」的场合——发出提问、切回本页——
+ * 此时即便之前滚上去过也应该跳到底部。
+ */
+async function scrollToBottom(options: { force?: boolean } = {}) {
   await nextTick()
   const el = thread.value
-  if (el) el.scrollTop = el.scrollHeight
+  if (!el) return
+  if (!options.force && !pinnedToBottom.value) return
+  el.scrollTop = el.scrollHeight
+  pinnedToBottom.value = true
 }
 
 function startPolling() {
@@ -241,7 +272,9 @@ function startPolling() {
 async function refresh() {
   status.value = (await agentStatus()) ?? null
   if (sessionAlive.value) startPolling()
-  await scrollToBottom()
+  // 打开/切回本页时从最新处看起；此后交给 `pinnedToBottom` 决定是否跟随。
+  pinnedToBottom.value = true
+  await scrollToBottom({ force: true })
 }
 
 async function doSetAccessLevel(token: string) {
@@ -283,7 +316,8 @@ async function doAsk() {
     // 清空后必须收回高度，否则框会停在上一条长指令的尺寸。
     await resizeComposer()
     startPolling()
-    await scrollToBottom()
+    // 用户的动作本身表示「我要看这轮的结果」，因此强制跳到底部。
+    await scrollToBottom({ force: true })
   } finally {
     busy.value = false
   }
@@ -367,9 +401,21 @@ watch(
   },
 )
 
-// 新内容到达时保持在底部（会话流的常规行为）。
+/**
+ * 内容增长时跟随到底部。
+ *
+ * getter 必须返回**标量**。此前写的是 `() => [a, b, c]`——数组字面量每次求值都是新引用，
+ * Vue 以 `Object.is` 比较返回值，永远判定为「变了」，于是这个 watch 在**每次轮询**都触发，
+ * 把自动滚动变成每秒一次、无法挣脱的拽动。标量求和既表达了「内容变长了」，也真的只在
+ * 长度变化时才触发。
+ */
 watch(
-  () => [turns.value.length, status.value?.phase, pending.value?.request_id],
+  () =>
+    (status.value?.live?.items.length ?? 0) +
+    (status.value?.live?.reasoning.length ?? 0) +
+    (status.value?.live?.message.length ?? 0) +
+    (status.value?.pending_approval ? 1 : 0) +
+    turns.value.length,
   () => void scrollToBottom(),
 )
 
@@ -462,7 +508,7 @@ onUnmounted(stopPolling)
 
       <template v-else>
         <!-- 会话流 -->
-        <div ref="thread" class="codex-thread">
+        <div ref="thread" class="codex-thread" @scroll.passive="onThreadScroll">
         <div v-if="!turns.length" class="codex-empty">
           <div>尚未发起分析。</div>
           <div>说明要分析哪只个股即可；能力来自可用的 skill 与运行时工具。</div>
@@ -480,16 +526,27 @@ onUnmounted(stopPolling)
           <!-- 推理摘要流式文本 -->
           <div v-if="live.reasoning" class="codex-live-reasoning">{{ live.reasoning }}</div>
 
-          <!-- 步骤流：命令 / 工具 / 文件变更，含运行状态与增量输出 -->
+          <!-- 步骤流：命令 / 工具 / 文件变更，含运行状态与增量输出。
+               图标承担「这是什么步骤」，颜色承担「当前什么状态」，
+               于是这一行不必再挤一个文字标签。 -->
           <div v-for="item in live.items" :key="item.item_id" class="codex-tool">
             <button
               class="codex-tool-head"
               type="button"
+              :aria-label="`${itemLabel(item.kind)}：${item.title}（${itemState(item.state).label}）`"
               @click="toggleLiveItem(item.item_id)"
             >
-              <i class="codex-tool-caret" :class="{ open: expandedLive.has(item.item_id) }">▶</i>
-              <span class="codex-chip" :class="itemState(item.state).tone">
-                {{ itemLabel(item.kind) }}
+              <svg
+                class="codex-caret"
+                :class="{ open: expandedLive.has(item.item_id) }"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M9 5l7 7-7 7" />
+              </svg>
+              <span class="codex-step-icon" :class="itemState(item.state).tone">
+                <StepIcon :kind="item.kind" :title="item.title" :label="itemLabel(item.kind)" />
               </span>
               <span class="codex-tool-name">{{ item.title }}</span>
               <span class="codex-tool-status">
@@ -518,14 +575,26 @@ onUnmounted(stopPolling)
           <!-- 用户消息 -->
           <div class="codex-user">{{ turn.prompt }}</div>
 
-          <!-- 工具执行块 -->
+          <!-- 工具执行块：宿主工具调用（当前宿主不注册工具，机制保留）。 -->
           <div v-for="call in turn.tool_calls" :key="call.call_id" class="codex-tool">
             <button
               class="codex-tool-head"
               type="button"
+              :aria-label="`工具调用：${call.tool}（${call.success ? '成功' : '失败'}）`"
               @click="toggleTool(turn, call.call_id)"
             >
-              <i class="codex-tool-caret" :class="{ open: isExpanded(turn, call.call_id) }">▶</i>
+              <svg
+                class="codex-caret"
+                :class="{ open: isExpanded(turn, call.call_id) }"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M9 5l7 7-7 7" />
+              </svg>
+              <span class="codex-step-icon" :class="call.success ? 'ok' : 'bad'">
+                <StepIcon kind="tool_call" :title="call.tool" label="工具调用" />
+              </span>
               <span class="codex-tool-name">{{ call.tool }}</span>
               <span class="codex-tool-status">
                 {{ call.success ? preview(call.output) : '失败' }}

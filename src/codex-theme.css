@@ -248,14 +248,49 @@
   color: var(--cx-text-3);
 }
 
-.codex-tool-caret {
+/* 展开指示：SVG chevron，展开时旋转 90°。 */
+.codex-caret {
+  flex: none;
+  width: 13px;
+  height: 13px;
   color: var(--cx-text-3);
   transition: transform .15s;
-  font-size: 10px;
 }
 
-.codex-tool-caret.open {
+.codex-caret.open {
   transform: rotate(90deg);
+}
+
+/* 步骤图标：形状说明「这是什么步骤」，颜色说明「当前什么状态」。
+   图标本身只有 16px，靠颜色而非文字承载状态，这一行才能不被标签挤满。 */
+.codex-step-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--cx-text-3);
+}
+
+.codex-step-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.codex-step-icon.ok {
+  color: var(--cx-green);
+}
+
+.codex-step-icon.warn {
+  color: var(--cx-orange);
+}
+
+.codex-step-icon.bad {
+  color: var(--cx-red);
+}
+
+/* 运行中的步骤缓慢呼吸：在长输出里能一眼找到「正在跑的那个」。
+   只做不透明度，不做位移或缩放——列表在动的时候，位移会更难读。 */
+.codex-step-icon.warn svg {
+  animation: codex-pulse 1.4s ease-in-out infinite;
 }
 
 .codex-tool-body {
@@ -542,7 +577,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .codex-live .codex-chip.warn .codex-dot {
+  .codex-live .codex-chip.warn .codex-dot,
+  .codex-step-icon.warn svg {
     animation: none;
   }
 }
