@@ -47,3 +47,28 @@ export function renderMarkdown(source: string): string {
   if (!source.trim()) return ''
   return renderer.render(source)
 }
+
+/**
+ * Whether `source` is an HTML document rather than prose that mentions tags.
+ *
+ * Deliberately conservative: it must *open* with markup the way a document does,
+ * not merely contain it. A paragraph that discusses `<div>` is prose and belongs
+ * in the markdown renderer; only something that presents itself as a document
+ * gets the document treatment.
+ *
+ * The check exists because the two paths have very different trust handling —
+ * markdown escapes HTML, the HTML frame contains it — so the decision must be
+ * explicit rather than incidental.
+ */
+export function isHtmlDocument(source: string): boolean {
+  const head = source.trimStart().slice(0, 200).toLowerCase()
+  return (
+    head.startsWith('<!doctype html') ||
+    head.startsWith('<html') ||
+    head.startsWith('<body') ||
+    // A fragment written as a document body: rooted in a structural element and
+    // closing as markup. Both conditions, so `<TICKER> is up` is not mistaken for
+    // a document.
+    /^<(div|section|article|table|main|figure)\b/.test(head) && source.trimEnd().endsWith('>')
+  )
+}

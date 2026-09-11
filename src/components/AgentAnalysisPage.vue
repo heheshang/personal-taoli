@@ -24,11 +24,13 @@ import {
   agentAccessLevels,
   agentSetAccessLevel,
 } from '../commands'
+import HtmlFrame from './HtmlFrame.vue'
 import MarkdownBlock from './MarkdownBlock.vue'
 import ReportMetadata from './ReportMetadata.vue'
 import ReportView from './ReportView.vue'
 import StepRow from './StepRow.vue'
 import { AGENT_DECISION_LABEL } from '../commands'
+import { isHtmlDocument } from '../markdown'
 import type {
   AgentAccessLevel,
   AgentDecision,
@@ -69,6 +71,30 @@ const expandedSteps = ref<Set<string>>(new Set())
  */
 function stepsOf(items: AgentLiveItem[]): AgentLiveItem[] {
   return items.filter(item => item.kind !== 'message')
+}
+
+/**
+ * 每条 agent 消息的呈现方式。
+ *
+ * 末条消息若自称**文档**（`isHtmlDocument`），以沙箱化的 frame 渲染；其余（以及
+ * 末条之前的所有消息）按 Markdown。理由是两个渲染路径的信任处理完全不同——Markdown
+ * 转义 HTML，frame 容纳它——故这个选择必须显式、且集中在读得到的地方。
+ */
+function isHtmlReport(message: string, index: number, total: number): boolean {
+  return index === total - 1 && isHtmlDocument(message)
+}
+
+/** 末条消息若是 HTML，展示源码的开关（渲染后仍需可核对）。 */
+const htmlSourceShown = ref(false)
+
+/** 末条消息——报告解析成功时它已被吸收进报告，故参与渲染的是它之前那些。 */
+function lastMessage(turn: AgentTurn): string {
+  const messages = turn.report ? turn.messages.slice(0, -1) : turn.messages
+  return messages.at(-1) ?? ''
+}
+
+function lastMessageIsHtml(turn: AgentTurn): boolean {
+  return isHtmlDocument(lastMessage(turn))
 }
 function toggleStep(itemId: string) {
   const next = new Set(expandedSteps.value)
@@ -544,12 +570,26 @@ onUnmounted(stopPolling)
           <!-- 助手正文：本轮**全部**消息，按 Markdown 渲染。
                分析类 skill 会边跑边汇报，只显示最后一条会把中间结果丢掉。
                有报告时，承载它的最后一条消息不再重复显示（同一内容两种排版）。 -->
-          <MarkdownBlock
+          <template
             v-for="(message, index) in turn.report ? turn.messages.slice(0, -1) : turn.messages"
             :key="`m-${index}`"
-            class="codex-assistant"
-            :source="message"
-          />
+          >
+            <!-- 末条若自称 HTML 文档：以沙箱 frame 渲染，因为那条的用途就是「一份报告」。 -->
+            <HtmlFrame v-if="isHtmlReport(message, index, turn.report ? turn.messages.length - 1 : turn.messages.length)" :html="message" />
+            <MarkdownBlock v-else class="codex-assistant" :source="message" />
+          </template>
+
+          <!-- 渲染过的文档仍须可核对：出处行与源码开关。 -->
+          <template v-if="lastMessageIsHtml(turn)">
+            <div class="html-frame-meta">
+              <span class="codex-chip"><i class="codex-dot" />HTML 文档</span>
+              <span class="muted agent-id">已在沙箱中渲染 · 脚本与外部资源被禁用</span>
+              <button class="codex-btn ghost" type="button" @click="htmlSourceShown = !htmlSourceShown">
+                {{ htmlSourceShown ? '隐藏源码' : '查看源码' }}
+              </button>
+            </div>
+            <pre v-if="htmlSourceShown" class="codex-tool-body">{{ lastMessage(turn) }}</pre>
+          </template>
 
           <!-- 要求了结构化输出但**没能产出任何 JSON**：这才是「回退为正文」。
                结构与原因都已由上面的面板承担的情况不在此列——那时说「回退为正文」是错的，

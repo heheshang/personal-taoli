@@ -956,3 +956,28 @@
   border: 1px solid var(--cx-gray-150);
   border-radius: var(--cx-radius-lg);
 }
+
+/* ── 沙箱化的 HTML 文档 ───────────────────────────────────────────── */
+
+.html-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 固定高度 + 内部滚动：沙箱禁用了脚本，因而无法从文档内部测得内容高度并回报，
+   「自动撑高」在这里做不到。给一个够读的高度，让文档自己滚，比猜一个高度诚实。 */
+.html-frame-body {
+  width: 100%;
+  height: 480px;
+  border: 1px solid var(--cx-gray-150);
+  border-radius: var(--cx-radius-lg);
+  background: var(--cx-gray-0);
+}
+
+.html-frame-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
