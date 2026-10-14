@@ -29,7 +29,14 @@ const busy = ref('')
 const configPath = ref('')
 const archivePath = ref('')
 const databaseUrl = ref('')
-const activePage = ref('overview')
+const PAGE_IDS = new Set(['overview', 'market', 'control', 'simulation', 'agent', 'settings'])
+
+function pageFromHash(): string {
+  const page = window.location.hash.replace(/^#/, '')
+  return PAGE_IDS.has(page) ? page : 'overview'
+}
+
+const activePage = ref(pageFromHash())
 const selectedSymbol = ref('')
 
 const canOperate = computed(() => busy.value === '')
@@ -53,6 +60,16 @@ const eventCount = computed(() => focusedObservation.value ? `${focusedObservati
 
 function fmtTime(ms: number | null): string {
   return ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '—'
+}
+
+function navigate(page: string) {
+  if (!PAGE_IDS.has(page)) return
+  activePage.value = page
+  window.history.replaceState(null, '', `#${page}`)
+}
+
+function handleHashChange() {
+  activePage.value = pageFromHash()
 }
 
 const POLL_INTERVAL_MS = 5000
@@ -146,6 +163,8 @@ async function simulation() {
 }
 
 onMounted(async () => {
+  window.addEventListener('hashchange', handleHashChange)
+  activePage.value = pageFromHash()
   status.value = (await call<Status>(COMMANDS.desktopStatus)) ?? null
   await Promise.all([loadConfig(), loadAccounts()])
   const appConfig = await invokeCommand<AppConfig>(COMMANDS.loadAppConfig)
@@ -173,7 +192,10 @@ async function onConfigSaved(updated: AppConfig | null) {
   await refreshConfigViews()
 }
 
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  window.removeEventListener('hashchange', handleHashChange)
+  stopPolling()
+})
 </script>
 
 <template>
@@ -181,7 +203,7 @@ onUnmounted(stopPolling)
     <SidebarNav
       :active="activePage"
       :continuous-running="continuous?.running ?? false"
-      @navigate="activePage = $event"
+      @navigate="navigate"
     />
 
     <main class="main-content">
